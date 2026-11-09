@@ -1,0 +1,222 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>تفاصيل الوظيفة | منصة رُواء للتوظيف الذكي</title>
+  <link rel="stylesheet" href="css/design-system.css" />
+  <style>
+    .job-hero-card {
+      background: var(--charcoal);
+      color: #FFFFFF;
+      border-radius: 22px;
+      padding: 36px;
+      position: relative;
+      overflow: hidden;
+      margin-top: 28px;
+      border-top: 7px solid var(--job-accent, #E0A21B);
+    }
+    .job-layout {
+      display: grid;
+      grid-template-columns: 1.55fr 0.85fr;
+      gap: 26px;
+      margin-top: 26px;
+      align-items: start;
+    }
+    .check-list {
+      list-style: none;
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+      margin-top: 14px;
+    }
+    .check-list li {
+      display: flex;
+      gap: 12px;
+      align-items: flex-start;
+      padding: 12px 14px;
+      background: var(--bg-subtle);
+      border-radius: 10px;
+      border-right: 3px solid var(--job-accent, var(--terracotta));
+      font-size: 14px;
+    }
+    .assessment-preview-box {
+      background: #FFFFFF;
+      border: 2px solid var(--border-color);
+      border-radius: 20px;
+      padding: 26px;
+      position: sticky;
+      top: 96px;
+      box-shadow: var(--shadow-md);
+    }
+    .q-type-row {
+      display: flex;
+      justify-content: space-between;
+      padding: 10px 12px;
+      background: var(--bg-subtle);
+      border-radius: 9px;
+      font-size: 13px;
+      margin-bottom: 8px;
+    }
+    @media (max-width: 960px) {
+      .job-layout { grid-template-columns: 1fr; }
+      .assessment-preview-box { position: static; }
+    }
+  </style>
+</head>
+<body>
+  <div id="portal-header-mount"></div>
+
+  <main class="container-1440">
+    <div style="margin-top:22px;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:12px;">
+      <a href="index.html" class="btn btn-outline btn-sm">→ العودة إلى قائمة الوظائف</a>
+      <div id="other-jobs-switcher" style="display:flex;gap:8px;flex-wrap:wrap;"></div>
+    </div>
+
+    <div id="job-content-mount">
+      <div class="card" style="margin-top:24px;text-align:center;padding:48px;">جاري تحميل تفاصيل الوظيفة...</div>
+    </div>
+  </main>
+
+  <div id="portal-footer-mount"></div>
+
+  <script src="js/common.js"></script>
+  <script>
+    SmartHR.renderPortalHeader('job');
+    SmartHR.renderPortalFooter();
+
+    async function initJobPage() {
+      const params = new URLSearchParams(window.location.search);
+      const idOrCode = params.get('id') || params.get('code') || 'SL-204';
+      const mount = document.getElementById('job-content-mount');
+
+      try {
+        const [jobRes, allJobsRes] = await Promise.all([
+          SmartHR.apiFetch(`/api/jobs/${encodeURIComponent(idOrCode)}`),
+          SmartHR.apiFetch('/api/jobs')
+        ]);
+
+        const job = jobRes.job;
+        const accent = job.accent_color || SmartHR.deptColor(job.department);
+        document.documentElement.style.setProperty('--job-accent', accent);
+        document.title = `${job.title} (${job.code}) | رُواء للتوظيف الذكي`;
+
+        // أزرار التنقل السريع بين الوظائف
+        const switcher = document.getElementById('other-jobs-switcher');
+        switcher.innerHTML = (allJobsRes.jobs || []).map((j) => `
+          <a href="Job.dc.html?id=${j.id}" class="btn btn-sm ${j.id === job.id ? 'btn-primary' : 'btn-outline'} mono">${SmartHR.escapeHtml(j.code)}</a>
+        `).join('');
+
+        const questions = job.questions || [];
+        const mcqCount = questions.filter((q) => q.type === 'mcq').length;
+        const numCount = questions.filter((q) => q.type === 'numeric').length;
+        const txtCount = questions.filter((q) => q.type === 'text').length;
+        const portCount = questions.filter((q) => q.type === 'portfolio').length;
+
+        mount.innerHTML = `
+          <section class="job-hero-card">
+            <div style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:16px;">
+              <div>
+                <div style="display:flex;gap:10px;align-items:center;margin-bottom:14px;">
+                  <span class="code-chip" style="background:${SmartHR.escapeHtml(accent)};color:${accent === '#E0A21B' ? '#17191C' : '#FFF'};font-size:13px;">${SmartHR.escapeHtml(job.code)}</span>
+                  <span class="badge" style="background:rgba(255,255,255,0.12);color:#FFF;">قسم ${SmartHR.escapeHtml(job.department)}</span>
+                  <span class="badge" style="background:rgba(47,93,80,0.45);color:#8FF0D0;">متاحة للتقديم الفوري</span>
+                </div>
+                <h1 style="color:#FFF;font-size:32px;margin-bottom:10px;">${SmartHR.escapeHtml(job.title)}</h1>
+                <p style="color:#CFD3DA;max-width:780px;font-size:15px;">${SmartHR.escapeHtml(job.summary)}</p>
+              </div>
+              <a href="Apply.dc.html?job_id=${job.id}" class="btn btn-saffron btn-lg">
+                التقديم وبدء اختبار الجدارة ←
+              </a>
+            </div>
+
+            <div style="display:flex;gap:28px;flex-wrap:wrap;margin-top:26px;padding-top:20px;border-top:1px solid rgba(255,255,255,0.12);font-size:14px;color:#E2E5EC;">
+              <span>📍 <strong>المقر:</strong> ${SmartHR.escapeHtml(job.location)}</span>
+              <span>💼 <strong>نوع الدوام:</strong> ${SmartHR.escapeHtml(job.employment_type)}</span>
+              <span>📈 <strong>الخبرة:</strong> ${SmartHR.escapeHtml(job.experience_level)}</span>
+              <span>💰 <strong>الحزمة والراتب:</strong> ${SmartHR.escapeHtml(job.salary_range)}</span>
+            </div>
+          </section>
+
+          <div class="job-layout">
+            <div style="display:flex;flex-direction:column;gap:22px;">
+              <section class="card">
+                <h2 style="font-size:20px;margin-bottom:12px;">نبذة تفصيلية عن الدور الوظيفي</h2>
+                <p style="color:var(--text-secondary);font-size:15px;line-height:1.8;">
+                  ${SmartHR.escapeHtml(job.description)}
+                </p>
+              </section>
+
+              <section class="card">
+                <h2 style="font-size:20px;">المهام والمسؤوليات الرئيسية</h2>
+                <ul class="check-list">
+                  ${(job.responsibilities || []).map((item) => `
+                    <li><span style="color:var(--olive);font-weight:700;">✔</span><span>${SmartHR.escapeHtml(item)}</span></li>
+                  `).join('')}
+                </ul>
+              </section>
+
+              <section class="card">
+                <h2 style="font-size:20px;">الشروط والمؤهلات المطلوبة</h2>
+                <ul class="check-list">
+                  ${(job.requirements || []).map((item) => `
+                    <li><span style="color:var(--terracotta);font-weight:700;">◆</span><span>${SmartHR.escapeHtml(item)}</span></li>
+                  `).join('')}
+                </ul>
+              </section>
+            </div>
+
+            <aside class="assessment-preview-box">
+              <div class="page-eyebrow">بطاقة اختبار الجدارة التفاعلي</div>
+              <h3 style="font-size:20px;margin-bottom:8px;">استعد للاختبار التخصصي</h3>
+              <p style="font-size:13px;color:var(--text-secondary);margin-bottom:18px;">
+                بمجرد رفع السيرة الذاتية ستنتقل مباشرة إلى اختبار الجدارة المكوّن من <strong>${questions.length} أسئلة</strong> لقياس الكفاءة الفعلية بعدالة.
+              </p>
+
+              <div class="q-type-row">
+                <span>أسئلة اختيار من متعدد (معرفية)</span>
+                <strong class="mono">${mcqCount} أسئلة</strong>
+              </div>
+              <div class="q-type-row">
+                <span>مسائل رقمية وحسابية تخصصية</span>
+                <strong class="mono">${numCount} سؤال</strong>
+              </div>
+              <div class="q-type-row">
+                <span>مواقف عملية وتخطيط ميداني</span>
+                <strong class="mono">${txtCount} أسئلة</strong>
+              </div>
+              <div class="q-type-row">
+                <span>إرفاق سابقة أعمال / نموذج تطبيقي</span>
+                <strong class="mono">${portCount} سؤال</strong>
+              </div>
+
+              <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin:18px 0;">
+                <div class="card-subtle" style="text-align:center;padding:12px;">
+                  <div class="mono" style="font-size:22px;font-weight:700;color:var(--charcoal);">${job.duration_minutes} د</div>
+                  <div style="font-size:12px;color:var(--text-secondary);">الزمن المخصص</div>
+                </div>
+                <div class="card-subtle" style="text-align:center;padding:12px;">
+                  <div class="mono" style="font-size:22px;font-weight:700;color:var(--olive);">≥${job.passing_score}%</div>
+                  <div style="font-size:12px;color:var(--text-secondary);">درجة الاجتياز</div>
+                </div>
+              </div>
+
+              <div style="background:var(--saffron-soft);border-radius:10px;padding:12px;font-size:12px;color:#6E4D04;margin-bottom:18px;">
+                🛡️ <strong>تنبيه النزاهة والفحص الأعمى:</strong> يُقيّم النظام الإجابات دون كشف اسم المتقدم، مع رصد تبديل التبويبات لضمان العدالة بين جميع المرشحين.
+              </div>
+
+              <a href="Apply.dc.html?job_id=${job.id}" class="btn btn-terracotta btn-lg" style="width:100%;">
+                تقدّم على وظيفة ${SmartHR.escapeHtml(job.code)} الآن ←
+              </a>
+            </aside>
+          </div>
+        `;
+      } catch (err) {
+        mount.innerHTML = `<div class="card" style="margin-top:24px;color:var(--terracotta);">تعذر تحميل تفاصيل الوظيفة: ${SmartHR.escapeHtml(err.message)}</div>`;
+      }
+    }
+
+    initJobPage();
+  </script>
+</body>
+</html>

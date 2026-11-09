@@ -1,0 +1,267 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>نموذج التقديم ورفع السيرة | رُواء للتوظيف الذكي</title>
+  <link rel="stylesheet" href="css/design-system.css" />
+  <style>
+    .apply-grid {
+      display: grid;
+      grid-template-columns: 1.4fr 0.8fr;
+      gap: 26px;
+      align-items: start;
+    }
+    .dropzone {
+      border: 2px dashed var(--border-strong);
+      border-radius: 14px;
+      padding: 28px 20px;
+      text-align: center;
+      background: var(--bg-subtle);
+      cursor: pointer;
+      transition: all 0.2s ease;
+    }
+    .dropzone:hover,
+    .dropzone.dragover {
+      border-color: var(--terracotta);
+      background: var(--terracotta-soft);
+    }
+    .dropzone.has-file {
+      border-style: solid;
+      border-color: var(--olive);
+      background: var(--olive-soft);
+    }
+    @media (max-width: 920px) {
+      .apply-grid { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+  <div id="portal-header-mount"></div>
+
+  <main class="container-1440">
+    <!-- شريط الخطوات -->
+    <div class="stepper">
+      <div class="step-item active">
+        <span class="step-num">1</span>
+        <span>البيانات ورفع السيرة الذاتية</span>
+      </div>
+      <span style="color:var(--border-strong);">━━</span>
+      <div class="step-item">
+        <span class="step-num">2</span>
+        <span>اختبار الجدارة (10 أسئلة)</span>
+      </div>
+      <span style="color:var(--border-strong);">━━</span>
+      <div class="step-item">
+        <span class="step-num">3</span>
+        <span>التقرير والنتيجة الفورية</span>
+      </div>
+    </div>
+
+    <div class="apply-grid">
+      <section class="card">
+        <div class="page-eyebrow">الخطوة الأولى — تسجيل بيانات المتقدم</div>
+        <h1 style="font-size:24px;margin-bottom:6px;">تقديم طلب توظيف رسمي</h1>
+        <p style="font-size:14px;color:var(--text-secondary);margin-bottom:24px;">
+          يتم حفظ بياناتك وسيرتك الذاتية مباشرة في قاعدة البيانات المركزية مع منع التكرار وتفعيل الفحص الأعمى تلقائياً.
+        </p>
+
+        <form id="apply-form" enctype="multipart/form-data">
+          <div class="form-group">
+            <label class="form-label" for="job-select">الوظيفة المتقدم عليها *</label>
+            <select id="job-select" name="job_id" class="form-select" required></select>
+          </div>
+
+          <div class="grid-2">
+            <div class="form-group">
+              <label class="form-label" for="full_name">الاسم الرباعي الكامل *</label>
+              <input type="text" id="full_name" name="full_name" class="form-control" placeholder="مثال: عبدالله بن محمد القحطاني" required />
+            </div>
+            <div class="form-group">
+              <label class="form-label" for="phone">رقم الجوال (المرتبط بواتساب) *</label>
+              <input type="tel" id="phone" name="phone" class="form-control mono" placeholder="0551234567" required />
+            </div>
+          </div>
+
+          <div class="grid-2">
+            <div class="form-group">
+              <label class="form-label" for="email">البريد الإلكتروني الرسمي *</label>
+              <input type="email" id="email" name="email" class="form-control mono" placeholder="name@domain.com" required />
+            </div>
+            <div class="form-group">
+              <label class="form-label" for="city">مدينة الإقامة الحالية *</label>
+              <input type="text" id="city" name="city" class="form-control" value="جدة" required />
+            </div>
+          </div>
+
+          <div class="grid-2">
+            <div class="form-group">
+              <label class="form-label" for="years_experience">سنوات الخبرة العملية *</label>
+              <input type="number" step="0.5" min="0" max="40" id="years_experience" name="years_experience" class="form-control mono" value="3" required />
+            </div>
+            <div class="form-group">
+              <label class="form-label" for="qualification">المؤهل العلمي والتخصص *</label>
+              <input type="text" id="qualification" name="qualification" class="form-control" placeholder="مثال: بكالوريوس تسويق / هندسة كيميائية" required />
+            </div>
+          </div>
+
+          <div class="form-group">
+            <label class="form-label" for="portfolio_url">رابط LinkedIn أو معرض الأعمال (اختياري)</label>
+            <input type="url" id="portfolio_url" name="portfolio_url" class="form-control mono" placeholder="https://linkedin.com/in/..." />
+          </div>
+
+          <div class="form-group">
+            <label class="form-label" for="cv_summary_notes">ملخص مهني سريع لأبرز خبراتك (يساعد محرك المطابقة الدلالي)</label>
+            <textarea id="cv_summary_notes" name="cv_summary_notes" class="form-textarea" style="min-height:82px;" placeholder="اكتب بإيجاز أهم الخبرات، المشاريع، أو الشهادات المهنية ذات الصلة بالوظيفة..."></textarea>
+          </div>
+
+          <div class="form-group">
+            <label class="form-label">إرفاق السيرة الذاتية المحدثة (PDF أو DOCX — بحد أقصى 10MB) *</label>
+            <input type="file" id="cv_file" name="cv_file" accept=".pdf,.docx,.doc" hidden required />
+            <div id="cv-dropzone" class="dropzone" tabindex="0" role="button" aria-label="رفع ملف السيرة الذاتية">
+              <div style="font-size:28px;margin-bottom:6px;">📄</div>
+              <div id="dropzone-title" style="font-weight:700;font-size:15px;">اضغط لاختيار ملف السيرة الذاتية أو اسحبه إلى هنا</div>
+              <div id="dropzone-sub" style="font-size:12px;color:var(--text-muted);margin-top:4px;">الصيغ المعتمدة: PDF, DOCX</div>
+            </div>
+          </div>
+
+          <div class="card-subtle" style="margin:18px 0;">
+            <label style="display:flex;gap:10px;align-items:flex-start;cursor:pointer;font-size:13px;">
+              <input type="checkbox" id="privacy_consent" name="privacy_consent" value="true" required style="margin-top:4px;width:18px;height:18px;accent-color:var(--olive);" />
+              <span>
+                أقرّ بصحة كافة البيانات المرفقة، وأوافق على سياسة الخصوصية ومعالجة السيرة الذاتية عبر محرك التقييم الذكي (بنظام إخفاء الهوية) ولجنة التوظيف المختصة.
+              </span>
+            </label>
+          </div>
+
+          <div id="form-error-box" style="display:none;background:var(--terracotta-soft);color:var(--terracotta);padding:12px 16px;border-radius:10px;margin-bottom:16px;font-size:14px;font-weight:600;"></div>
+
+          <button type="submit" id="submit-apply-btn" class="btn btn-terracotta btn-lg" style="width:100%;">
+            حفظ الطلب والانتقال فوراً إلى اختبار الجدارة ←
+          </button>
+        </form>
+      </section>
+
+      <aside class="card" id="selected-job-summary">
+        <div style="font-size:13px;color:var(--text-muted);">جاري تحميل ملخص الوظيفة...</div>
+      </aside>
+    </div>
+  </main>
+
+  <div id="portal-footer-mount"></div>
+
+  <script src="js/common.js"></script>
+  <script>
+    SmartHR.renderPortalHeader('apply');
+    SmartHR.renderPortalFooter();
+
+    let jobsList = [];
+    const jobSelect = document.getElementById('job-select');
+    const summaryBox = document.getElementById('selected-job-summary');
+    const fileInput = document.getElementById('cv_file');
+    const dropzone = document.getElementById('cv-dropzone');
+
+    function renderJobSummary(job) {
+      if (!job) return;
+      const accent = job.accent_color || SmartHR.deptColor(job.department);
+      summaryBox.innerHTML = `
+        <div style="border-top:5px solid ${SmartHR.escapeHtml(accent)};margin:-24px -24px 18px;border-radius:18px 18px 0 0;"></div>
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;">
+          <span class="badge badge-charcoal">قسم ${SmartHR.escapeHtml(job.department)}</span>
+          <span class="code-chip">${SmartHR.escapeHtml(job.code)}</span>
+        </div>
+        <h2 style="font-size:19px;margin-bottom:8px;">${SmartHR.escapeHtml(job.title)}</h2>
+        <p style="font-size:13px;color:var(--text-secondary);margin-bottom:16px;">${SmartHR.escapeHtml(job.summary)}</p>
+        <div class="card-subtle" style="margin-bottom:14px;">
+          <div style="font-size:13px;font-weight:700;margin-bottom:8px;">ماذا يحدث بعد الضغط على زر الحفظ؟</div>
+          <ol style="padding-right:18px;font-size:13px;color:var(--text-secondary);display:flex;flex-direction:column;gap:6px;">
+            <li>يصدر لك النظام رقماً مرجعياً فورياً بصيغة <span class="mono">APP-2026-XXXX</span>.</li>
+            <li>يبدأ اختبار الجدارة المكوّن من <strong>10 أسئلة</strong> خلال <strong>${job.duration_minutes} دقيقة</strong>.</li>
+            <li>تظهر نتيجتك الفورية (اجتياز عند تحقيق <strong>≥${job.passing_score}%</strong>).</li>
+          </ol>
+        </div>
+        <a href="Job.dc.html?id=${job.id}" class="btn btn-outline btn-sm" style="width:100%;">مراجعة الوصف الوظيفي الكامل</a>
+      `;
+    }
+
+    async function loadAvailableJobs() {
+      const params = new URLSearchParams(window.location.search);
+      const preselectedId = params.get('job_id');
+      const data = await SmartHR.apiFetch('/api/jobs');
+      jobsList = data.jobs || [];
+
+      jobSelect.innerHTML = jobsList.map((j) => `
+        <option value="${j.id}" ${String(j.id) === String(preselectedId) ? 'selected' : ''}>
+          [${SmartHR.escapeHtml(j.code)}] ${SmartHR.escapeHtml(j.title)} — ${SmartHR.escapeHtml(j.location)}
+        </option>
+      `).join('');
+
+      const active = jobsList.find((j) => String(j.id) === String(jobSelect.value)) || jobsList[0];
+      renderJobSummary(active);
+    }
+
+    jobSelect.addEventListener('change', () => {
+      const active = jobsList.find((j) => String(j.id) === String(jobSelect.value));
+      renderJobSummary(active);
+    });
+
+    function updateFileUI(file) {
+      if (!file) return;
+      dropzone.classList.add('has-file');
+      document.getElementById('dropzone-title').textContent = `تم إرفاق الملف: ${file.name}`;
+      document.getElementById('dropzone-sub').textContent = `الحجم: ${(file.size / 1024).toFixed(1)} كيلوبايت — جاهز للرفع`;
+    }
+
+    dropzone.addEventListener('click', () => fileInput.click());
+    dropzone.addEventListener('dragover', (e) => { e.preventDefault(); dropzone.classList.add('dragover'); });
+    dropzone.addEventListener('dragleave', () => dropzone.classList.remove('dragover'));
+    dropzone.addEventListener('drop', (e) => {
+      e.preventDefault();
+      dropzone.classList.remove('dragover');
+      if (e.dataTransfer.files && e.dataTransfer.files[0]) {
+        fileInput.files = e.dataTransfer.files;
+        updateFileUI(e.dataTransfer.files[0]);
+      }
+    });
+    fileInput.addEventListener('change', () => {
+      if (fileInput.files && fileInput.files[0]) updateFileUI(fileInput.files[0]);
+    });
+
+    document.getElementById('apply-form').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const errBox = document.getElementById('form-error-box');
+      errBox.style.display = 'none';
+
+      if (!fileInput.files || !fileInput.files[0]) {
+        errBox.textContent = 'يرجى اختيار ملف السيرة الذاتية (PDF أو DOCX) قبل الإرسال.';
+        errBox.style.display = 'block';
+        return;
+      }
+
+      const submitBtn = document.getElementById('submit-apply-btn');
+      submitBtn.disabled = true;
+      submitBtn.textContent = 'جاري حفظ البيانات ورفع السيرة الذاتية...';
+
+      try {
+        const formData = new FormData(e.target);
+        const res = await SmartHR.apiFetch('/api/applications', {
+          method: 'POST',
+          body: formData
+        });
+
+        SmartHR.showToast(res.message || 'تم تسجيل الطلب بنجاح!', 'success');
+        setTimeout(() => {
+          window.location.href = `Assessment.dc.html?ref=${encodeURIComponent(res.reference_no)}`;
+        }, 500);
+      } catch (err) {
+        errBox.textContent = err.message;
+        errBox.style.display = 'block';
+        submitBtn.disabled = false;
+        submitBtn.textContent = 'حفظ الطلب والانتقال فوراً إلى اختبار الجدارة ←';
+      }
+    });
+
+    loadAvailableJobs().catch((err) => SmartHR.showToast(err.message, 'error'));
+  </script>
+</body>
+</html>

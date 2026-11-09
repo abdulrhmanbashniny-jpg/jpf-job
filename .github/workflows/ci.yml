@@ -1,0 +1,59 @@
+name: JPF Smart HR — Production CI
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+
+jobs:
+  verify-platform:
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres_ci_password
+          POSTGRES_DB: smart_hr_db
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      - name: Checkout jpf-job repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Initialize & verify PostgreSQL schema and seed
+        env:
+          DATABASE_URL: postgresql://postgres:postgres_ci_password@127.0.0.1:5432/smart_hr_db
+        run: npm run db:init
+
+      - name: Verify API & All 14 Frontend Pages
+        env:
+          PORT: 3000
+          HOST: 127.0.0.1
+          DATABASE_URL: postgresql://postgres:postgres_ci_password@127.0.0.1:5432/smart_hr_db
+        run: |
+          node server.js &
+          SERVER_PID=$!
+          sleep 3
+          curl -fsS http://127.0.0.1:3000/api/health
+          curl -fsS http://127.0.0.1:3000/index.html >/dev/null
+          curl -fsS http://127.0.0.1:3000/Dashboard.dc.html >/dev/null
+          curl -fsS http://127.0.0.1:3000/Ranking.dc.html >/dev/null
+          kill $SERVER_PID

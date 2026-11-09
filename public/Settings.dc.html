@@ -1,0 +1,248 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>الإعدادات والتكاملات | رُواء للتوظيف الذكي</title>
+  <link rel="stylesheet" href="css/design-system.css" />
+  <style>
+    .provider-card {
+      border: 1.5px solid var(--border-color);
+      border-radius: 14px;
+      padding: 16px;
+      background: #FFFFFF;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 10px;
+    }
+    .provider-card.selected {
+      border-color: var(--terracotta);
+      background: var(--terracotta-soft);
+    }
+  </style>
+</head>
+<body>
+  <div class="admin-shell">
+    <div id="admin-sidebar-mount"></div>
+
+    <main class="admin-main">
+      <div class="admin-topbar">
+        <div>
+          <div class="page-eyebrow">التكاملات والحوكمة — أمان بيئة الإنتاج</div>
+          <h1 class="page-title">إعدادات مزودي الذكاء الاصطناعي وقوالب النظام</h1>
+          <p class="page-subtitle">إدارة محركات التحليل (OpenAI, Gemini, Claude, DeepSeek)، قوالب واتساب الهجينة، ومراجعة سجل التدقيق (Audit Logs).</p>
+        </div>
+        <a href="System.dc.html" class="btn btn-outline">🗄️ فحص معمارية النظام وقاعدة البيانات</a>
+      </div>
+
+      <div class="grid-2" style="margin-bottom:24px;align-items:start;">
+        <!-- إعدادات مزودي الذكاء الاصطناعي -->
+        <section class="card">
+          <h2 style="font-size:19px;margin-bottom:8px;">🤖 تكامل مزودي الذكاء الاصطناعي</h2>
+          <div class="card-subtle" style="margin-bottom:16px;font-size:12px;border-right:4px solid var(--olive);">
+            🔒 <strong>حماية المفاتيح السرية:</strong> التزاماً بمعايير أمن الإنتاج، لا يتم إدخال أو تخزين أي مفتاح API في المتصفح مطلقاً. تُقرأ المفاتيح حصراً من ملف <span class="mono">.env</span> في الخادم (<span class="mono">OPENAI_API_KEY</span>, <span class="mono">GEMINI_API_KEY</span>, إلخ).
+          </div>
+
+          <div id="providers-status-list" style="margin-bottom:16px;"></div>
+
+          <form id="ai-settings-form">
+            <div class="grid-2">
+              <div class="form-group">
+                <label class="form-label">المزود النشط للتقييم</label>
+                <select id="st-provider" class="form-select">
+                  <option value="smart-rubric">Smart Rubric Engine (مدمج بدون مفتاح خارجي)</option>
+                  <option value="openai">OpenAI (GPT-4o / GPT-4o-mini)</option>
+                  <option value="gemini">Google Gemini (gemini-2.0-flash)</option>
+                  <option value="claude">Anthropic Claude (Sonnet)</option>
+                  <option value="deepseek">DeepSeek AI (deepseek-chat)</option>
+                </select>
+              </div>
+              <div class="form-group">
+                <label class="form-label">اسم النموذج المفضل (Model)</label>
+                <input type="text" id="st-model" class="form-control mono" value="gpt-4o-mini" />
+              </div>
+            </div>
+
+            <div class="grid-3">
+              <div class="form-group">
+                <label class="form-label">وزن السيرة في AI (%)</label>
+                <input type="number" id="st-cv-w" class="form-control mono" min="0" max="100" value="30" />
+              </div>
+              <div class="form-group">
+                <label class="form-label">وزن الاختبار في AI (%)</label>
+                <input type="number" id="st-ass-w" class="form-control mono" min="0" max="100" value="70" />
+              </div>
+              <div class="form-group">
+                <label class="form-label">خصم تبديل التبويب (%)</label>
+                <input type="number" id="st-pen-sw" class="form-control mono" min="0" max="25" value="4" />
+              </div>
+            </div>
+
+            <label style="display:flex;align-items:center;gap:10px;font-size:13px;font-weight:700;margin-bottom:16px;cursor:pointer;">
+              <input type="checkbox" id="st-blind" checked style="width:18px;height:18px;accent-color:var(--olive);" />
+              <span>تفعيل إخفاء الهوية الإلزامي (Blind Screening & PII Anonymization)</span>
+            </label>
+
+            <button type="submit" class="btn btn-terracotta" style="width:100%;">حفظ إعدادات محرك الذكاء الاصطناعي ✓</button>
+          </form>
+        </section>
+
+        <!-- قوالب رسائل واتساب الهجينة -->
+        <section class="card">
+          <h2 style="font-size:19px;margin-bottom:8px;">💬 قوالب رسائل واتساب الهجينة</h2>
+          <p style="font-size:12px;color:var(--text-secondary);margin-bottom:14px;">
+            المتغيرات المتاحة: <span class="mono">{{name}}</span>، <span class="mono">{{job_title}}</span>، <span class="mono">{{job_code}}</span>، <span class="mono">{{date}}</span>، <span class="mono">{{time}}</span>، <span class="mono">{{meet_url}}</span>
+          </p>
+
+          <form id="wa-templates-form">
+            <div class="form-group">
+              <label class="form-label">قالب دعوة المقابلة الشخصية (Google Meet)</label>
+              <textarea id="tpl-invite" class="form-textarea" style="min-height:125px;"></textarea>
+            </div>
+            <div class="form-group">
+              <label class="form-label">قالب إشعار اجتياز الاختبار</label>
+              <textarea id="tpl-pass" class="form-textarea" style="min-height:75px;"></textarea>
+            </div>
+            <div class="form-group">
+              <label class="form-label">قالب تحديث / إعادة جدولة موعد</label>
+              <textarea id="tpl-resched" class="form-textarea" style="min-height:75px;"></textarea>
+            </div>
+
+            <button type="submit" class="btn btn-olive" style="width:100%;">حفظ واعتماد قوالب الرسائل ✓</button>
+          </form>
+        </section>
+      </div>
+
+      <!-- سجل التدقيق والحوكمة (Audit Logs) -->
+      <section class="card">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;">
+          <h2 style="font-size:18px;">📜 سجل التدقيق والحوكمة المركزي (<span class="mono">audit_logs</span>)</h2>
+          <button class="btn btn-outline btn-sm" onclick="loadSettingsAndLogs()">تحديث السجل ↻</button>
+        </div>
+        <div class="table-wrap">
+          <table class="data-table">
+            <thead>
+              <tr>
+                <th>التوقيت</th>
+                <th>المنفّذ</th>
+                <th>الدور</th>
+                <th>الحدث (Action)</th>
+                <th>الكيان</th>
+                <th>التفاصيل (JSON Metadata)</th>
+              </tr>
+            </thead>
+            <tbody id="audit-logs-tbody"></tbody>
+          </table>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <script src="js/common.js"></script>
+  <script>
+    SmartHR.renderAdminSidebar('settings');
+
+    async function loadSettingsAndLogs() {
+      const [stRes, logsRes] = await Promise.all([
+        SmartHR.apiFetch('/api/settings'),
+        SmartHR.apiFetch('/api/audit-logs?limit=25')
+      ]);
+
+      const aiCfg = stRes.settings.ai_engine_config || {};
+      const waTpl = stRes.settings.whatsapp_templates || {};
+      const providers = stRes.env_providers || {};
+
+      document.getElementById('st-provider').value = aiCfg.active_provider || 'smart-rubric';
+      document.getElementById('st-model').value = aiCfg.model_name || 'gpt-4o-mini';
+      document.getElementById('st-cv-w').value = aiCfg.cv_weight_in_ai ?? 30;
+      document.getElementById('st-ass-w').value = aiCfg.assessment_weight_in_ai ?? 70;
+      document.getElementById('st-pen-sw').value = aiCfg.integrity_penalty_per_switch ?? 4;
+      document.getElementById('st-blind').checked = aiCfg.blind_screening !== false;
+
+      document.getElementById('providers-status-list').innerHTML = Object.entries(providers).map(([key, info]) => `
+        <div class="provider-card ${aiCfg.active_provider === key ? 'selected' : ''}">
+          <div>
+            <strong>${SmartHR.escapeHtml(info.label)}</strong>
+            <div class="mono" style="font-size:11px;color:var(--text-muted);">Provider ID: ${SmartHR.escapeHtml(key)}</div>
+          </div>
+          ${
+            info.configured
+              ? '<span class="badge badge-olive">✓ مفعّل وجاهز في الخادم</span>'
+              : '<span class="badge badge-saffron">يستخدم Fallback تلقائي (أضف المفتاح في .env)</span>'
+          }
+        </div>
+      `).join('');
+
+      document.getElementById('tpl-invite').value = waTpl.interview_invite || '';
+      document.getElementById('tpl-pass').value = waTpl.pass_notification || '';
+      document.getElementById('tpl-resched').value = waTpl.reschedule_notice || '';
+
+      document.getElementById('audit-logs-tbody').innerHTML = (logsRes.logs || []).map((l) => `
+        <tr>
+          <td class="mono" style="font-size:12px;">${new Date(l.created_at).toLocaleString('ar-SA')}</td>
+          <td><strong>${SmartHR.escapeHtml(l.actor)}</strong></td>
+          <td><span class="badge badge-charcoal mono">${SmartHR.escapeHtml(l.actor_role)}</span></td>
+          <td><span class="code-chip" style="background:var(--olive);">${SmartHR.escapeHtml(l.action)}</span></td>
+          <td class="mono" style="font-size:12px;">${SmartHR.escapeHtml(l.entity_type)}:${SmartHR.escapeHtml(l.entity_id || '—')}</td>
+          <td class="mono" style="font-size:11px;color:var(--text-secondary);max-width:340px;overflow:hidden;text-overflow:ellipsis;">${SmartHR.escapeHtml(JSON.stringify(l.metadata))}</td>
+        </tr>
+      `).join('');
+    }
+
+    document.getElementById('ai-settings-form').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      try {
+        const cvW = Number(document.getElementById('st-cv-w').value);
+        const assW = Number(document.getElementById('st-ass-w').value);
+        await SmartHR.apiFetch('/api/settings/ai_engine_config', {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            category: 'ai_provider',
+            setting_value: {
+              active_provider: document.getElementById('st-provider').value,
+              model_name: document.getElementById('st-model').value.trim(),
+              temperature: 0.2,
+              blind_screening: document.getElementById('st-blind').checked,
+              anonymize_pii: true,
+              cv_weight_in_ai: cvW,
+              assessment_weight_in_ai: assW,
+              integrity_penalty_per_switch: Number(document.getElementById('st-pen-sw').value),
+              integrity_penalty_per_paste: 5
+            }
+          })
+        });
+        SmartHR.showToast('تم حفظ إعدادات محرك الذكاء الاصطناعي بنجاح!', 'success');
+        loadSettingsAndLogs();
+      } catch (err) {
+        SmartHR.showToast(err.message, 'error');
+      }
+    });
+
+    document.getElementById('wa-templates-form').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      try {
+        await SmartHR.apiFetch('/api/settings/whatsapp_templates', {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            category: 'whatsapp_templates',
+            setting_value: {
+              interview_invite: document.getElementById('tpl-invite').value,
+              pass_notification: document.getElementById('tpl-pass').value,
+              reschedule_notice: document.getElementById('tpl-resched').value
+            }
+          })
+        });
+        SmartHR.showToast('تم حفظ قوالب رسائل واتساب الهجينة بنجاح!', 'success');
+        loadSettingsAndLogs();
+      } catch (err) {
+        SmartHR.showToast(err.message, 'error');
+      }
+    });
+
+    loadSettingsAndLogs().catch((err) => SmartHR.showToast(err.message, 'error'));
+  </script>
+</body>
+</html>

@@ -1,0 +1,262 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>طابور رسائل واتساب الهجين | رُواء للتوظيف الذكي</title>
+  <link rel="stylesheet" href="css/design-system.css" />
+  <style>
+    .wa-card {
+      background: #FFFFFF;
+      border: 1px solid var(--border-color);
+      border-radius: 16px;
+      padding: 20px;
+      margin-bottom: 14px;
+      border-right: 5px solid var(--saffron);
+    }
+    .wa-card.sent { border-right-color: var(--charcoal); }
+    .wa-card.confirmed { border-right-color: var(--olive); }
+    .wa-bubble {
+      background: #EEF6EE;
+      border: 1px solid #C8DFC9;
+      border-radius: 12px;
+      padding: 12px 14px;
+      font-size: 13px;
+      line-height: 1.75;
+      width: 100%;
+      font-family: var(--font-body);
+      resize: vertical;
+      min-height: 78px;
+    }
+  </style>
+</head>
+<body>
+  <div class="admin-shell">
+    <div id="admin-sidebar-mount"></div>
+
+    <main class="admin-main">
+      <div class="admin-topbar">
+        <div>
+          <div class="page-eyebrow">التواصل الهجين المباشر — صفر تكاليف اشتراك API</div>
+          <h1 class="page-title">طابور دعوات المقابلات عبر واتساب (<span class="mono">wa.me</span>)</h1>
+          <p class="page-subtitle">إرسال دعوات المقابلات وروابط قاعات Google Meet مباشرة من واتساب المنسق بنقرة واحدة مع توثيق الحالة في قاعدة البيانات.</p>
+        </div>
+        <a href="Scheduler.dc.html" class="btn btn-outline">+ جدولة دفعة مقابلات جديدة</a>
+      </div>
+
+      <!-- شريط التصفية وإنشاء رسالة مخصصة -->
+      <section class="grid-4" style="margin-bottom:22px;">
+        <div class="kpi-card" style="--kpi-accent:#E0A21B;"><div class="kpi-label">في طابور الإرسال</div><div class="kpi-value" id="wa-cnt-queued">0</div><div class="kpi-foot">جاهزة للإرسال الفوري</div></div>
+        <div class="kpi-card" style="--kpi-accent:#17191C;"><div class="kpi-label">تم إرسال الدعوة</div><div class="kpi-value" id="wa-cnt-sent">0</div><div class="kpi-foot">بانتظار رد المرشح</div></div>
+        <div class="kpi-card" style="--kpi-accent:#2F5D50;"><div class="kpi-label">مؤكدة الحضور</div><div class="kpi-value" id="wa-cnt-confirmed">0</div><div class="kpi-foot">تم اعتماد الموعد</div></div>
+        <div class="card" style="display:flex;flex-direction:column;justify-content:center;gap:8px;padding:16px;">
+          <label class="form-label" style="margin:0;">تصفية الطابور:</label>
+          <select id="wa-status-filter" class="form-select">
+            <option value="all">جميع الرسائل</option>
+            <option value="queued">قيد الانتظار فقط (Queued)</option>
+            <option value="sent">المرسلة (Sent)</option>
+            <option value="confirmed">المؤكدة (Confirmed)</option>
+          </select>
+        </div>
+      </section>
+
+      <div style="display:grid;grid-template-columns:1.45fr 0.75fr;gap:24px;align-items:start;">
+        <section>
+          <div id="wa-queue-list"></div>
+        </section>
+
+        <!-- إنشاء رسالة هجينة سريعة -->
+        <aside class="card">
+          <h3 style="font-size:17px;margin-bottom:12px;">➕ إضافة رسالة سريعة للطابور</h3>
+          <form id="quick-wa-form">
+            <div class="form-group">
+              <label class="form-label">اختر مرشحاً مسجلاً (اختياري للتعبئة التلقائية)</label>
+              <select id="quick-cand-select" class="form-select">
+                <option value="">— تعبئة يدوية —</option>
+              </select>
+            </div>
+            <div class="form-group">
+              <label class="form-label">اسم المستلم *</label>
+              <input type="text" id="qw-name" class="form-control" required />
+            </div>
+            <div class="form-group">
+              <label class="form-label">رقم الجوال (صيغة سعودية أو دولية) *</label>
+              <input type="tel" id="qw-phone" class="form-control mono" placeholder="966551234567" required />
+            </div>
+            <div class="form-group">
+              <label class="form-label">نص رسالة الواتساب *</label>
+              <textarea id="qw-body" class="form-textarea" style="min-height:110px;" required></textarea>
+            </div>
+            <button type="submit" class="btn btn-olive" style="width:100%;">توليد رابط wa.me وإضافته للطابور ✓</button>
+          </form>
+        </aside>
+      </div>
+    </main>
+  </div>
+
+  <script src="js/common.js"></script>
+  <script>
+    SmartHR.renderAdminSidebar('interviews');
+
+    let allMessages = [];
+    let appsCache = [];
+
+    const WA_BADGE = {
+      queued: '<span class="badge badge-saffron">⏳ في طابور الإرسال</span>',
+      sent: '<span class="badge badge-charcoal">📤 أُرسلت عبر واتساب</span>',
+      confirmed: '<span class="badge badge-olive">✓ مؤكدة من المرشح</span>',
+      cancelled: '<span class="badge badge-terracotta">ملغاة</span>'
+    };
+
+    async function loadWaQueue() {
+      const status = document.getElementById('wa-status-filter').value;
+      const [allRes, filteredRes] = await Promise.all([
+        SmartHR.apiFetch('/api/wa-messages'),
+        SmartHR.apiFetch(`/api/wa-messages?status=${encodeURIComponent(status)}`)
+      ]);
+
+      allMessages = allRes.messages || [];
+      document.getElementById('wa-cnt-queued').textContent = allMessages.filter((m) => m.queue_status === 'queued').length;
+      document.getElementById('wa-cnt-sent').textContent = allMessages.filter((m) => m.queue_status === 'sent').length;
+      document.getElementById('wa-cnt-confirmed').textContent = allMessages.filter((m) => m.queue_status === 'confirmed').length;
+
+      const list = filteredRes.messages || [];
+      const container = document.getElementById('wa-queue-list');
+      if (!list.length) {
+        container.innerHTML = `<div class="card" style="text-align:center;color:var(--text-muted);padding:40px;">لا توجد رسائل مطابقة للتصفية الحالية.</div>`;
+        return;
+      }
+
+      container.innerHTML = list.map((m) => `
+        <article class="wa-card ${SmartHR.escapeHtml(m.queue_status)}">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;flex-wrap:wrap;gap:8px;">
+            <div style="display:flex;align-items:center;gap:10px;">
+              ${m.job_code ? `<span class="code-chip">${SmartHR.escapeHtml(m.job_code)}</span>` : ''}
+              <strong style="font-size:16px;">${SmartHR.escapeHtml(m.recipient_name)}</strong>
+              <span class="mono" style="font-size:12px;color:var(--text-muted);">+${SmartHR.escapeHtml(m.recipient_phone)}</span>
+            </div>
+            <div>${WA_BADGE[m.queue_status] || m.queue_status}</div>
+          </div>
+
+          <textarea class="wa-bubble" id="msg-body-${m.id}">${SmartHR.escapeHtml(m.message_body)}</textarea>
+
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-top:12px;flex-wrap:wrap;gap:10px;">
+            <div style="font-size:12px;color:var(--text-muted);">
+              ${m.meeting_url ? `🎥 قاعة المقابلة: <a href="${SmartHR.escapeHtml(m.meeting_url)}" target="_blank" class="mono" style="color:var(--olive);font-weight:700;">${SmartHR.escapeHtml(m.meeting_url)}</a>` : 'رسالة تواصل مباشر'}
+            </div>
+
+            <div style="display:flex;gap:8px;flex-wrap:wrap;">
+              <button class="btn btn-outline btn-sm" onclick="saveMsgEdit(${m.id})">حفظ تعديل النص</button>
+              <button class="btn btn-olive btn-sm" onclick="launchWhatsApp(${m.id}, '${SmartHR.escapeHtml(m.recipient_phone)}')">
+                💬 فتح وإرسال عبر wa.me ↗
+              </button>
+              ${
+                m.queue_status !== 'confirmed'
+                  ? `<button class="btn btn-primary btn-sm" onclick="markConfirmed(${m.id})">تأكيد حضور المرشح ✓</button>`
+                  : ''
+              }
+            </div>
+          </div>
+        </article>
+      `).join('');
+    }
+
+    async function saveMsgEdit(id) {
+      const body = document.getElementById(`msg-body-${id}`).value.trim();
+      try {
+        await SmartHR.apiFetch(`/api/wa-messages/${id}`, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ message_body: body })
+        });
+        SmartHR.showToast('تم تحديث نص الرسالة ورابط wa.me بنجاح', 'success');
+        loadWaQueue();
+      } catch (err) {
+        SmartHR.showToast(err.message, 'error');
+      }
+    }
+
+    async function launchWhatsApp(id, phone) {
+      const body = document.getElementById(`msg-body-${id}`).value.trim();
+      const digits = String(phone).replace(/\D/g, '');
+      const waUrl = `https://wa.me/${digits}?text=${encodeURIComponent(body)}`;
+      window.open(waUrl, '_blank', 'noopener');
+
+      try {
+        await SmartHR.apiFetch(`/api/wa-messages/${id}`, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ message_body: body, queue_status: 'sent' })
+        });
+        SmartHR.showToast('تم فتح محادثة واتساب وتحديث حالة الطابور إلى (مرسلة)', 'success');
+        loadWaQueue();
+      } catch (err) {
+        SmartHR.showToast(err.message, 'error');
+      }
+    }
+
+    async function markConfirmed(id) {
+      try {
+        await SmartHR.apiFetch(`/api/wa-messages/${id}`, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ queue_status: 'confirmed' })
+        });
+        SmartHR.showToast('تم توثيق تأكيد حضور المرشح للمقابلة!', 'success');
+        loadWaQueue();
+      } catch (err) {
+        SmartHR.showToast(err.message, 'error');
+      }
+    }
+
+    async function initWaPage() {
+      document.getElementById('wa-status-filter').addEventListener('change', loadWaQueue);
+
+      const appsRes = await SmartHR.apiFetch('/api/applications');
+      appsCache = appsRes.applications || [];
+      const candSel = document.getElementById('quick-cand-select');
+      appsCache.forEach((a) => {
+        const opt = document.createElement('option');
+        opt.value = a.id;
+        opt.textContent = `[${a.job_code}] ${a.full_name} (${a.phone})`;
+        candSel.appendChild(opt);
+      });
+
+      candSel.addEventListener('change', () => {
+        const found = appsCache.find((x) => String(x.id) === String(candSel.value));
+        if (found) {
+          document.getElementById('qw-name').value = found.full_name;
+          document.getElementById('qw-phone').value = found.phone;
+          document.getElementById('qw-body').value =
+            `السلام عليكم أ. ${found.full_name}، بخصوص طلبكم المرجعي (${found.reference_no}) لوظيفة (${found.job_title} - ${found.job_code}) لدى شركة رُواء للدهانات، نود التواصل معكم لاستكمال إجراءات المقابلة.`;
+        }
+      });
+
+      document.getElementById('quick-wa-form').addEventListener('submit', async (e) => {
+        e.preventDefault();
+        try {
+          await SmartHR.apiFetch('/api/wa-messages', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              application_id: candSel.value || null,
+              recipient_name: document.getElementById('qw-name').value.trim(),
+              recipient_phone: document.getElementById('qw-phone').value.trim(),
+              message_body: document.getElementById('qw-body').value.trim()
+            })
+          });
+          SmartHR.showToast('أُضيفت الرسالة إلى طابور واتساب الهجين بنجاح!', 'success');
+          e.target.reset();
+          loadWaQueue();
+        } catch (err) {
+          SmartHR.showToast(err.message, 'error');
+        }
+      });
+
+      await loadWaQueue();
+    }
+
+    initWaPage().catch((err) => SmartHR.showToast(err.message, 'error'));
+  </script>
+</body>
+</html>

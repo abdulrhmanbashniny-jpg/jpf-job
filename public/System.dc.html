@@ -1,0 +1,157 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>معمارية النظام التقنية | رُواء للتوظيف الذكي</title>
+  <link rel="stylesheet" href="css/design-system.css" />
+  <style>
+    .arch-layer {
+      background: var(--charcoal);
+      color: #FFFFFF;
+      border-radius: 16px;
+      padding: 20px 24px;
+      border-right: 6px solid var(--layer-accent, var(--saffron));
+      margin-bottom: 14px;
+    }
+  </style>
+</head>
+<body>
+  <div class="admin-shell">
+    <div id="admin-sidebar-mount"></div>
+
+    <main class="admin-main">
+      <div class="admin-topbar">
+        <div>
+          <div class="page-eyebrow">البنية التحتية وجاهزية الإنتاج (Production Architecture)</div>
+          <h1 class="page-title">معمارية النظام وفحص قاعدة البيانات <span class="mono">smart_hr_db</span></h1>
+          <p class="page-subtitle">فحص مباشر لحالة خادم Node.js/Express، زمن استجابة PostgreSQL، الجداول التسعة، ومخطط المفاتيح الأجنبية.</p>
+        </div>
+        <button class="btn btn-primary" onclick="loadSystemData()">إعادة فحص الجاهزية (Health Check) ↻</button>
+      </div>
+
+      <!-- مؤشرات صحة النظام الحية -->
+      <section class="grid-4" style="margin-bottom:24px;">
+        <div class="kpi-card" style="--kpi-accent:#2F5D50;"><div class="kpi-label">حالة الخادم وقاعدة البيانات</div><div class="kpi-value" id="sys-status" style="color:var(--olive);">ONLINE</div><div class="kpi-foot" id="sys-db-ver">—</div></div>
+        <div class="kpi-card" style="--kpi-accent:#E0A21B;"><div class="kpi-label">زمن استجابة PostgreSQL</div><div class="kpi-value" id="sys-latency">—</div><div class="kpi-foot">اتصال Pool نشط</div></div>
+        <div class="kpi-card" style="--kpi-accent:#C8553D;"><div class="kpi-label">جداول قاعدة البيانات</div><div class="kpi-value" id="sys-tables-cnt">9</div><div class="kpi-foot">مع الفهارس والـ Triggers</div></div>
+        <div class="kpi-card" style="--kpi-accent:#17191C;"><div class="kpi-label">حماية المفاتيح الحساسة</div><div class="kpi-value" style="font-size:22px;">ENV ONLY</div><div class="kpi-foot">صفر تخزين في المتصفح</div></div>
+      </section>
+
+      <div class="grid-2" style="margin-bottom:24px;align-items:start;">
+        <!-- طبقات المعمارية التقنية -->
+        <section class="card">
+          <h2 style="font-size:18px;margin-bottom:16px;">🏗️ الطبقات الهندسية الأربع للمنصة</h2>
+
+          <div class="arch-layer" style="--layer-accent:#E0A21B;">
+            <div style="display:flex;justify-content:space-between;margin-bottom:4px;">
+              <strong>1. طبقة العرض والهوية (Presentation Layer — RTL)</strong>
+              <span class="mono" style="color:#E0A21B;font-size:12px;">HTML5 + CSS3 + Vanilla JS</span>
+            </div>
+            <p style="font-size:13px;color:#CFD3DA;">بوابة المتقدمين (6 شاشات) + لوحة اللجنة (8 شاشات) بهوية لونية مستوحاة من قطاع الدهانات، مع متتبع نزاهة حي للجلسة.</p>
+          </div>
+
+          <div class="arch-layer" style="--layer-accent:#C8553D;">
+            <div style="display:flex;justify-content:space-between;margin-bottom:4px;">
+              <strong>2. طبقة الخادم والـ API (Application Layer)</strong>
+              <span class="mono" style="color:#FF9E8A;font-size:12px;">Node.js 20 + Express + Multer</span>
+            </div>
+            <p style="font-size:13px;color:#CFD3DA;">مسارات RESTful محمية بمحدد طلبات (Rate Limiter)، معالجة رفع السير الذاتية، وإخفاء الإجابات النموذجية عن واجهة المتقدم.</p>
+          </div>
+
+          <div class="arch-layer" style="--layer-accent:#2F5D50;">
+            <div style="display:flex;justify-content:space-between;margin-bottom:4px;">
+              <strong>3. طبقة التقييم الهجين والفحص الأعمى (AI & Rubric Layer)</strong>
+              <span class="mono" style="color:#8FF0D0;font-size:12px;">OpenAI / Gemini / Claude / SmartRubric</span>
+            </div>
+            <p style="font-size:13px;color:#CFD3DA;">طمس البيانات الشخصية (PII Anonymization) قبل إرسالها لمزود الذكاء الاصطناعي، مع محرك دلالي وحسابي مدمج عالي الاعتمادية.</p>
+          </div>
+
+          <div class="arch-layer" style="--layer-accent:#8A93A2;margin-bottom:0;">
+            <div style="display:flex;justify-content:space-between;margin-bottom:4px;">
+              <strong>4. طبقة البيانات والحوكمة (Persistence Layer)</strong>
+              <span class="mono" style="color:#E2E5EC;font-size:12px;">PostgreSQL 17 + Triggers + Docker</span>
+            </div>
+            <p style="font-size:13px;color:#CFD3DA;">قيود مرجعية صارمة، أعمدة محسوبة تلقائياً، ومحفزات تعيد حساب وزن (40% AI + 60% لجنة) داخل قاعدة البيانات مباشرة.</p>
+          </div>
+        </section>
+
+        <!-- فحص الجداول الحية من information_schema -->
+        <section class="card">
+          <h2 style="font-size:18px;margin-bottom:14px;">🗄️ الجداول الفعلية في <span class="mono">smart_hr_db</span></h2>
+          <div class="table-wrap">
+            <table class="data-table">
+              <thead>
+                <tr>
+                  <th>اسم الجدول</th>
+                  <th>عدد الأعمدة</th>
+                  <th>عدد السجلات الحية</th>
+                </tr>
+              </thead>
+              <tbody id="db-tables-tbody"></tbody>
+            </table>
+          </div>
+        </section>
+      </div>
+
+      <!-- العلاقات المرجعية Foreign Keys -->
+      <section class="card">
+        <h2 style="font-size:18px;margin-bottom:14px;">🔗 قيود التكامل المرجعي النشطة (PostgreSQL Foreign Keys)</h2>
+        <div class="table-wrap">
+          <table class="data-table">
+            <thead>
+              <tr>
+                <th>الجدول الفرعي</th>
+                <th>العمود المرتبط</th>
+                <th>يشير إلى الجدول الرئيسي</th>
+                <th>اسم القيد (Constraint)</th>
+              </tr>
+            </thead>
+            <tbody id="db-fks-tbody"></tbody>
+          </table>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <script src="js/common.js"></script>
+  <script>
+    SmartHR.renderAdminSidebar('system');
+
+    async function loadSystemData() {
+      try {
+        const [health, arch] = await Promise.all([
+          SmartHR.apiFetch('/api/health'),
+          SmartHR.apiFetch('/api/system/architecture')
+        ]);
+
+        document.getElementById('sys-status').textContent = health.status === 'ok' ? 'ONLINE ✓' : 'ERROR';
+        document.getElementById('sys-latency').textContent = `${health.latency_ms} ms`;
+        document.getElementById('sys-db-ver').textContent = `${health.database.db_name} • Node ${health.node_version}`;
+        document.getElementById('sys-tables-cnt').textContent = arch.tables.length;
+
+        document.getElementById('db-tables-tbody').innerHTML = (arch.tables || []).map((t) => `
+          <tr>
+            <td><span class="code-chip">${SmartHR.escapeHtml(t.table_name)}</span></td>
+            <td class="mono">${t.columns_count}</td>
+            <td><strong class="mono" style="color:var(--olive);">${t.exact_rows}</strong> سجل</td>
+          </tr>
+        `).join('');
+
+        document.getElementById('db-fks-tbody').innerHTML = (arch.foreign_keys || []).map((fk) => `
+          <tr>
+            <td class="mono" style="font-weight:700;">${SmartHR.escapeHtml(fk.source_table)}</td>
+            <td class="mono">${SmartHR.escapeHtml(fk.source_column)}</td>
+            <td class="mono" style="color:var(--terracotta);font-weight:700;">${SmartHR.escapeHtml(fk.target_table)}(${SmartHR.escapeHtml(fk.target_column)})</td>
+            <td class="mono" style="font-size:12px;color:var(--text-muted);">${SmartHR.escapeHtml(fk.constraint_name)}</td>
+          </tr>
+        `).join('');
+      } catch (err) {
+        SmartHR.showToast(err.message, 'error');
+      }
+    }
+
+    loadSystemData();
+  </script>
+</body>
+</html>

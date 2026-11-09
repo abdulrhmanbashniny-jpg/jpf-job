@@ -1,0 +1,405 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>رُواء للكفاءات | منصة التوظيف الذكية</title>
+  <link rel="stylesheet" href="css/design-system.css" />
+  <style>
+    .hero-banner {
+      background:
+        radial-gradient(circle at 14% 22%, rgba(224, 162, 27, 0.22), transparent 36%),
+        radial-gradient(circle at 86% 75%, rgba(200, 85, 61, 0.25), transparent 40%),
+        var(--charcoal);
+      color: #FFFFFF;
+      padding: 64px 0 72px;
+      position: relative;
+      overflow: hidden;
+    }
+    .hero-grid {
+      display: grid;
+      grid-template-columns: 1.25fr 0.75fr;
+      gap: 42px;
+      align-items: center;
+    }
+    .hero-tag {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      background: rgba(224, 162, 27, 0.16);
+      border: 1px solid rgba(224, 162, 27, 0.4);
+      color: #F6C85F;
+      padding: 6px 14px;
+      border-radius: 999px;
+      font-size: 13px;
+      font-weight: 600;
+      margin-bottom: 18px;
+    }
+    .hero-title {
+      font-size: 42px;
+      font-weight: 800;
+      color: #FFFFFF;
+      line-height: 1.25;
+      margin-bottom: 16px;
+    }
+    .hero-title span {
+      color: var(--saffron);
+    }
+    .hero-desc {
+      color: #CFD3DA;
+      font-size: 16px;
+      max-width: 640px;
+      margin-bottom: 28px;
+    }
+    .search-bar-box {
+      background: #FFFFFF;
+      padding: 10px;
+      border-radius: 14px;
+      display: flex;
+      gap: 10px;
+      box-shadow: var(--shadow-lg);
+      max-width: 680px;
+    }
+    .search-bar-box input {
+      flex: 1;
+      border: none;
+      padding: 10px 14px;
+      font-family: var(--font-body);
+      font-size: 15px;
+      color: var(--charcoal);
+      outline: none;
+    }
+    .swatch-showcase {
+      background: rgba(255, 255, 255, 0.05);
+      border: 1px solid rgba(255, 255, 255, 0.12);
+      border-radius: 22px;
+      padding: 26px;
+      backdrop-filter: blur(8px);
+    }
+    .swatch-strip {
+      display: grid;
+      grid-template-columns: repeat(5, 1fr);
+      gap: 8px;
+      margin-bottom: 20px;
+    }
+    .swatch-chip {
+      height: 56px;
+      border-radius: 10px;
+      display: flex;
+      align-items: flex-end;
+      padding: 6px 8px;
+      font-family: var(--font-mono);
+      font-size: 10px;
+      color: #FFF;
+      font-weight: 600;
+    }
+    .steps-section {
+      margin-top: -32px;
+      position: relative;
+      z-index: 5;
+    }
+    .step-card {
+      background: #FFFFFF;
+      border: 1px solid var(--border-color);
+      border-radius: 16px;
+      padding: 22px;
+      box-shadow: var(--shadow-md);
+      position: relative;
+    }
+    .step-number-badge {
+      font-family: var(--font-mono);
+      font-weight: 700;
+      font-size: 13px;
+      background: var(--bg-sand);
+      color: var(--charcoal);
+      padding: 4px 10px;
+      border-radius: 6px;
+      display: inline-block;
+      margin-bottom: 10px;
+    }
+    .dept-filters {
+      display: flex;
+      gap: 10px;
+      flex-wrap: wrap;
+      margin: 22px 0 28px;
+    }
+    .dept-pill {
+      padding: 9px 18px;
+      border-radius: 999px;
+      border: 1.5px solid var(--border-strong);
+      background: #FFFFFF;
+      font-family: var(--font-body);
+      font-size: 14px;
+      font-weight: 600;
+      color: var(--text-secondary);
+      cursor: pointer;
+      transition: all 0.18s ease;
+    }
+    .dept-pill:hover {
+      border-color: var(--charcoal);
+      color: var(--charcoal);
+    }
+    .dept-pill.active {
+      background: var(--charcoal);
+      border-color: var(--charcoal);
+      color: #FFFFFF;
+    }
+    .jobs-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(380px, 1fr));
+      gap: 22px;
+    }
+    .job-card {
+      background: #FFFFFF;
+      border: 1px solid var(--border-color);
+      border-radius: 18px;
+      padding: 24px;
+      display: flex;
+      flex-direction: column;
+      justify-content: space-between;
+      transition: transform 0.2s ease, box-shadow 0.2s ease;
+      position: relative;
+      overflow: hidden;
+    }
+    .job-card:hover {
+      transform: translateY(-4px);
+      box-shadow: var(--shadow-md);
+    }
+    .job-card-bar {
+      position: absolute;
+      top: 0;
+      right: 0;
+      left: 0;
+      height: 6px;
+    }
+    .job-meta-row {
+      display: flex;
+      gap: 14px;
+      flex-wrap: wrap;
+      font-size: 13px;
+      color: var(--text-secondary);
+      margin: 14px 0 18px;
+    }
+    @media (max-width: 960px) {
+      .hero-grid { grid-template-columns: 1fr; }
+      .hero-title { font-size: 30px; }
+      .jobs-grid { grid-template-columns: 1fr; }
+      .search-bar-box { flex-direction: column; }
+    }
+  </style>
+</head>
+<body>
+  <div id="portal-header-mount"></div>
+
+  <!-- قسم الترحيب الرئيسي -->
+  <section class="hero-banner">
+    <div class="container-1440 hero-grid">
+      <div>
+        <div class="hero-tag">✦ استقطاب معياري شفاف — بدون وساطة أو تحيز</div>
+        <h1 class="hero-title">اصنع أثرك المهني مع <span>نخبة الكفاءات</span> في صناعة الدهانات والحلول الهندسية</h1>
+        <p class="hero-desc">
+          منصة توظيف ذكية تمنح كل متقدم فرصة عادلة وفورية: ارفع سيرتك الذاتية، خض اختبار الجدارة التفاعلي المكوّن من 10 أسئلة تخصصية، واحصل على نتيجتك وتقريرك في اللحظة نفسها.
+        </p>
+        <form id="hero-search-form" class="search-bar-box">
+          <input type="text" id="job-search-input" placeholder="ابحث بالمسمى الوظيفي، الكود (مثل SL-204)، أو المدينة..." />
+          <button type="submit" class="btn btn-terracotta btn-lg">بحث في الفرص</button>
+        </form>
+      </div>
+
+      <div class="swatch-showcase">
+        <div style="font-size:13px;color:#CFD3DA;margin-bottom:10px;font-weight:600;">طيف الأقسام التخصصية المعتمدة</div>
+        <div class="swatch-strip">
+          <div class="swatch-chip" style="background:#E0A21B;color:#17191C;">SL • مبيعات</div>
+          <div class="swatch-chip" style="background:#C8553D;">PT • إنتاج</div>
+          <div class="swatch-chip" style="background:#3B5B78;">PR • مشاريع</div>
+          <div class="swatch-chip" style="background:#2F5D50;">QC • جودة</div>
+          <div class="swatch-chip" style="background:#7A5C43;">WH • إمداد</div>
+        </div>
+        <div style="display:grid;grid-template-columns:repeat(2,1fr);gap:12px;margin-top:16px;">
+          <div style="background:rgba(255,255,255,0.06);padding:14px;border-radius:12px;">
+            <div class="mono" id="stat-open-jobs" style="font-size:26px;font-weight:700;color:#E0A21B;">5</div>
+            <div style="font-size:12px;color:#CFD3DA;">شواغر تخصصية نشطة</div>
+          </div>
+          <div style="background:rgba(255,255,255,0.06);padding:14px;border-radius:12px;">
+            <div class="mono" style="font-size:26px;font-weight:700;color:#6CD4B2;">60%</div>
+            <div style="font-size:12px;color:#CFD3DA;">حد الاجتياز الفوري الواضح</div>
+          </div>
+        </div>
+        <!-- استعلام سريع بالرقم المرجعي -->
+        <div style="margin-top:18px;padding-top:16px;border-top:1px solid rgba(255,255,255,0.12);">
+          <label for="ref-lookup-input" style="font-size:12px;color:#D7D9DE;display:block;margin-bottom:6px;">لديك طلب سابق؟ استعلم برقمك المرجعي:</label>
+          <div style="display:flex;gap:8px;">
+            <input id="ref-lookup-input" class="form-control mono" placeholder="APP-2026-1001" style="padding:9px 12px;font-size:13px;" />
+            <button type="button" id="ref-lookup-btn" class="btn btn-saffron btn-sm">عرض النتيجة</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- خطوات التقديم الأربع -->
+  <section id="how-it-works" class="container-1440 steps-section">
+    <div class="grid-4">
+      <div class="step-card">
+        <span class="step-number-badge">STEP 01</span>
+        <h3 style="font-size:17px;margin-bottom:6px;">اختيار الوظيفة والسيرة</h3>
+        <p style="font-size:13px;color:var(--text-secondary);">استعرض المهام والشروط وارفع سيرتك الذاتية بصيغة PDF أو DOCX في أقل من دقيقة.</p>
+      </div>
+      <div class="step-card">
+        <span class="step-number-badge" style="background:var(--terracotta-soft);color:var(--terracotta);">STEP 02</span>
+        <h3 style="font-size:17px;margin-bottom:6px;">اختبار الجدارة (10 أسئلة)</h3>
+        <p style="font-size:13px;color:var(--text-secondary);">أسئلة عملية متنوعة (اختياري، حسابي، مواقف، وسابقة أعمال) مع عداد زمني وتتبع نزاهة.</p>
+      </div>
+      <div class="step-card">
+        <span class="step-number-badge" style="background:var(--saffron-soft);color:#8F6405;">STEP 03</span>
+        <h3 style="font-size:17px;margin-bottom:6px;">نتيجة فورية وفحص أعمى</h3>
+        <p style="font-size:13px;color:var(--text-secondary);">تصحيح دلالي ورقمي فوري مع إخفاء البيانات الشخصية لضمان تكافؤ الفرص 100%.</p>
+      </div>
+      <div class="step-card">
+        <span class="step-number-badge" style="background:var(--olive-soft);color:var(--olive);">STEP 04</span>
+        <h3 style="font-size:17px;margin-bottom:6px;">مقابلة Google Meet</h3>
+        <p style="font-size:13px;color:var(--text-secondary);">للمجتازين (≥60%): جدولة ذكية للمقابلة ودعوة مباشرة عبر واتساب وتقييم اللجنة.</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- قائمة الوظائف المتاحة ديناميكياً -->
+  <main class="container-1440" style="margin-top:52px;">
+    <div style="display:flex;justify-content:space-between;align-items:flex-end;flex-wrap:wrap;gap:16px;">
+      <div>
+        <div class="page-eyebrow">الفرص الوظيفية المفتوحة</div>
+        <h2 style="font-size:28px;">اختر مسارك التخصصي وابدأ التقييم الآن</h2>
+      </div>
+      <div id="jobs-counter-label" style="font-size:14px;color:var(--text-secondary);font-weight:600;">جاري تحميل الوظائف...</div>
+    </div>
+
+    <div class="dept-filters" id="dept-filters">
+      <button class="dept-pill active" data-dept="الكل">جميع الأقسام</button>
+      <button class="dept-pill" data-dept="المبيعات">المبيعات</button>
+      <button class="dept-pill" data-dept="الإنتاج">الإنتاج</button>
+      <button class="dept-pill" data-dept="المشاريع">المشاريع</button>
+      <button class="dept-pill" data-dept="الجودة">الجودة والمختبرات</button>
+      <button class="dept-pill" data-dept="المستودعات">المستودعات والإمداد</button>
+    </div>
+
+    <div id="jobs-container" class="jobs-grid"></div>
+  </main>
+
+  <div id="portal-footer-mount"></div>
+
+  <script src="js/common.js"></script>
+  <script>
+    SmartHR.renderPortalHeader('home');
+    SmartHR.renderPortalFooter();
+
+    let currentDept = 'الكل';
+    let currentSearch = '';
+
+    async function loadJobs() {
+      const container = document.getElementById('jobs-container');
+      const counter = document.getElementById('jobs-counter-label');
+      try {
+        const params = new URLSearchParams();
+        if (currentDept !== 'الكل') params.set('department', currentDept);
+        if (currentSearch.trim()) params.set('search', currentSearch.trim());
+
+        const data = await SmartHR.apiFetch(`/api/jobs?${params.toString()}`);
+        const jobs = data.jobs || [];
+        document.getElementById('stat-open-jobs').textContent = jobs.length || '0';
+        counter.textContent = `إجمالي الوظائف المعروضة: ${jobs.length} وظائف`;
+
+        if (!jobs.length) {
+          container.innerHTML = `
+            <div class="card" style="grid-column:1/-1;text-align:center;padding:48px;">
+              <h3 style="margin-bottom:8px;">لا توجد وظائف مطابقة لبحثك الحالي</h3>
+              <p style="color:var(--text-secondary);margin-bottom:18px;">جرّب اختيار قسم آخر أو مسح كلمة البحث لعرض جميع الفرص المتاحة.</p>
+              <button class="btn btn-primary" onclick="resetFilters()">عرض كافة الوظائف</button>
+            </div>
+          `;
+          return;
+        }
+
+        container.innerHTML = jobs.map((job) => {
+          const color = job.accent_color || SmartHR.deptColor(job.department);
+          return `
+            <article class="job-card">
+              <div class="job-card-bar" style="background:${SmartHR.escapeHtml(color)};"></div>
+              <div>
+                <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;margin-top:4px;">
+                  <span class="badge" style="background:${SmartHR.escapeHtml(color)}20;color:${color === '#E0A21B' ? '#8F6405' : SmartHR.escapeHtml(color)};">
+                    قسم ${SmartHR.escapeHtml(job.department)}
+                  </span>
+                  <span class="code-chip">${SmartHR.escapeHtml(job.code)}</span>
+                </div>
+                <h3 style="font-size:19px;margin-bottom:8px;">
+                  <a href="Job.dc.html?id=${job.id}">${SmartHR.escapeHtml(job.title)}</a>
+                </h3>
+                <p style="font-size:14px;color:var(--text-secondary);line-height:1.6;">
+                  ${SmartHR.escapeHtml(job.summary)}
+                </p>
+                <div class="job-meta-row">
+                  <span>📍 ${SmartHR.escapeHtml(job.location)}</span>
+                  <span>⏱️ اختبار <strong class="mono">${job.duration_minutes}</strong> د</span>
+                  <span>🎯 اجتياز <strong class="mono">${job.passing_score}%</strong></span>
+                </div>
+              </div>
+              <div style="padding-top:16px;border-top:1px solid var(--border-color);display:flex;justify-content:space-between;align-items:center;gap:10px;">
+                <a href="Job.dc.html?id=${job.id}" class="btn btn-outline btn-sm" style="flex:1;">التفاصيل والشروط</a>
+                <a href="Apply.dc.html?job_id=${job.id}" class="btn btn-primary btn-sm" style="flex:1;">تقدّم وابدأ الاختبار ←</a>
+              </div>
+            </article>
+          `;
+        }).join('');
+      } catch (err) {
+        container.innerHTML = `<div class="card" style="grid-column:1/-1;color:var(--terracotta);">تعذر تحميل الوظائف: ${SmartHR.escapeHtml(err.message)}</div>`;
+      }
+    }
+
+    function resetFilters() {
+      currentDept = 'الكل';
+      currentSearch = '';
+      document.getElementById('job-search-input').value = '';
+      document.querySelectorAll('.dept-pill').forEach((b) => b.classList.toggle('active', b.dataset.dept === 'الكل'));
+      loadJobs();
+    }
+
+    document.getElementById('dept-filters').addEventListener('click', (e) => {
+      const btn = e.target.closest('.dept-pill');
+      if (!btn) return;
+      document.querySelectorAll('.dept-pill').forEach((b) => b.classList.remove('active'));
+      btn.classList.add('active');
+      currentDept = btn.dataset.dept;
+      loadJobs();
+    });
+
+    document.getElementById('hero-search-form').addEventListener('submit', (e) => {
+      e.preventDefault();
+      currentSearch = document.getElementById('job-search-input').value;
+      loadJobs();
+    });
+
+    document.getElementById('ref-lookup-btn').addEventListener('click', async () => {
+      const ref = document.getElementById('ref-lookup-input').value.trim();
+      if (!ref) {
+        SmartHR.showToast('يرجى كتابة الرقم المرجعي للطلب أولاً (مثال: APP-2026-1001)', 'error');
+        return;
+      }
+      try {
+        const res = await SmartHR.apiFetch(`/api/applications/${encodeURIComponent(ref)}`);
+        const app = res.application;
+        if (app.status === 'assessment_pending') {
+          window.location.href = `Assessment.dc.html?ref=${encodeURIComponent(app.reference_no)}`;
+        } else if (Number(app.assessment_score) >= Number(app.passing_score || 60)) {
+          window.location.href = `ResultPass.dc.html?ref=${encodeURIComponent(app.reference_no)}`;
+        } else {
+          window.location.href = `ResultFail.dc.html?ref=${encodeURIComponent(app.reference_no)}`;
+        }
+      } catch (err) {
+        SmartHR.showToast(err.message, 'error');
+      }
+    });
+
+    loadJobs();
+  </script>
+</body>
+</html>

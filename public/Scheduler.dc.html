@@ -1,0 +1,250 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>جدولة المقابلات الذكية | رُواء للتوظيف الذكي</title>
+  <link rel="stylesheet" href="css/design-system.css" />
+  <style>
+    .sched-grid {
+      display: grid;
+      grid-template-columns: 400px 1fr;
+      gap: 24px;
+      align-items: start;
+    }
+    .slot-badge {
+      font-family: var(--font-mono);
+      background: var(--charcoal);
+      color: var(--saffron);
+      padding: 5px 11px;
+      border-radius: 7px;
+      font-size: 12px;
+      font-weight: 700;
+    }
+    @media (max-width: 1024px) {
+      .sched-grid { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+  <div class="admin-shell">
+    <div id="admin-sidebar-mount"></div>
+
+    <main class="admin-main">
+      <div class="admin-topbar">
+        <div>
+          <div class="page-eyebrow">محرك التوزيع الزمني التلقائي + Google Meet</div>
+          <h1 class="page-title">جدولة المقابلات الذكية للمؤهلين</h1>
+          <p class="page-subtitle">توليد مواعيد خالية من التعارض تلقائياً مع مراعاة فترات الراحة، استثناء صلاة الظهر، وإنشاء روابط Google Meet ودعوات واتساب.</p>
+        </div>
+        <a href="Interviews.dc.html" class="btn btn-olive">الانتقال إلى طابور رسائل واتساب ←</a>
+      </div>
+
+      <div class="sched-grid">
+        <!-- إعدادات محرك الجدولة التلقائية -->
+        <section class="card">
+          <h2 style="font-size:18px;margin-bottom:14px;">⚙️ ضوابط التوزيع الزمني</h2>
+          <form id="auto-schedule-form">
+            <div class="form-group">
+              <label class="form-label">تاريخ إجراء المقابلات *</label>
+              <input type="date" id="sc-date" class="form-control mono" required />
+            </div>
+
+            <div class="grid-2">
+              <div class="form-group">
+                <label class="form-label">بداية الدوام</label>
+                <input type="time" id="sc-start" class="form-control mono" value="09:00" required />
+              </div>
+              <div class="form-group">
+                <label class="form-label">نهاية الدوام</label>
+                <input type="time" id="sc-end" class="form-control mono" value="16:00" required />
+              </div>
+            </div>
+
+            <div class="grid-2">
+              <div class="form-group">
+                <label class="form-label">مدة المقابلة (دقيقة)</label>
+                <input type="number" id="sc-duration" class="form-control mono" min="15" max="90" value="30" required />
+              </div>
+              <div class="form-group">
+                <label class="form-label">استراحة فاصلة (دقيقة)</label>
+                <input type="number" id="sc-buffer" class="form-control mono" min="0" max="45" value="10" required />
+              </div>
+            </div>
+
+            <div class="card-subtle" style="margin-bottom:16px;border-right:4px solid var(--saffron);">
+              <label style="display:flex;align-items:center;gap:10px;font-size:13px;font-weight:700;cursor:pointer;margin-bottom:10px;">
+                <input type="checkbox" id="sc-exclude-dhuhr" checked style="width:18px;height:18px;accent-color:var(--olive);" />
+                <span>🕌 استثناء فترة صلاة الظهر والراحة تلقائياً</span>
+              </label>
+              <div class="grid-2">
+                <div>
+                  <label class="form-label" style="font-size:11px;">من الساعة</label>
+                  <input type="time" id="sc-dhuhr-start" class="form-control mono" value="12:00" />
+                </div>
+                <div>
+                  <label class="form-label" style="font-size:11px;">إلى الساعة</label>
+                  <input type="time" id="sc-dhuhr-end" class="form-control mono" value="12:45" />
+                </div>
+              </div>
+            </div>
+
+            <div class="form-group">
+              <label class="form-label">أعضاء لجنة المقابلة</label>
+              <input type="text" id="sc-panel" class="form-control" value="لجنة التوظيف والاختيار المركزية" required />
+            </div>
+
+            <div style="margin-bottom:16px;">
+              <div style="font-size:13px;font-weight:700;margin-bottom:8px;">المرشحون المؤهلون بانتظار الجدولة (<span id="eligible-count" class="mono">0</span>):</div>
+              <div id="eligible-candidates-box" style="display:flex;flex-direction:column;gap:8px;max-height:210px;overflow-y:auto;"></div>
+            </div>
+
+            <button type="submit" id="run-scheduler-btn" class="btn btn-terracotta" style="width:100%;">
+              ⚡ توزيع المواعيد وتوليد قاعات Google Meet تلقائياً
+            </button>
+          </form>
+        </section>
+
+        <!-- جدول المقابلات المجدولة -->
+        <section class="card">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;flex-wrap:wrap;gap:10px;">
+            <h2 style="font-size:18px;">📅 جدول المقابلات المعتمدة وقاعات Google Meet</h2>
+            <span id="total-interviews-badge" class="badge badge-charcoal mono">0 مقابلة</span>
+          </div>
+
+          <div class="table-wrap">
+            <table class="data-table">
+              <thead>
+                <tr>
+                  <th>التاريخ والوقت</th>
+                  <th>المرشح</th>
+                  <th>الوظيفة</th>
+                  <th>قاعة Google Meet</th>
+                  <th>حالة الحجز</th>
+                  <th>تحديث الحالة</th>
+                </tr>
+              </thead>
+              <tbody id="scheduled-interviews-tbody"></tbody>
+            </table>
+          </div>
+        </section>
+      </div>
+    </main>
+  </div>
+
+  <script src="js/common.js"></script>
+  <script>
+    SmartHR.renderAdminSidebar('scheduler');
+    document.getElementById('sc-date').value = new Date().toISOString().slice(0, 10);
+
+    async function loadSchedulerData() {
+      const data = await SmartHR.apiFetch('/api/interviews');
+      const eligible = data.unscheduled_qualified || [];
+      const interviews = data.interviews || [];
+
+      document.getElementById('eligible-count').textContent = eligible.length;
+      document.getElementById('total-interviews-badge').textContent = `${interviews.length} مقابلات مجدولة`;
+
+      const eligBox = document.getElementById('eligible-candidates-box');
+      if (!eligible.length) {
+        eligBox.innerHTML = `<div class="card-subtle" style="font-size:12px;color:var(--olive);">✔ جميع المرشحين المؤهلين حالياً تمت جدولة مقابلاتهم.</div>`;
+      } else {
+        eligBox.innerHTML = eligible.map((c) => `
+          <label class="card-subtle" style="padding:10px 12px;display:flex;align-items:center;justify-content:space-between;cursor:pointer;font-size:13px;">
+            <span style="display:flex;align-items:center;gap:8px;">
+              <input type="checkbox" class="elig-chk" value="${c.application_id}" checked style="accent-color:var(--terracotta);" />
+              <strong>${SmartHR.escapeHtml(c.full_name)}</strong>
+            </span>
+            <span class="code-chip">${SmartHR.escapeHtml(c.job_code)}</span>
+          </label>
+        `).join('');
+      }
+
+      const tbody = document.getElementById('scheduled-interviews-tbody');
+      if (!interviews.length) {
+        tbody.innerHTML = `<tr><td colspan="6" style="text-align:center;color:var(--text-muted);padding:32px;">لا توجد مقابلات مجدولة بعد.</td></tr>`;
+      } else {
+        tbody.innerHTML = interviews.map((i) => `
+          <tr>
+            <td>
+              <div style="font-weight:700;font-size:13px;">${SmartHR.formatDate(i.scheduled_date)}</div>
+              <span class="slot-badge">${String(i.start_time).slice(0,5)} - ${String(i.end_time).slice(0,5)}</span>
+            </td>
+            <td>
+              <div style="font-weight:700;">${SmartHR.escapeHtml(i.full_name)}</div>
+              <div class="mono" style="font-size:11px;color:var(--text-muted);">الموزونة: ${i.final_weighted_score}%</div>
+            </td>
+            <td><span class="code-chip">${SmartHR.escapeHtml(i.job_code)}</span></td>
+            <td>
+              <a href="${SmartHR.escapeHtml(i.meeting_url)}" target="_blank" rel="noopener" class="btn btn-outline btn-sm mono" style="font-size:12px;">
+                🎥 فتح القاعة ↗
+              </a>
+            </td>
+            <td>${SmartHR.bookingBadge(i.booking_status)}</td>
+            <td>
+              <select class="form-select int-status-sel" data-id="${i.id}" style="padding:6px 10px;font-size:12px;min-width:130px;">
+                <option value="scheduled" ${i.booking_status==='scheduled'?'selected':''}>مجدولة</option>
+                <option value="invitation_sent" ${i.booking_status==='invitation_sent'?'selected':''}>أُرسلت الدعوة</option>
+                <option value="confirmed" ${i.booking_status==='confirmed'?'selected':''}>مؤكدة الحضور</option>
+                <option value="completed" ${i.booking_status==='completed'?'selected':''}>تمت المقابلة</option>
+                <option value="cancelled" ${i.booking_status==='cancelled'?'selected':''}>ملغاة</option>
+              </select>
+            </td>
+          </tr>
+        `).join('');
+
+        tbody.querySelectorAll('.int-status-sel').forEach((sel) => {
+          sel.addEventListener('change', async () => {
+            try {
+              await SmartHR.apiFetch(`/api/interviews/${sel.dataset.id}`, {
+                method: 'PATCH',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ booking_status: sel.value })
+              });
+              SmartHR.showToast('تم تحديث حالة الموعد بنجاح', 'success');
+              loadSchedulerData();
+            } catch (err) {
+              SmartHR.showToast(err.message, 'error');
+            }
+          });
+        });
+      }
+    }
+
+    document.getElementById('auto-schedule-form').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const selectedIds = Array.from(document.querySelectorAll('.elig-chk:checked')).map((el) => parseInt(el.value, 10));
+      if (!selectedIds.length) {
+        SmartHR.showToast('لا يوجد مرشحون محددون للجدولة حالياً.', 'error');
+        return;
+      }
+
+      try {
+        const res = await SmartHR.apiFetch('/api/interviews/auto-schedule', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            target_date: document.getElementById('sc-date').value,
+            work_start: document.getElementById('sc-start').value,
+            work_end: document.getElementById('sc-end').value,
+            slot_duration_minutes: Number(document.getElementById('sc-duration').value),
+            buffer_minutes: Number(document.getElementById('sc-buffer').value),
+            exclude_dhuhr: document.getElementById('sc-exclude-dhuhr').checked,
+            dhuhr_start: document.getElementById('sc-dhuhr-start').value,
+            dhuhr_end: document.getElementById('sc-dhuhr-end').value,
+            interviewer_panel: document.getElementById('sc-panel').value.trim(),
+            application_ids: selectedIds
+          })
+        });
+
+        SmartHR.showToast(res.message, 'success');
+        await loadSchedulerData();
+      } catch (err) {
+        SmartHR.showToast(err.message, 'error');
+      }
+    });
+
+    loadSchedulerData().catch((err) => SmartHR.showToast(err.message, 'error'));
+  </script>
+</body>
+</html>

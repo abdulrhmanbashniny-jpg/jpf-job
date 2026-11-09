@@ -1,0 +1,368 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>ملف المرشح وتقييم اللجنة | رُواء للتوظيف الذكي</title>
+  <link rel="stylesheet" href="css/design-system.css" />
+  <style>
+    .profile-grid {
+      display: grid;
+      grid-template-columns: 1.25fr 0.95fr;
+      gap: 24px;
+      align-items: start;
+    }
+    .criteria-row {
+      background: var(--bg-subtle);
+      padding: 12px 14px;
+      border-radius: 10px;
+      margin-bottom: 10px;
+      border: 1px solid var(--border-color);
+    }
+    .criteria-slider {
+      width: 100%;
+      accent-color: var(--terracotta);
+      cursor: pointer;
+      margin-top: 6px;
+    }
+    .answer-item {
+      border: 1px solid var(--border-color);
+      border-radius: 12px;
+      padding: 14px 16px;
+      margin-bottom: 10px;
+      background: #FFFFFF;
+    }
+  </style>
+</head>
+<body>
+  <div class="admin-shell">
+    <div id="admin-sidebar-mount"></div>
+
+    <main class="admin-main">
+      <div class="admin-topbar">
+        <div>
+          <div class="page-eyebrow">التقييم المعياري المزدوج — AI + اللجنة</div>
+          <h1 class="page-title">ملف المرشح وتقييم أعضاء اللجنة</h1>
+          <p class="page-subtitle">استعراض تقرير الذكاء الاصطناعي، إجابات الاختبار الـ 10، السيرة الذاتية، واعتماد تقييم اللجنة بالمعايير الخمسة.</p>
+        </div>
+        <div style="min-width:320px;">
+          <label class="form-label" for="candidate-switcher">اختر المرشح للمعاينة والتقييم:</label>
+          <select id="candidate-switcher" class="form-select"></select>
+        </div>
+      </div>
+
+      <div id="profile-root">
+        <div class="card" style="text-align:center;padding:42px;">جاري تحميل ملف المرشح...</div>
+      </div>
+    </main>
+  </div>
+
+  <script src="js/common.js"></script>
+  <script>
+    SmartHR.renderAdminSidebar('profile');
+
+    let currentApp = null;
+
+    function calcLiveCommitteePct() {
+      const c1 = parseFloat(document.getElementById('ev-tech')?.value || '4');
+      const c2 = parseFloat(document.getElementById('ev-comm')?.value || '4');
+      const c3 = parseFloat(document.getElementById('ev-prob')?.value || '4');
+      const c4 = parseFloat(document.getElementById('ev-cult')?.value || '4');
+      const c5 = parseFloat(document.getElementById('ev-port')?.value || '4');
+      const pct = (((c1 * 0.25 + c2 * 0.20 + c3 * 0.20 + c4 * 0.15 + c5 * 0.20) / 5.0) * 100).toFixed(2);
+      const previewEl = document.getElementById('live-eval-pct');
+      if (previewEl) previewEl.textContent = `${pct}%`;
+    }
+
+    async function loadCandidateProfile(appId) {
+      const root = document.getElementById('profile-root');
+      try {
+        const res = await SmartHR.apiFetch(`/api/applications/${appId}?mode=committee`);
+        currentApp = res.application;
+        const answers = res.answers || [];
+        const evaluations = res.evaluations || [];
+        const report = currentApp.ai_report || {};
+        const jobQuestions = currentApp.job_questions || [];
+
+        root.innerHTML = `
+          <!-- بطاقة رأسية لبيانات المرشح والدرجات الثلاث -->
+          <section class="card" style="margin-bottom:24px;border-top:6px solid ${SmartHR.escapeHtml(currentApp.accent_color || '#C8553D')};">
+            <div style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:18px;">
+              <div>
+                <div style="display:flex;gap:8px;align-items:center;margin-bottom:8px;flex-wrap:wrap;">
+                  <span class="code-chip">${SmartHR.escapeHtml(currentApp.reference_no)}</span>
+                  <span class="code-chip" style="background:var(--terracotta);">${SmartHR.escapeHtml(currentApp.job_code)}</span>
+                  ${SmartHR.statusBadge(currentApp.status)}
+                  ${report.blind_code ? `<span class="badge badge-saffron mono">${SmartHR.escapeHtml(report.blind_code)}</span>` : ''}
+                </div>
+                <h2 style="font-size:24px;margin-bottom:4px;">${SmartHR.escapeHtml(currentApp.full_name)}</h2>
+                <div style="font-size:13px;color:var(--text-secondary);display:flex;gap:16px;flex-wrap:wrap;">
+                  <span>📍 ${SmartHR.escapeHtml(currentApp.city)}</span>
+                  <span>🎓 ${SmartHR.escapeHtml(currentApp.qualification)}</span>
+                  <span>⏳ خبرة <strong class="mono">${currentApp.years_experience}</strong> سنوات</span>
+                  <span class="mono">📞 ${SmartHR.escapeHtml(currentApp.phone)}</span>
+                  <span class="mono">✉️ ${SmartHR.escapeHtml(currentApp.email)}</span>
+                </div>
+              </div>
+
+              <div style="display:flex;gap:8px;flex-wrap:wrap;">
+                ${currentApp.cv_stored_path ? `<a href="${SmartHR.escapeHtml(currentApp.cv_stored_path)}" target="_blank" rel="noopener" class="btn btn-outline btn-sm">📄 معاينة السيرة الذاتية ↗</a>` : ''}
+                <button class="btn btn-olive btn-sm" onclick="changeAppStatus('offered')">اعتماد عرض وظيفي ✓</button>
+                <button class="btn btn-outline btn-sm" style="color:var(--terracotta);border-color:var(--terracotta);" onclick="changeAppStatus('rejected')">اعتذار للمرشح</button>
+              </div>
+            </div>
+
+            <div class="grid-4" style="margin-top:20px;">
+              <div class="card-subtle" style="text-align:center;">
+                <div class="mono" style="font-size:24px;font-weight:800;color:var(--charcoal);">${currentApp.ai_overall_score}%</div>
+                <div style="font-size:12px;color:var(--text-secondary);">درجة الـ AI (اختبار ${currentApp.assessment_score}% • سيرة ${currentApp.cv_match_score}%)</div>
+              </div>
+              <div class="card-subtle" style="text-align:center;">
+                <div class="mono" id="hdr-comm-score" style="font-size:24px;font-weight:800;color:var(--terracotta);">${currentApp.committee_avg_score}%</div>
+                <div style="font-size:12px;color:var(--text-secondary);">متوسط تقييم اللجنة (${evaluations.length} مقيّمين)</div>
+              </div>
+              <div class="card-subtle" style="text-align:center;background:var(--olive-soft);border-color:var(--olive);">
+                <div class="mono" id="hdr-final-score" style="font-size:26px;font-weight:800;color:var(--olive);">${currentApp.final_weighted_score}%</div>
+                <div style="font-size:12px;color:var(--olive);font-weight:700;">الدرجة النهائية الموزونة (40/60)</div>
+              </div>
+              <div class="card-subtle" style="text-align:center;">
+                <div class="mono" style="font-size:24px;font-weight:800;">${currentApp.integrity_score}%</div>
+                <div style="font-size:12px;color:var(--text-secondary);">النزاهة (تبديل: ${currentApp.tab_switches} • لصق: ${currentApp.paste_attempts})</div>
+              </div>
+            </div>
+          </section>
+
+          <div class="profile-grid">
+            <!-- العمود الأيمن: تقرير الذكاء الاصطناعي + إجابات الأسئلة -->
+            <div style="display:flex;flex-direction:column;gap:22px;">
+              <section class="card">
+                <h3 style="font-size:18px;margin-bottom:10px;">🧠 التقرير التحليلي للذكاء الاصطناعي</h3>
+                <p style="font-size:14px;color:var(--text-secondary);background:var(--bg-subtle);padding:14px;border-radius:10px;margin-bottom:14px;">
+                  ${SmartHR.escapeHtml(report.blind_summary || 'بانتظار استكمال اختبار الجدارة.')}
+                </p>
+                <div class="grid-2">
+                  <div>
+                    <strong style="font-size:13px;color:var(--olive);">✔ نقاط القوة المرصودة:</strong>
+                    <ul style="padding-right:18px;margin-top:6px;font-size:13px;color:var(--text-secondary);">
+                      ${(report.strengths || []).map((s) => `<li style="margin-bottom:5px;">${SmartHR.escapeHtml(s)}</li>`).join('') || '<li>—</li>'}
+                    </ul>
+                  </div>
+                  <div>
+                    <strong style="font-size:13px;color:var(--terracotta);">⚠ الفجوات ومحاور المقابلة:</strong>
+                    <ul style="padding-right:18px;margin-top:6px;font-size:13px;color:var(--text-secondary);">
+                      ${(report.gaps || []).map((g) => `<li style="margin-bottom:5px;">${SmartHR.escapeHtml(g)}</li>`).join('') || '<li>—</li>'}
+                    </ul>
+                  </div>
+                </div>
+              </section>
+
+              <section class="card">
+                <h3 style="font-size:18px;margin-bottom:14px;">📝 تفاصيل إجابات اختبار الجدارة (${answers.length} أسئلة مصححة)</h3>
+                ${
+                  answers.length === 0
+                    ? `<div class="card-subtle" style="text-align:center;color:var(--text-muted);">لم يُكمل المرشح إجابات الاختبار التفصيلية في هذا السجل.</div>`
+                    : answers.map((ans) => {
+                        const qDef = jobQuestions.find((q) => Number(q.index) === Number(ans.question_index));
+                        let displayAnswer = ans.answer_value || '—';
+                        if (ans.question_type === 'mcq' && qDef && Array.isArray(qDef.options)) {
+                          const idx = parseInt(ans.answer_value, 10);
+                          if (!Number.isNaN(idx) && qDef.options[idx]) {
+                            displayAnswer = qDef.options[idx];
+                          }
+                        }
+                        return `
+                          <div class="answer-item">
+                            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;">
+                              <span class="badge badge-charcoal mono">Q${ans.question_index} • ${SmartHR.escapeHtml(ans.question_type)}</span>
+                              <strong class="mono" style="color:${Number(ans.awarded_points) >= Number(ans.max_points)*0.6 ? 'var(--olive)' : 'var(--terracotta)'};">
+                                ${ans.awarded_points} / ${ans.max_points}
+                              </strong>
+                            </div>
+                            <div style="font-weight:700;font-size:14px;margin-bottom:6px;">${SmartHR.escapeHtml(ans.question_text)}</div>
+                            <div style="font-size:13px;background:var(--bg-subtle);padding:10px;border-radius:8px;margin-bottom:6px;">
+                              <strong>إجابة المرشح:</strong> ${SmartHR.escapeHtml(displayAnswer)}
+                              ${ans.attachment_path ? `<div style="margin-top:6px;"><a href="${SmartHR.escapeHtml(ans.attachment_path)}" target="_blank" style="color:var(--terracotta);font-weight:700;">📎 فتح المرفق المرفوع ↗</a></div>` : ''}
+                            </div>
+                            <div style="font-size:12px;color:var(--text-muted);">🤖 ملاحظة المصحح: ${SmartHR.escapeHtml(ans.ai_feedback || '')}</div>
+                          </div>
+                        `;
+                      }).join('')
+                }
+              </section>
+            </div>
+
+            <!-- العمود الأيسر: نموذج تقييم اللجنة بـ 5 معايير موزونة -->
+            <div style="display:flex;flex-direction:column;gap:22px;">
+              <section class="card" style="border-top:5px solid var(--charcoal);">
+                <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;">
+                  <h3 style="font-size:18px;">⚖️ بطاقة تقييم عضو اللجنة (5 معايير)</h3>
+                  <span class="badge badge-olive mono" id="live-eval-pct" style="font-size:14px;">85.00%</span>
+                </div>
+
+                <form id="committee-eval-form">
+                  <div class="grid-2">
+                    <div class="form-group">
+                      <label class="form-label">اسم عضو اللجنة *</label>
+                      <input type="text" id="ev-name" class="form-control" value="م. طارق السبيعي" required />
+                    </div>
+                    <div class="form-group">
+                      <label class="form-label">المنصب الوظيفي</label>
+                      <input type="text" id="ev-role" class="form-control" value="رئيس اللجنة الفنية" required />
+                    </div>
+                  </div>
+
+                  <div class="criteria-row">
+                    <div style="display:flex;justify-content:space-between;font-size:13px;font-weight:700;">
+                      <span>1. الكفاءة الفنية والتخصصية (وزن 25%)</span>
+                      <span class="mono" id="lbl-tech">4.5 / 5</span>
+                    </div>
+                    <input type="range" min="1" max="5" step="0.1" value="4.5" id="ev-tech" class="criteria-slider" oninput="document.getElementById('lbl-tech').textContent=this.value+' / 5';calcLiveCommitteePct();" />
+                  </div>
+
+                  <div class="criteria-row">
+                    <div style="display:flex;justify-content:space-between;font-size:13px;font-weight:700;">
+                      <span>2. مهارات التواصل والإقناع التفاوضي (وزن 20%)</span>
+                      <span class="mono" id="lbl-comm">4.4 / 5</span>
+                    </div>
+                    <input type="range" min="1" max="5" step="0.1" value="4.4" id="ev-comm" class="criteria-slider" oninput="document.getElementById('lbl-comm').textContent=this.value+' / 5';calcLiveCommitteePct();" />
+                  </div>
+
+                  <div class="criteria-row">
+                    <div style="display:flex;justify-content:space-between;font-size:13px;font-weight:700;">
+                      <span>3. حل المشكلات واتخاذ القرار (وزن 20%)</span>
+                      <span class="mono" id="lbl-prob">4.2 / 5</span>
+                    </div>
+                    <input type="range" min="1" max="5" step="0.1" value="4.2" id="ev-prob" class="criteria-slider" oninput="document.getElementById('lbl-prob').textContent=this.value+' / 5';calcLiveCommitteePct();" />
+                  </div>
+
+                  <div class="criteria-row">
+                    <div style="display:flex;justify-content:space-between;font-size:13px;font-weight:700;">
+                      <span>4. الملاءمة الثقافية والانضباط المؤسسي (وزن 15%)</span>
+                      <span class="mono" id="lbl-cult">4.5 / 5</span>
+                    </div>
+                    <input type="range" min="1" max="5" step="0.1" value="4.5" id="ev-cult" class="criteria-slider" oninput="document.getElementById('lbl-cult').textContent=this.value+' / 5';calcLiveCommitteePct();" />
+                  </div>
+
+                  <div class="criteria-row">
+                    <div style="display:flex;justify-content:space-between;font-size:13px;font-weight:700;">
+                      <span>5. جودة الأعمال والخبرة التطبيقية (وزن 20%)</span>
+                      <span class="mono" id="lbl-port">4.3 / 5</span>
+                    </div>
+                    <input type="range" min="1" max="5" step="0.1" value="4.3" id="ev-port" class="criteria-slider" oninput="document.getElementById('lbl-port').textContent=this.value+' / 5';calcLiveCommitteePct();" />
+                  </div>
+
+                  <div class="form-group" style="margin-top:14px;">
+                    <label class="form-label">التوصية النهائية لعضو اللجنة</label>
+                    <select id="ev-rec" class="form-select">
+                      <option value="strong_hire">توصية قوية بالتعيين (Strong Hire)</option>
+                      <option value="hire">موصى بالتعيين (Hire)</option>
+                      <option value="hold">قائمة انتظار (Hold)</option>
+                      <option value="no_hire">اعتذار (No Hire)</option>
+                    </select>
+                  </div>
+
+                  <div class="form-group">
+                    <label class="form-label">الملاحظات المهنية لمحضر اللجنة</label>
+                    <textarea id="ev-notes" class="form-textarea" style="min-height:76px;" placeholder="سجّل ملاحظات المقابلة أو مراجعة الملف..."></textarea>
+                  </div>
+
+                  <button type="submit" class="btn btn-terracotta" style="width:100%;">
+                    حفظ التقييم وتحديث الترتيب الموزون تلقائياً ←
+                  </button>
+                </form>
+              </section>
+
+              <section class="card">
+                <h3 style="font-size:16px;margin-bottom:12px;">سجل تقييمات أعضاء اللجنة المعتمدة (${evaluations.length})</h3>
+                ${
+                  evaluations.length === 0
+                    ? `<div class="card-subtle" style="font-size:13px;color:var(--text-muted);">لا توجد تقييمات مسجلة لهذا المرشح بعد.</div>`
+                    : evaluations.map((ev) => `
+                        <div class="card-subtle" style="margin-bottom:10px;">
+                          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px;">
+                            <strong>${SmartHR.escapeHtml(ev.evaluator_name)} <span style="font-weight:400;color:var(--text-muted);font-size:12px;">(${SmartHR.escapeHtml(ev.evaluator_role)})</span></strong>
+                            <span class="badge badge-olive mono">${ev.total_percentage}%</span>
+                          </div>
+                          <div style="font-size:12px;color:var(--text-secondary);">${SmartHR.escapeHtml(ev.notes || 'بدون ملاحظات نصية.')}</div>
+                        </div>
+                      `).join('')
+                }
+              </section>
+            </div>
+          </div>
+        `;
+
+        calcLiveCommitteePct();
+
+        document.getElementById('committee-eval-form').addEventListener('submit', async (e) => {
+          e.preventDefault();
+          try {
+            const payload = {
+              application_id: currentApp.id,
+              evaluator_name: document.getElementById('ev-name').value.trim(),
+              evaluator_role: document.getElementById('ev-role').value.trim(),
+              technical_competence: Number(document.getElementById('ev-tech').value),
+              communication_persuasion: Number(document.getElementById('ev-comm').value),
+              problem_solving: Number(document.getElementById('ev-prob').value),
+              cultural_fit: Number(document.getElementById('ev-cult').value),
+              portfolio_practical: Number(document.getElementById('ev-port').value),
+              recommendation: document.getElementById('ev-rec').value,
+              notes: document.getElementById('ev-notes').value.trim()
+            };
+
+            await SmartHR.apiFetch('/api/evaluations', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify(payload)
+            });
+
+            SmartHR.showToast('تم حفظ تقييم اللجنة وتحديث الدرجة الموزونة في PostgreSQL!', 'success');
+            await loadCandidateProfile(currentApp.id);
+          } catch (err) {
+            SmartHR.showToast(err.message, 'error');
+          }
+        });
+      } catch (err) {
+        root.innerHTML = `<div class="card" style="color:var(--terracotta);">${SmartHR.escapeHtml(err.message)}</div>`;
+      }
+    }
+
+    async function changeAppStatus(newStatus) {
+      if (!currentApp) return;
+      try {
+        await SmartHR.apiFetch(`/api/applications/${currentApp.id}/status`, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ status: newStatus })
+        });
+        SmartHR.showToast('تم تحديث حالة الطلب بنجاح', 'success');
+        await loadCandidateProfile(currentApp.id);
+      } catch (err) {
+        SmartHR.showToast(err.message, 'error');
+      }
+    }
+
+    async function initProfilePage() {
+      const switcher = document.getElementById('candidate-switcher');
+      const params = new URLSearchParams(window.location.search);
+      const requestedId = params.get('app_id');
+
+      const listRes = await SmartHR.apiFetch('/api/applications');
+      const apps = listRes.applications || [];
+
+      switcher.innerHTML = apps.map((a) => `
+        <option value="${a.id}" ${String(a.id) === String(requestedId) ? 'selected' : ''}>
+          [${SmartHR.escapeHtml(a.job_code)}] ${SmartHR.escapeHtml(a.full_name)} — الموزونة: ${a.final_weighted_score}%
+        </option>
+      `).join('');
+
+      switcher.addEventListener('change', () => loadCandidateProfile(switcher.value));
+      if (apps.length) {
+        await loadCandidateProfile(switcher.value || apps[0].id);
+      }
+    }
+
+    initProfilePage().catch((err) => SmartHR.showToast(err.message, 'error'));
+  </script>
+</body>
+</html>

@@ -1,0 +1,47 @@
+services:
+  db:
+    image: postgres:17-alpine
+    container_name: smart_hr_postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-smart_hr_user}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-StrongSecretPass2026}
+      POSTGRES_DB: ${POSTGRES_DB:-smart_hr_db}
+      TZ: Asia/Riyadh
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./database/schema_and_seed.sql:/docker-entrypoint-initdb.d/01-schema_and_seed.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-smart_hr_user} -d ${POSTGRES_DB:-smart_hr_db}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  app:
+    build: .
+    container_name: smart_hr_app
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    ports:
+      - "${PORT:-3000}:3000"
+    environment:
+      NODE_ENV: production
+      HOST: 0.0.0.0
+      PORT: 3000
+      DATABASE_URL: postgresql://${POSTGRES_USER:-smart_hr_user}:${POSTGRES_PASSWORD:-StrongSecretPass2026}@db:5432/${POSTGRES_DB:-smart_hr_db}
+      AUTO_SEED_DB: "true"
+      AI_DEFAULT_PROVIDER: ${AI_DEFAULT_PROVIDER:-smart-rubric}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}
+      MAX_UPLOAD_MB: ${MAX_UPLOAD_MB:-10}
+      ADMIN_ACCESS_CODE: ${ADMIN_ACCESS_CODE:-RUWAA-HR-2026}
+    volumes:
+      - uploads_data:/app/uploads
+
+volumes:
+  pgdata:
+  uploads_data:

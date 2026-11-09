@@ -1,0 +1,518 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>اختبار الجدارة التفاعلي | رُواء للتوظيف الذكي</title>
+  <link rel="stylesheet" href="css/design-system.css" />
+  <style>
+    .assessment-layout {
+      display: grid;
+      grid-template-columns: 310px 1fr;
+      gap: 24px;
+      align-items: start;
+      margin-top: 10px;
+    }
+    .timer-panel {
+      background: var(--charcoal);
+      color: #FFFFFF;
+      border-radius: 18px;
+      padding: 22px;
+      margin-bottom: 16px;
+      text-align: center;
+      border-bottom: 4px solid var(--saffron);
+    }
+    .timer-panel.urgent {
+      border-bottom-color: var(--terracotta);
+      background: #2A1614;
+    }
+    .timer-digits {
+      font-family: var(--font-mono);
+      font-size: 38px;
+      font-weight: 700;
+      color: var(--saffron);
+      letter-spacing: 0.05em;
+    }
+    .timer-panel.urgent .timer-digits {
+      color: #FF7B63;
+    }
+    .q-nav-grid {
+      display: grid;
+      grid-template-columns: repeat(5, 1fr);
+      gap: 8px;
+      margin: 14px 0;
+    }
+    .q-nav-btn {
+      height: 42px;
+      border-radius: 10px;
+      border: 1.5px solid var(--border-strong);
+      background: #FFFFFF;
+      font-family: var(--font-mono);
+      font-weight: 700;
+      font-size: 14px;
+      cursor: pointer;
+      transition: all 0.16s ease;
+    }
+    .q-nav-btn.answered {
+      background: var(--olive-soft);
+      border-color: var(--olive);
+      color: var(--olive);
+    }
+    .q-nav-btn.current {
+      background: var(--charcoal);
+      border-color: var(--charcoal);
+      color: #FFFFFF;
+      transform: scale(1.05);
+    }
+    .mcq-option {
+      display: flex;
+      align-items: center;
+      gap: 14px;
+      padding: 16px 18px;
+      border: 1.5px solid var(--border-strong);
+      border-radius: 12px;
+      margin-bottom: 12px;
+      cursor: pointer;
+      background: #FFFFFF;
+      transition: all 0.16s ease;
+    }
+    .mcq-option:hover {
+      border-color: var(--charcoal);
+      background: var(--bg-subtle);
+    }
+    .mcq-option.selected {
+      border-color: var(--terracotta);
+      background: var(--terracotta-soft);
+      font-weight: 600;
+    }
+    .mcq-radio {
+      width: 22px;
+      height: 22px;
+      border-radius: 50%;
+      border: 2px solid var(--border-strong);
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      flex-shrink: 0;
+    }
+    .mcq-option.selected .mcq-radio {
+      border-color: var(--terracotta);
+      background: var(--terracotta);
+      color: #FFF;
+    }
+    @media (max-width: 960px) {
+      .assessment-layout { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+  <div id="portal-header-mount"></div>
+
+  <main class="container-1440">
+    <div class="stepper">
+      <div class="step-item done">
+        <span class="step-num">✓</span>
+        <span>البيانات ورفع السيرة</span>
+      </div>
+      <span style="color:var(--olive);">━━</span>
+      <div class="step-item active">
+        <span class="step-num">2</span>
+        <span>اختبار الجدارة (10 أسئلة)</span>
+      </div>
+      <span style="color:var(--border-strong);">━━</span>
+      <div class="step-item">
+        <span class="step-num">3</span>
+        <span>التقرير والنتيجة الفورية</span>
+      </div>
+    </div>
+
+    <div id="assessment-root">
+      <div class="card" style="text-align:center;padding:48px;">جاري تجهيز بيئة الاختبار المحمية...</div>
+    </div>
+  </main>
+
+  <div id="portal-footer-mount"></div>
+
+  <script src="js/common.js"></script>
+  <script>
+    SmartHR.renderPortalHeader('assessment');
+    SmartHR.renderPortalFooter();
+
+    let appData = null;
+    let questions = [];
+    let currentIdx = 0;
+    const answersState = {}; // index -> { answer_value, attachment_path, attachment_name, time_taken_seconds }
+
+    // متتبعات النزاهة والزمن
+    let remainingSeconds = 1200;
+    let totalSpentSeconds = 0;
+    let tabSwitches = 0;
+    let pasteAttempts = 0;
+    let timerHandle = null;
+    let isSubmitting = false;
+
+    const TYPE_LABELS = {
+      mcq: { label: 'اختيار من متعدد', cls: 'badge-charcoal' },
+      numeric: { label: 'مسألة رقمية حسابية', cls: 'badge-saffron' },
+      text: { label: 'موقف عملي تحليلي', cls: 'badge-terracotta' },
+      portfolio: { label: 'إرفاق أعمال / نموذج تطبيقي', cls: 'badge-olive' }
+    };
+
+    function formatTimer(sec) {
+      const m = Math.floor(sec / 60);
+      const s = sec % 60;
+      return `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
+    }
+
+    function isQuestionAnswered(qIndex) {
+      const st = answersState[qIndex];
+      if (!st) return false;
+      return (st.answer_value !== undefined && String(st.answer_value).trim() !== '') || Boolean(st.attachment_path);
+    }
+
+    function updateIntegrityUI() {
+      const integrityEl = document.getElementById('live-integrity-score');
+      const switchesEl = document.getElementById('live-tab-switches');
+      if (!integrityEl) return;
+      const score = Math.max(0, 100 - tabSwitches * 4 - pasteAttempts * 5);
+      integrityEl.textContent = `${score}%`;
+      integrityEl.style.color = score >= 85 ? 'var(--olive)' : 'var(--terracotta)';
+      if (switchesEl) switchesEl.textContent = `${tabSwitches}`;
+    }
+
+    function renderShell() {
+      const root = document.getElementById('assessment-root');
+      root.innerHTML = `
+        <div class="assessment-layout">
+          <aside>
+            <div class="timer-panel" id="timer-panel">
+              <div style="font-size:12px;color:#CFD3DA;margin-bottom:4px;">الزمن المتبقي للاختبار</div>
+              <div class="timer-digits" id="timer-display">${formatTimer(remainingSeconds)}</div>
+              <div class="mono" style="font-size:12px;color:#B8BCC4;margin-top:4px;">${SmartHR.escapeHtml(appData.reference_no)} • ${SmartHR.escapeHtml(appData.job_code)}</div>
+            </div>
+
+            <div class="card" style="padding:18px;">
+              <div style="display:flex;justify-content:space-between;align-items:center;">
+                <strong style="font-size:14px;">خريطة الأسئلة (${questions.length})</strong>
+                <span id="answered-counter" class="mono" style="font-size:12px;color:var(--olive);font-weight:700;">0/${questions.length}</span>
+              </div>
+              <div class="q-nav-grid" id="q-nav-grid"></div>
+
+              <div class="card-subtle" style="padding:12px;margin-top:14px;font-size:12px;">
+                <div style="display:flex;justify-content:space-between;margin-bottom:6px;">
+                  <span>🛡️ مؤشر النزاهة الفوري:</span>
+                  <strong class="mono" id="live-integrity-score" style="color:var(--olive);">100%</strong>
+                </div>
+                <div style="display:flex;justify-content:space-between;color:var(--text-muted);">
+                  <span>مرات مغادرة التبويب:</span>
+                  <span class="mono" id="live-tab-switches">0</span>
+                </div>
+              </div>
+
+              <button type="button" id="finish-exam-sidebar-btn" class="btn btn-olive" style="width:100%;margin-top:16px;">
+                إنهاء الاختبار واعتماد الإجابات ✓
+              </button>
+            </div>
+          </aside>
+
+          <section class="card" id="question-stage" style="min-height:430px;display:flex;flex-direction:column;justify-content:space-between;"></section>
+        </div>
+      `;
+
+      document.getElementById('finish-exam-sidebar-btn').addEventListener('click', () => confirmAndSubmit(false));
+      renderCurrentQuestion();
+    }
+
+    function renderNavGrid() {
+      const nav = document.getElementById('q-nav-grid');
+      if (!nav) return;
+      let answeredCount = 0;
+      nav.innerHTML = questions.map((q, idx) => {
+        const answered = isQuestionAnswered(q.index);
+        if (answered) answeredCount++;
+        const cls = [
+          'q-nav-btn',
+          answered ? 'answered' : '',
+          idx === currentIdx ? 'current' : ''
+        ].join(' ');
+        return `<button type="button" class="${cls}" data-idx="${idx}">${q.index}</button>`;
+      }).join('');
+
+      document.getElementById('answered-counter').textContent = `${answeredCount}/${questions.length}`;
+      nav.querySelectorAll('.q-nav-btn').forEach((btn) => {
+        btn.addEventListener('click', () => {
+          currentIdx = parseInt(btn.dataset.idx, 10);
+          renderCurrentQuestion();
+        });
+      });
+    }
+
+    function renderCurrentQuestion() {
+      renderNavGrid();
+      const stage = document.getElementById('question-stage');
+      const q = questions[currentIdx];
+      if (!q) return;
+
+      if (!answersState[q.index]) {
+        answersState[q.index] = { answer_value: '', attachment_path: null, attachment_name: '', time_taken_seconds: 0 };
+      }
+      const st = answersState[q.index];
+      const tMeta = TYPE_LABELS[q.type] || TYPE_LABELS.text;
+
+      let inputHtml = '';
+      if (q.type === 'mcq') {
+        inputHtml = (q.options || []).map((opt, optIdx) => {
+          const selected = String(st.answer_value) === String(optIdx);
+          return `
+            <div class="mcq-option ${selected ? 'selected' : ''}" data-opt="${optIdx}">
+              <span class="mcq-radio">${selected ? '✓' : ''}</span>
+              <span>${SmartHR.escapeHtml(opt)}</span>
+            </div>
+          `;
+        }).join('');
+      } else if (q.type === 'numeric') {
+        inputHtml = `
+          <div class="card-subtle" style="max-width:440px;">
+            <label class="form-label" for="numeric-input">أدخل الناتج الرقمي الدقيق ${q.unit ? `(الوحدة: ${SmartHR.escapeHtml(q.unit)})` : ''}:</label>
+            <div style="display:flex;align-items:center;gap:10px;margin-top:8px;">
+              <input type="text" inputmode="decimal" id="numeric-input" class="form-control mono" style="font-size:20px;font-weight:700;" placeholder="0.00" value="${SmartHR.escapeHtml(st.answer_value)}" />
+              ${q.unit ? `<span class="badge badge-charcoal" style="font-size:14px;padding:10px 14px;">${SmartHR.escapeHtml(q.unit)}</span>` : ''}
+            </div>
+          </div>
+        `;
+      } else if (q.type === 'text') {
+        const wordsCount = String(st.answer_value || '').trim().split(/\s+/).filter(Boolean).length;
+        inputHtml = `
+          <div>
+            <textarea id="text-answer-input" class="form-textarea" style="min-height:165px;" placeholder="اكتب إجابتك التحليلية بلغة مهنية واضحة ومنظمة...">${SmartHR.escapeHtml(st.answer_value)}</textarea>
+            <div style="display:flex;justify-content:space-between;font-size:12px;color:var(--text-muted);margin-top:6px;">
+              <span>الحد الإرشادي الموصى به: ${q.min_words || 15} كلمة فأكثر</span>
+              <span id="word-counter">عدد الكلمات الحالي: <strong class="mono">${wordsCount}</strong></span>
+            </div>
+          </div>
+        `;
+      } else if (q.type === 'portfolio') {
+        inputHtml = `
+          <div style="display:flex;flex-direction:column;gap:16px;">
+            <div class="card-subtle">
+              <div style="font-weight:700;font-size:14px;margin-bottom:6px;">📎 إرفاق ملف داعم (PDF / DOCX / صورة نموذج عمل — اختياري مع الملخص)</div>
+              <input type="file" id="portfolio-file-input" accept=".pdf,.docx,.doc,.png,.jpg,.jpeg" class="form-control" />
+              <div id="portfolio-upload-status" style="font-size:13px;margin-top:8px;color:var(--olive);font-weight:600;">
+                ${st.attachment_path ? `✔ تم رفع المرفق بنجاح: ${SmartHR.escapeHtml(st.attachment_name || st.attachment_path)}` : 'لم يتم رفع مرفق بعد.'}
+              </div>
+            </div>
+            <div>
+              <label class="form-label" for="portfolio-notes-input">شرح أو ملخص النموذج المقترح:</label>
+              <textarea id="portfolio-notes-input" class="form-textarea" style="min-height:120px;" placeholder="اكتب ملخص العرض الفني أو سابقة الأعمال هنا...">${SmartHR.escapeHtml(st.answer_value)}</textarea>
+            </div>
+          </div>
+        `;
+      }
+
+      stage.innerHTML = `
+        <div>
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:18px;padding-bottom:14px;border-bottom:1px solid var(--border-color);flex-wrap:wrap;gap:10px;">
+            <div style="display:flex;align-items:center;gap:10px;">
+              <span class="code-chip">السؤال ${q.index} من ${questions.length}</span>
+              <span class="badge ${tMeta.cls}">${tMeta.label}</span>
+            </div>
+            <span class="mono" style="font-size:13px;color:var(--text-secondary);font-weight:600;">الوزن: ${q.points || 10} درجات</span>
+          </div>
+
+          <h2 style="font-size:20px;line-height:1.65;margin-bottom:22px;">${SmartHR.escapeHtml(q.question)}</h2>
+          <div id="q-interactive-area">${inputHtml}</div>
+        </div>
+
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-top:28px;padding-top:18px;border-top:1px solid var(--border-color);">
+          <button type="button" class="btn btn-outline" id="prev-q-btn" ${currentIdx === 0 ? 'disabled' : ''}>→ السؤال السابق</button>
+          ${
+            currentIdx < questions.length - 1
+              ? `<button type="button" class="btn btn-primary" id="next-q-btn">حفظ والتالي ←</button>`
+              : `<button type="button" class="btn btn-terracotta btn-lg" id="submit-final-btn">إرسال الإجابات وإظهار النتيجة الفورية ←</button>`
+          }
+        </div>
+      `;
+
+      // ربط الأحداث التفاعلية حسب نوع السؤال
+      if (q.type === 'mcq') {
+        stage.querySelectorAll('.mcq-option').forEach((el) => {
+          el.addEventListener('click', () => {
+            st.answer_value = el.dataset.opt;
+            renderCurrentQuestion();
+          });
+        });
+      } else if (q.type === 'numeric') {
+        const numInput = document.getElementById('numeric-input');
+        numInput.addEventListener('input', () => {
+          st.answer_value = numInput.value;
+          renderNavGrid();
+        });
+      } else if (q.type === 'text') {
+        const txtInput = document.getElementById('text-answer-input');
+        txtInput.addEventListener('input', () => {
+          st.answer_value = txtInput.value;
+          const wc = txtInput.value.trim().split(/\s+/).filter(Boolean).length;
+          document.getElementById('word-counter').innerHTML = `عدد الكلمات الحالي: <strong class="mono">${wc}</strong>`;
+          renderNavGrid();
+        });
+      } else if (q.type === 'portfolio') {
+        const pNotes = document.getElementById('portfolio-notes-input');
+        const pFile = document.getElementById('portfolio-file-input');
+        pNotes.addEventListener('input', () => {
+          st.answer_value = pNotes.value;
+          renderNavGrid();
+        });
+        pFile.addEventListener('change', async () => {
+          if (!pFile.files || !pFile.files[0]) return;
+          const statusEl = document.getElementById('portfolio-upload-status');
+          statusEl.textContent = 'جاري رفع المرفق إلى الخادم...';
+          try {
+            const fd = new FormData();
+            fd.append('attachment_file', pFile.files[0]);
+            const up = await SmartHR.apiFetch('/api/assessments/upload-attachment', { method: 'POST', body: fd });
+            st.attachment_path = up.attachment_path;
+            st.attachment_name = up.original_name;
+            statusEl.textContent = `✔ تم رفع المرفق بنجاح: ${up.original_name} (${up.size_kb} KB)`;
+            renderNavGrid();
+          } catch (err) {
+            statusEl.style.color = 'var(--terracotta)';
+            statusEl.textContent = err.message;
+          }
+        });
+      }
+
+      const prevBtn = document.getElementById('prev-q-btn');
+      if (prevBtn) prevBtn.addEventListener('click', () => { if (currentIdx > 0) { currentIdx--; renderCurrentQuestion(); } });
+
+      const nextBtn = document.getElementById('next-q-btn');
+      if (nextBtn) nextBtn.addEventListener('click', () => { if (currentIdx < questions.length - 1) { currentIdx++; renderCurrentQuestion(); } });
+
+      const finalBtn = document.getElementById('submit-final-btn');
+      if (finalBtn) finalBtn.addEventListener('click', () => confirmAndSubmit(false));
+    }
+
+    async function confirmAndSubmit(autoTimeout = false) {
+      if (isSubmitting) return;
+      if (!autoTimeout) {
+        const unanswered = questions.filter((q) => !isQuestionAnswered(q.index)).length;
+        if (unanswered > 0) {
+          const ok = window.confirm(`لديك (${unanswered}) سؤال غير مجاب بعد. هل ترغب في إرسال الاختبار واعتماد النتيجة الآن؟`);
+          if (!ok) return;
+        }
+      }
+
+      isSubmitting = true;
+      clearInterval(timerHandle);
+
+      const payloadAnswers = questions.map((q) => ({
+        question_index: q.index,
+        answer_value: answersState[q.index]?.answer_value ?? '',
+        attachment_path: answersState[q.index]?.attachment_path || null,
+        time_taken_seconds: answersState[q.index]?.time_taken_seconds || 0
+      }));
+
+      try {
+        SmartHR.showToast('جاري تصحيح الاختبار وإعداد التقرير الذكي...', 'info');
+        const res = await SmartHR.apiFetch('/api/assessments/submit', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            reference_no: appData.reference_no,
+            answers: payloadAnswers,
+            telemetry: {
+              tab_switches: tabSwitches,
+              paste_attempts: pasteAttempts,
+              time_spent_seconds: totalSpentSeconds
+            }
+          })
+        });
+
+        window.location.href = res.redirect_url;
+      } catch (err) {
+        isSubmitting = false;
+        SmartHR.showToast(err.message, 'error');
+      }
+    }
+
+    function startMonitoringAndTimer() {
+      timerHandle = setInterval(() => {
+        remainingSeconds--;
+        totalSpentSeconds++;
+        const currentQ = questions[currentIdx];
+        if (currentQ && answersState[currentQ.index]) {
+          answersState[currentQ.index].time_taken_seconds = (answersState[currentQ.index].time_taken_seconds || 0) + 1;
+        }
+        const disp = document.getElementById('timer-display');
+        const panel = document.getElementById('timer-panel');
+        if (disp) disp.textContent = formatTimer(Math.max(0, remainingSeconds));
+        if (panel && remainingSeconds <= 180) panel.classList.add('urgent');
+
+        if (remainingSeconds <= 0) {
+          SmartHR.showToast('انتهى الوقت المخصص للاختبار! جاري إرسال الإجابات تلقائياً...', 'error');
+          confirmAndSubmit(true);
+        }
+      }, 1000);
+
+      document.addEventListener('visibilitychange', () => {
+        if (document.hidden && !isSubmitting && appData) {
+          tabSwitches++;
+          updateIntegrityUI();
+          SmartHR.showToast(`تنبيه نزاهة: تم رصد مغادرة شاشة الاختبار (${tabSwitches}). يؤثر ذلك على مؤشر النزاهة.`, 'error');
+        }
+      });
+
+      document.addEventListener('paste', () => {
+        if (!isSubmitting && appData) {
+          pasteAttempts++;
+          updateIntegrityUI();
+          SmartHR.showToast('ملاحظة نزاهة: تم تسجيل عملية لصق نص خارجي في تقرير الجلسة.', 'info');
+        }
+      });
+    }
+
+    async function initAssessment() {
+      const params = new URLSearchParams(window.location.search);
+      const refOrId = params.get('ref') || params.get('app_id');
+      const root = document.getElementById('assessment-root');
+
+      if (!refOrId) {
+        root.innerHTML = `
+          <div class="card" style="max-width:640px;margin:20px auto;text-align:center;padding:38px;">
+            <div style="font-size:38px;margin-bottom:10px;">🧭</div>
+            <h2 style="margin-bottom:8px;">بدء جلسة اختبار الجدارة</h2>
+            <p style="color:var(--text-secondary);font-size:14px;margin-bottom:22px;">
+              يرجى إدخال الرقم المرجعي لطلبك المسجل لبدء الاختبار، أو التقديم أولاً عبر نموذج الوظيفة للحصول على رقم طلب فوري.
+            </p>
+            <div style="display:flex;gap:10px;justify-content:center;max-width:420px;margin:0 auto 18px;">
+              <input id="manual-ref" class="form-control mono" placeholder="APP-2026-1001" />
+              <button class="btn btn-primary" onclick="const v=document.getElementById('manual-ref').value.trim(); if(v) location.href='Assessment.dc.html?ref='+encodeURIComponent(v);">دخول</button>
+            </div>
+            <a href="Apply.dc.html?job_id=1" class="btn btn-terracotta">تسجيل طلب جديد وبدء الاختبار فوراً ←</a>
+          </div>
+        `;
+        return;
+      }
+
+      try {
+        const res = await SmartHR.apiFetch(`/api/applications/${encodeURIComponent(refOrId)}`);
+        appData = res.application;
+
+        if (appData.assessed_at && appData.status !== 'assessment_pending') {
+          const passed = Number(appData.assessment_score) >= Number(appData.passing_score || 60);
+          window.location.href = `${passed ? 'ResultPass.dc.html' : 'ResultFail.dc.html'}?ref=${encodeURIComponent(appData.reference_no)}`;
+          return;
+        }
+
+        questions = appData.job_questions || [];
+        remainingSeconds = (parseInt(appData.duration_minutes, 10) || 20) * 60;
+        renderShell();
+        startMonitoringAndTimer();
+      } catch (err) {
+        root.innerHTML = `<div class="card" style="color:var(--terracotta);text-align:center;padding:36px;">${SmartHR.escapeHtml(err.message)}</div>`;
+      }
+    }
+
+    initAssessment();
+  </script>
+</body>
+</html>

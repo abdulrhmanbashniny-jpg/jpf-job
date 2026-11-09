@@ -1,0 +1,324 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>إعداد الوظيفة وبرومنت AI | رُواء للتوظيف الذكي</title>
+  <link rel="stylesheet" href="css/design-system.css" />
+  <style>
+    .builder-layout {
+      display: grid;
+      grid-template-columns: 320px 1fr;
+      gap: 24px;
+      align-items: start;
+    }
+    .job-list-item {
+      padding: 14px;
+      border: 1.5px solid var(--border-color);
+      border-radius: 12px;
+      margin-bottom: 10px;
+      cursor: pointer;
+      background: #FFFFFF;
+      transition: all 0.16s ease;
+    }
+    .job-list-item:hover {
+      border-color: var(--charcoal);
+    }
+    .job-list-item.active {
+      border-color: var(--terracotta);
+      background: var(--terracotta-soft);
+    }
+    .q-editor-card {
+      background: var(--bg-subtle);
+      border: 1px solid var(--border-color);
+      border-radius: 12px;
+      padding: 14px 16px;
+      margin-bottom: 10px;
+    }
+  </style>
+</head>
+<body>
+  <div class="admin-shell">
+    <div id="admin-sidebar-mount"></div>
+
+    <main class="admin-main">
+      <div class="admin-topbar">
+        <div>
+          <div class="page-eyebrow">هندسة الشواغر وبرومنتات التقييم</div>
+          <h1 class="page-title">إعداد الوظائف وبرومنت الذكاء الاصطناعي</h1>
+          <p class="page-subtitle">تحكم كامل في معايير الفرز، برومنت الفحص الأعمى، وحد الاجتياز، وبنك الأسئلة الـ 10 لكل وظيفة.</p>
+        </div>
+        <button id="new-job-btn" class="btn btn-terracotta">+ إنشاء وظيفة جديدة</button>
+      </div>
+
+      <div class="builder-layout">
+        <aside class="card">
+          <h3 style="font-size:16px;margin-bottom:12px;">الوظائف المسجلة في النظام</h3>
+          <div id="jobs-sidebar-list"></div>
+        </aside>
+
+        <section class="card">
+          <form id="job-builder-form">
+            <input type="hidden" id="edit-job-id" />
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:18px;padding-bottom:14px;border-bottom:1px solid var(--border-color);flex-wrap:wrap;gap:10px;">
+              <h2 id="form-mode-title" style="font-size:20px;">تحرير الوظيفة الحالية</h2>
+              <label style="display:flex;align-items:center;gap:8px;font-size:13px;font-weight:600;cursor:pointer;">
+                <input type="checkbox" id="jb-active" checked style="width:18px;height:18px;accent-color:var(--olive);" />
+                <span>الوظيفة نشطة في بوابة المتقدمين</span>
+              </label>
+            </div>
+
+            <div class="grid-3">
+              <div class="form-group">
+                <label class="form-label">كود الوظيفة (Mono) *</label>
+                <input type="text" id="jb-code" class="form-control mono" placeholder="SL-205" required />
+              </div>
+              <div class="form-group">
+                <label class="form-label">القسم التخصصي *</label>
+                <select id="jb-dept" class="form-select" required>
+                  <option value="المبيعات">المبيعات</option>
+                  <option value="الإنتاج">الإنتاج</option>
+                  <option value="المشاريع">المشاريع</option>
+                  <option value="الجودة">الجودة</option>
+                  <option value="المستودعات">المستودعات</option>
+                </select>
+              </div>
+              <div class="form-group">
+                <label class="form-label">المقر / المدينة *</label>
+                <input type="text" id="jb-location" class="form-control" value="جدة — المنطقة الغربية" required />
+              </div>
+            </div>
+
+            <div class="grid-2">
+              <div class="form-group">
+                <label class="form-label">المسمى الوظيفي الرسمي *</label>
+                <input type="text" id="jb-title" class="form-control" required />
+              </div>
+              <div class="form-group">
+                <label class="form-label">نطاق الراتب والمزايا</label>
+                <input type="text" id="jb-salary" class="form-control" placeholder="8,000 - 11,000 ر.س + عمولات" />
+              </div>
+            </div>
+
+            <div class="form-group">
+              <label class="form-label">الملخص التنفيذي للبطاقة *</label>
+              <input type="text" id="jb-summary" class="form-control" required />
+            </div>
+
+            <div class="form-group">
+              <label class="form-label">الوصف الوظيفي التفصيلي *</label>
+              <textarea id="jb-description" class="form-textarea" style="min-height:85px;" required></textarea>
+            </div>
+
+            <div class="grid-2">
+              <div class="form-group">
+                <label class="form-label">المهام (سطر لكل مهمة)</label>
+                <textarea id="jb-responsibilities" class="form-textarea" style="min-height:95px;"></textarea>
+              </div>
+              <div class="form-group">
+                <label class="form-label">الشروط والمتطلبات (سطر لكل شرط)</label>
+                <textarea id="jb-requirements" class="form-textarea" style="min-height:95px;"></textarea>
+              </div>
+            </div>
+
+            <!-- إعدادات الذكاء الاصطناعي والبرومنت -->
+            <div class="card-subtle" style="margin:14px 0 20px;border-right:4px solid var(--saffron);">
+              <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;flex-wrap:wrap;gap:8px;">
+                <label class="form-label" style="margin:0;font-size:15px;">🧠 برومنت تقييم الذكاء الاصطناعي (AI System Prompt) *</label>
+                <div style="display:flex;gap:8px;">
+                  <button type="button" id="copy-prompt-btn" class="btn btn-outline btn-sm">نسخ البرومنت</button>
+                  <button type="button" id="auto-gen-btn" class="btn btn-saffron btn-sm">✨ توليد برومنت و10 أسئلة تلقائياً</button>
+                </div>
+              </div>
+              <textarea id="jb-prompt" class="form-textarea" style="min-height:95px;background:#FFF;" required></textarea>
+
+              <div class="grid-2" style="margin-top:14px;">
+                <div>
+                  <label class="form-label">حد الاجتياز المعتمد (%)</label>
+                  <input type="number" id="jb-passing" class="form-control mono" min="40" max="95" value="60" required />
+                </div>
+                <div>
+                  <label class="form-label">مدة الاختبار (بالدقائق)</label>
+                  <input type="number" id="jb-duration" class="form-control mono" min="5" max="90" value="20" required />
+                </div>
+              </div>
+            </div>
+
+            <!-- معاينة وتوزيع الأسئلة الـ 10 -->
+            <div style="margin-bottom:20px;">
+              <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
+                <h3 style="font-size:16px;">بنك أسئلة اختبار الجدارة (<span id="q-total-badge" class="mono">0</span> أسئلة)</h3>
+                <div id="q-dist-badges" style="display:flex;gap:6px;flex-wrap:wrap;"></div>
+              </div>
+              <div id="questions-preview-list"></div>
+            </div>
+
+            <div style="display:flex;justify-content:flex-end;gap:12px;">
+              <button type="submit" class="btn btn-olive btn-lg">حفظ واعتماد إعدادات الوظيفة والبرومنت ✓</button>
+            </div>
+          </form>
+        </section>
+      </div>
+    </main>
+  </div>
+
+  <script src="js/common.js"></script>
+  <script>
+    SmartHR.renderAdminSidebar('jobbuilder');
+
+    let allJobs = [];
+    let currentQuestions = [];
+
+    function renderQuestionsPreview() {
+      document.getElementById('q-total-badge').textContent = currentQuestions.length;
+      const counts = { mcq: 0, numeric: 0, text: 0, portfolio: 0 };
+      currentQuestions.forEach((q) => { counts[q.type] = (counts[q.type] || 0) + 1; });
+
+      document.getElementById('q-dist-badges').innerHTML = `
+        <span class="badge badge-charcoal">اختياري: ${counts.mcq}</span>
+        <span class="badge badge-saffron">حسابي: ${counts.numeric}</span>
+        <span class="badge badge-terracotta">تحليلي: ${counts.text}</span>
+        <span class="badge badge-olive">أعمال: ${counts.portfolio}</span>
+      `;
+
+      document.getElementById('questions-preview-list').innerHTML = currentQuestions.map((q, idx) => `
+        <div class="q-editor-card">
+          <div style="display:flex;justify-content:space-between;margin-bottom:6px;font-size:12px;">
+            <strong class="mono">Q${q.index || idx + 1} • ${SmartHR.escapeHtml(q.type.toUpperCase())}</strong>
+            <span class="mono">${q.points || 10} درجات</span>
+          </div>
+          <input type="text" class="form-control q-text-edit" data-qidx="${idx}" value="${SmartHR.escapeHtml(q.question)}" />
+        </div>
+      `).join('');
+
+      document.querySelectorAll('.q-text-edit').forEach((inp) => {
+        inp.addEventListener('input', () => {
+          const idx = parseInt(inp.dataset.qidx, 10);
+          if (currentQuestions[idx]) currentQuestions[idx].question = inp.value;
+        });
+      });
+    }
+
+    function populateJobForm(job) {
+      document.getElementById('edit-job-id').value = job ? job.id : '';
+      document.getElementById('form-mode-title').textContent = job
+        ? `تحرير الوظيفة: ${job.title} (${job.code})`
+        : 'إنشاء وظيفة جديدة وبرومنت ذكي';
+
+      document.getElementById('jb-code').value = job ? job.code : '';
+      document.getElementById('jb-code').readOnly = Boolean(job);
+      document.getElementById('jb-dept').value = job ? job.department : 'المبيعات';
+      document.getElementById('jb-location').value = job ? job.location : 'جدة — المنطقة الغربية';
+      document.getElementById('jb-title').value = job ? job.title : '';
+      document.getElementById('jb-salary').value = job ? job.salary_range : '8,000 - 11,000 ر.س';
+      document.getElementById('jb-summary').value = job ? job.summary : '';
+      document.getElementById('jb-description').value = job ? job.description : '';
+      document.getElementById('jb-responsibilities').value = job ? (job.responsibilities || []).join('\n') : '';
+      document.getElementById('jb-requirements').value = job ? (job.requirements || []).join('\n') : '';
+      document.getElementById('jb-prompt').value = job ? job.ai_prompt : '';
+      document.getElementById('jb-passing').value = job ? job.passing_score : 60;
+      document.getElementById('jb-duration').value = job ? job.duration_minutes : 20;
+      document.getElementById('jb-active').checked = job ? Boolean(job.is_active) : true;
+
+      currentQuestions = job ? JSON.parse(JSON.stringify(job.questions || [])) : [];
+      renderQuestionsPreview();
+
+      document.querySelectorAll('.job-list-item').forEach((el) => {
+        el.classList.toggle('active', job && Number(el.dataset.id) === Number(job.id));
+      });
+    }
+
+    async function loadJobsForBuilder(selectId = null) {
+      const data = await SmartHR.apiFetch('/api/jobs?include_inactive=1&mode=committee');
+      allJobs = data.jobs || [];
+
+      const listEl = document.getElementById('jobs-sidebar-list');
+      listEl.innerHTML = allJobs.map((j) => `
+        <div class="job-list-item" data-id="${j.id}">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px;">
+            <span class="code-chip">${SmartHR.escapeHtml(j.code)}</span>
+            <span class="badge ${j.is_active ? 'badge-olive' : 'badge-terracotta'}">${j.is_active ? 'نشطة' : 'موقوفة'}</span>
+          </div>
+          <div style="font-weight:700;font-size:14px;">${SmartHR.escapeHtml(j.title)}</div>
+          <div style="font-size:12px;color:var(--text-muted);margin-top:4px;">قسم ${SmartHR.escapeHtml(j.department)} • ${j.applicants_count || 0} متقدم</div>
+        </div>
+      `).join('');
+
+      listEl.querySelectorAll('.job-list-item').forEach((el) => {
+        el.addEventListener('click', () => {
+          const found = allJobs.find((x) => Number(x.id) === Number(el.dataset.id));
+          if (found) populateJobForm(found);
+        });
+      });
+
+      const target = selectId ? allJobs.find((x) => Number(x.id) === Number(selectId)) : allJobs[0];
+      if (target) populateJobForm(target);
+    }
+
+    document.getElementById('new-job-btn').addEventListener('click', () => {
+      populateJobForm(null);
+      document.getElementById('jb-code').focus();
+    });
+
+    document.getElementById('copy-prompt-btn').addEventListener('click', () => {
+      const val = document.getElementById('jb-prompt').value;
+      navigator.clipboard.writeText(val);
+      SmartHR.showToast('تم نسخ برومنت الوظيفة إلى الحافظة', 'success');
+    });
+
+    document.getElementById('auto-gen-btn').addEventListener('click', async () => {
+      const title = document.getElementById('jb-title').value.trim() || 'أخصائي مبيعات حلول الدهانات';
+      const department = document.getElementById('jb-dept').value;
+      const code = document.getElementById('jb-code').value.trim() || 'JB-206';
+      try {
+        const gen = await SmartHR.apiFetch('/api/jobs/generate-questions', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ title, department, code })
+        });
+        document.getElementById('jb-prompt').value = gen.ai_prompt;
+        currentQuestions = gen.questions;
+        renderQuestionsPreview();
+        SmartHR.showToast('تم توليد برومنت مخصص و10 أسئلة متنوعة بنجاح!', 'success');
+      } catch (err) {
+        SmartHR.showToast(err.message, 'error');
+      }
+    });
+
+    document.getElementById('job-builder-form').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const editId = document.getElementById('edit-job-id').value;
+      const payload = {
+        code: document.getElementById('jb-code').value.trim(),
+        department: document.getElementById('jb-dept').value,
+        location: document.getElementById('jb-location').value.trim(),
+        title: document.getElementById('jb-title').value.trim(),
+        salary_range: document.getElementById('jb-salary').value.trim(),
+        summary: document.getElementById('jb-summary').value.trim(),
+        description: document.getElementById('jb-description').value.trim(),
+        responsibilities: document.getElementById('jb-responsibilities').value.split('\n').map((s) => s.trim()).filter(Boolean),
+        requirements: document.getElementById('jb-requirements').value.split('\n').map((s) => s.trim()).filter(Boolean),
+        ai_prompt: document.getElementById('jb-prompt').value.trim(),
+        passing_score: Number(document.getElementById('jb-passing').value),
+        duration_minutes: parseInt(document.getElementById('jb-duration').value, 10),
+        questions: currentQuestions,
+        is_active: document.getElementById('jb-active').checked
+      };
+
+      try {
+        const res = await SmartHR.apiFetch(editId ? `/api/jobs/${editId}` : '/api/jobs', {
+          method: editId ? 'PUT' : 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload)
+        });
+        SmartHR.showToast('تم حفظ إعدادات الوظيفة والبرومنت في قاعدة البيانات بنجاح!', 'success');
+        await loadJobsForBuilder(res.job.id);
+      } catch (err) {
+        SmartHR.showToast(err.message, 'error');
+      }
+    });
+
+    loadJobsForBuilder().catch((err) => SmartHR.showToast(err.message, 'error'));
+  </script>
+</body>
+</html>

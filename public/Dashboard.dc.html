@@ -1,0 +1,236 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>لوحة تحكم لجنة التوظيف | رُواء للتوظيف الذكي</title>
+  <link rel="stylesheet" href="css/design-system.css" />
+  <style>
+    .funnel-row {
+      margin-bottom: 14px;
+    }
+    .funnel-bar-track {
+      height: 14px;
+      background: var(--bg-sand);
+      border-radius: 999px;
+      overflow: hidden;
+      margin-top: 6px;
+    }
+    .funnel-bar-fill {
+      height: 100%;
+      border-radius: 999px;
+      transition: width 0.6s ease;
+    }
+    .interview-mini-card {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 12px;
+      padding: 14px;
+      border: 1px solid var(--border-color);
+      border-radius: 12px;
+      background: var(--bg-subtle);
+      margin-bottom: 10px;
+    }
+  </style>
+</head>
+<body>
+  <div class="admin-shell">
+    <div id="admin-sidebar-mount"></div>
+
+    <main class="admin-main">
+      <div class="admin-topbar">
+        <div>
+          <div class="page-eyebrow">غرفة العمليات المركزية — مباشر من PostgreSQL</div>
+          <h1 class="page-title">لوحة مؤشرات الاستقطاب ومسار التوظيف</h1>
+          <p class="page-subtitle">متابعة فورية لحركة المتقدمين، نتائج الفرز الذكي، مسار التوظيف (Funnel)، ومقابلات اليوم.</p>
+        </div>
+        <div style="display:flex;gap:10px;flex-wrap:wrap;">
+          <a href="JobBuilder.dc.html" class="btn btn-outline">+ إعداد وظيفة / برومنت</a>
+          <a href="Ranking.dc.html" class="btn btn-terracotta">الترتيب الموزون للمرشحين ←</a>
+        </div>
+      </div>
+
+      <!-- مؤشرات الأداء الرئيسية KPIs -->
+      <section class="grid-4" id="kpi-grid" style="margin-bottom:24px;">
+        <div class="kpi-card" style="--kpi-accent:#17191C;"><div class="kpi-label">إجمالي الطلبات المسجلة</div><div class="kpi-value" id="kpi-total">—</div><div class="kpi-foot" id="kpi-jobs-foot">—</div></div>
+        <div class="kpi-card" style="--kpi-accent:#2F5D50;"><div class="kpi-label">معدل اجتياز اختبار الجدارة</div><div class="kpi-value" id="kpi-pass-rate">—</div><div class="kpi-foot" id="kpi-passed-foot">—</div></div>
+        <div class="kpi-card" style="--kpi-accent:#E0A21B;"><div class="kpi-label">متوسط التقييم الذكي (AI)</div><div class="kpi-value" id="kpi-avg-ai">—</div><div class="kpi-foot" id="kpi-integrity-foot">—</div></div>
+        <div class="kpi-card" style="--kpi-accent:#C8553D;"><div class="kpi-label">مقابلات اليوم وطابور واتساب</div><div class="kpi-value" id="kpi-today-int">—</div><div class="kpi-foot" id="kpi-wa-foot">—</div></div>
+      </section>
+
+      <!-- الرسم البياني للحركة اليومية + مسار التوظيف Funnel -->
+      <section class="grid-2" style="margin-bottom:24px;">
+        <div class="card">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;">
+            <div>
+              <h2 style="font-size:18px;">الحركة اليومية للتقديمات والاجتياز</h2>
+              <span style="font-size:12px;color:var(--text-muted);">آخر 7 أيام (توقيت الرياض)</span>
+            </div>
+            <div style="display:flex;gap:12px;font-size:12px;">
+              <span><strong style="color:#17191C;">■</strong> إجمالي المتقدمين</span>
+              <span><strong style="color:#2F5D50;">■</strong> المجتازون (≥60%)</span>
+            </div>
+          </div>
+          <div id="daily-chart-box" style="height:210px;display:flex;align-items:flex-end;"></div>
+        </div>
+
+        <div class="card">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;">
+            <div>
+              <h2 style="font-size:18px;">مسار التوظيف (Recruitment Funnel)</h2>
+              <span style="font-size:12px;color:var(--text-muted);">معدلات التحويل عبر مراحل الفرز والاختيار</span>
+            </div>
+            <a href="Scheduler.dc.html" class="btn btn-outline btn-sm">جدولة المؤهلين</a>
+          </div>
+          <div id="funnel-container"></div>
+        </div>
+      </section>
+
+      <!-- جدول أحدث المتقدمين + مقابلات اليوم -->
+      <section style="display:grid;grid-template-columns:1.45fr 0.85fr;gap:22px;align-items:start;" class="dash-bottom-grid">
+        <div class="card">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;flex-wrap:wrap;gap:10px;">
+            <h2 style="font-size:18px;">أحدث المتقدمين ودرجات الفحص الذكي</h2>
+            <a href="CandidateProfile.dc.html" class="btn btn-outline btn-sm">عرض وتقييم الملفات</a>
+          </div>
+          <div class="table-wrap">
+            <table class="data-table">
+              <thead>
+                <tr>
+                  <th>المرجع</th>
+                  <th>المرشح</th>
+                  <th>الوظيفة</th>
+                  <th>درجة AI</th>
+                  <th>النزاهة</th>
+                  <th>الموزونة</th>
+                  <th>الحالة</th>
+                  <th>إجراء</th>
+                </tr>
+              </thead>
+              <tbody id="recent-applicants-tbody"></tbody>
+            </table>
+          </div>
+        </div>
+
+        <div class="card">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;">
+            <h2 style="font-size:18px;">مواعيد المقابلات القادمة</h2>
+            <a href="Interviews.dc.html" class="btn btn-olive btn-sm">طابور واتساب</a>
+          </div>
+          <div id="upcoming-interviews-box"></div>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <script src="js/common.js"></script>
+  <script>
+    SmartHR.renderAdminSidebar('dashboard');
+
+    function renderBarChart(days) {
+      const box = document.getElementById('daily-chart-box');
+      const maxVal = Math.max(4, ...days.map((d) => Number(d.count || 0)));
+
+      box.innerHTML = `
+        <div style="display:grid;grid-template-columns:repeat(${days.length},1fr);gap:12px;width:100%;align-items:end;height:195px;padding-top:16px;">
+          ${days.map((d) => {
+            const totalH = Math.max(8, Math.round((Number(d.count) / maxVal) * 145));
+            const passH = d.count > 0 ? Math.max(4, Math.round((Number(d.passed) / maxVal) * 145)) : 0;
+            return `
+              <div style="display:flex;flex-direction:column;align-items:center;gap:6px;">
+                <span class="mono" style="font-size:11px;font-weight:700;">${d.count}</span>
+                <div style="display:flex;gap:4px;align-items:flex-end;height:150px;">
+                  <div title="إجمالي: ${d.count}" style="width:16px;height:${totalH}px;background:#17191C;border-radius:6px 6px 2px 2px;"></div>
+                  <div title="مجتاز: ${d.passed}" style="width:16px;height:${passH}px;background:#2F5D50;border-radius:6px 6px 2px 2px;"></div>
+                </div>
+                <span class="mono" style="font-size:11px;color:var(--text-muted);">${SmartHR.escapeHtml(d.label)}</span>
+              </div>
+            `;
+          }).join('')}
+        </div>
+      `;
+    }
+
+    async function loadDashboard() {
+      try {
+        const data = await SmartHR.apiFetch('/api/stats');
+        const k = data.kpis;
+
+        document.getElementById('kpi-total').textContent = k.total_applications;
+        document.getElementById('kpi-jobs-foot').textContent = `موزعة على ${k.active_jobs} وظائف نشطة`;
+
+        document.getElementById('kpi-pass-rate').textContent = `${k.pass_rate}%`;
+        document.getElementById('kpi-passed-foot').textContent = `${k.passed_count} مجتاز من أصل ${k.assessed_count} مختبر`;
+
+        document.getElementById('kpi-avg-ai').textContent = `${k.avg_ai_score}%`;
+        document.getElementById('kpi-integrity-foot').textContent = `متوسط النزاهة العام: ${k.avg_integrity_score}%`;
+
+        document.getElementById('kpi-today-int').textContent = k.today_interviews_count;
+        document.getElementById('kpi-wa-foot').textContent = `${k.pending_wa_count} رسائل واتساب جاهزة في الطابور`;
+
+        renderBarChart(data.daily_activity || []);
+
+        const baseCount = Math.max(1, Number(k.total_applications || 1));
+        document.getElementById('funnel-container').innerHTML = (data.funnel || []).map((stage) => {
+          const pct = Math.min(100, Math.round((stage.count / baseCount) * 100));
+          return `
+            <div class="funnel-row">
+              <div style="display:flex;justify-content:space-between;font-size:13px;font-weight:600;">
+                <span>${SmartHR.escapeHtml(stage.stage)}</span>
+                <span class="mono">${stage.count} (${pct}%)</span>
+              </div>
+              <div class="funnel-bar-track">
+                <div class="funnel-bar-fill" style="width:${pct}%;background:${stage.color};"></div>
+              </div>
+            </div>
+          `;
+        }).join('');
+
+        const tbody = document.getElementById('recent-applicants-tbody');
+        tbody.innerHTML = (data.recent_applications || []).map((app) => `
+          <tr>
+            <td><span class="mono" style="font-size:12px;font-weight:600;">${SmartHR.escapeHtml(app.reference_no)}</span></td>
+            <td>
+              <div style="font-weight:700;">${SmartHR.escapeHtml(app.full_name)}</div>
+              <div style="font-size:12px;color:var(--text-muted);">${SmartHR.escapeHtml(app.city)}</div>
+            </td>
+            <td><span class="code-chip">${SmartHR.escapeHtml(app.job_code)}</span></td>
+            <td><strong class="mono" style="color:${Number(app.ai_overall_score)>=60?'var(--olive)':'var(--terracotta)'};">${app.ai_overall_score}%</strong></td>
+            <td><span class="mono">${app.integrity_score}%</span></td>
+            <td><strong class="mono">${app.final_weighted_score}%</strong></td>
+            <td>${SmartHR.statusBadge(app.status)}</td>
+            <td><a href="CandidateProfile.dc.html?app_id=${app.id}" class="btn btn-outline btn-sm">تقييم الملف</a></td>
+          </tr>
+        `).join('');
+
+        const intBox = document.getElementById('upcoming-interviews-box');
+        const interviews = data.upcoming_interviews || [];
+        if (!interviews.length) {
+          intBox.innerHTML = `<div class="card-subtle" style="text-align:center;color:var(--text-muted);">لا توجد مقابلات مجدولة لليوم. انتقل إلى الجدولة الذكية لتوزيع المواعيد.</div>`;
+        } else {
+          intBox.innerHTML = interviews.map((i) => `
+            <div class="interview-mini-card">
+              <div>
+                <div style="display:flex;align-items:center;gap:8px;margin-bottom:4px;">
+                  <span class="code-chip">${SmartHR.escapeHtml(i.job_code)}</span>
+                  <strong style="font-size:14px;">${SmartHR.escapeHtml(i.full_name)}</strong>
+                </div>
+                <div style="font-size:12px;color:var(--text-secondary);">
+                  📅 ${SmartHR.formatDate(i.scheduled_date)} • ⏰ ${SmartHR.formatTime(i.start_time)}
+                </div>
+                <div style="margin-top:6px;">${SmartHR.bookingBadge(i.booking_status)}</div>
+              </div>
+              <a href="${SmartHR.escapeHtml(i.meeting_url)}" target="_blank" rel="noopener" class="btn btn-primary btn-sm">قاعة Meet ↗</a>
+            </div>
+          `).join('');
+        }
+      } catch (err) {
+        SmartHR.showToast(err.message, 'error');
+      }
+    }
+
+    loadDashboard();
+  </script>
+</body>
+</html>

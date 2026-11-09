@@ -1,0 +1,36 @@
+# Dependencies & Caches
+node_modules/
+npm-debug.log*
+.npm/
+.cache/
+.local/
+.config/
+
+# Linux Home Dotfiles (when workspace root is $HOME)
+.bashrc
+.bash_logout
+.bash_history
+.profile
+.sudo_as_admin_successful
+.wget-hsts
+.lesshst
+
+# Environment Variables & Secrets
+.env
+.env.local
+.env.production
+
+# Uploaded Candidate Files (keep directory structure & samples only)
+uploads/*
+!uploads/.gitkeep
+!uploads/samples/
+
+# Release Archive & OS/Editor Artifacts
+jpf-job-release.zip
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+*.swp
+*.log
+.gh_device_pending.json

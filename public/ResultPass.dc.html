@@ -1,0 +1,177 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>تهانينا! اجتزت اختبار الجدارة | رُواء للتوظيف الذكي</title>
+  <link rel="stylesheet" href="css/design-system.css" />
+  <style>
+    .result-card {
+      max-width: 920px;
+      margin: 12px auto 0;
+      background: #FFFFFF;
+      border-radius: 24px;
+      border: 1px solid var(--border-color);
+      border-top: 8px solid var(--olive);
+      padding: 40px;
+      box-shadow: var(--shadow-md);
+    }
+    .ring-wrap {
+      width: 170px;
+      height: 170px;
+      position: relative;
+      margin: 0 auto;
+    }
+    .ring-center {
+      position: absolute;
+      inset: 0;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+    }
+  </style>
+</head>
+<body>
+  <div id="portal-header-mount"></div>
+
+  <main class="container-1440">
+    <div class="stepper">
+      <div class="step-item done"><span class="step-num">✓</span><span>البيانات والسيرة</span></div>
+      <span style="color:var(--olive);">━━</span>
+      <div class="step-item done"><span class="step-num">✓</span><span>اختبار الجدارة</span></div>
+      <span style="color:var(--olive);">━━</span>
+      <div class="step-item active" style="background:var(--olive);border-color:var(--olive);"><span class="step-num" style="background:#FFF;color:var(--olive);">3</span><span>النتيجة الفورية (اجتياز)</span></div>
+    </div>
+
+    <div id="result-mount" class="result-card">
+      <div style="text-align:center;padding:30px;">جاري استرجاع التقرير الفوري...</div>
+    </div>
+  </main>
+
+  <div id="portal-footer-mount"></div>
+
+  <script src="js/common.js"></script>
+  <script>
+    SmartHR.renderPortalHeader('result');
+    SmartHR.renderPortalFooter();
+
+    async function loadPassResult() {
+      const params = new URLSearchParams(window.location.search);
+      const ref = params.get('ref') || 'APP-2026-1001';
+      const mount = document.getElementById('result-mount');
+
+      try {
+        const res = await SmartHR.apiFetch(`/api/applications/${encodeURIComponent(ref)}`);
+        const app = res.application;
+        const interview = res.interview;
+        const score = Number(app.assessment_score || 0);
+        const passing = Number(app.passing_score || 60);
+
+        if (score < passing && params.get('ref')) {
+          window.location.replace(`ResultFail.dc.html?ref=${encodeURIComponent(app.reference_no)}`);
+          return;
+        }
+
+        const radius = 72;
+        const circumference = 2 * Math.PI * radius;
+        const offset = circumference - (Math.min(100, score) / 100) * circumference;
+        const report = app.ai_report || {};
+
+        mount.innerHTML = `
+          <div style="display:grid;grid-template-columns:220px 1fr;gap:32px;align-items:center;" class="pass-header-grid">
+            <div class="ring-wrap">
+              <svg width="170" height="170" style="transform:rotate(-90deg);">
+                <circle cx="85" cy="85" r="${radius}" fill="none" stroke="#EAE5DB" stroke-width="13" />
+                <circle id="progress-circle" cx="85" cy="85" r="${radius}" fill="none" stroke="#2F5D50" stroke-width="13"
+                  stroke-linecap="round" stroke-dasharray="${circumference}" stroke-dashoffset="${circumference}"
+                  style="transition:stroke-dashoffset 1.1s cubic-bezier(.22,1,.36,1);" />
+              </svg>
+              <div class="ring-center">
+                <span class="mono" style="font-size:30px;font-weight:800;color:var(--olive);">${score}%</span>
+                <span style="font-size:12px;color:var(--text-secondary);font-weight:600;">درجة الجدارة</span>
+              </div>
+            </div>
+
+            <div>
+              <span class="badge badge-olive" style="margin-bottom:10px;font-size:13px;">✓ مجتاز للحد الأدنى المعتمد (${passing}%)</span>
+              <h1 style="font-size:28px;margin-bottom:8px;">تهانينا ${SmartHR.escapeHtml(app.full_name)}! تأهلت للمرحلة القادمة</h1>
+              <p style="color:var(--text-secondary);font-size:15px;margin-bottom:16px;">
+                تم اعتماد طلبك لوظيفة <strong>${SmartHR.escapeHtml(app.job_title)}</strong> (<span class="mono">${SmartHR.escapeHtml(app.job_code)}</span>) بنجاح وإدراجه في قائمة المرشحين المؤهلين لمراجعة لجنة التوظيف.
+              </p>
+
+              <div style="display:inline-flex;align-items:center;gap:12px;background:var(--bg-subtle);border:1px solid var(--border-strong);padding:10px 16px;border-radius:10px;">
+                <span style="font-size:13px;color:var(--text-secondary);">الرقم المرجعي للطلب:</span>
+                <strong class="mono" style="font-size:16px;color:var(--charcoal);">${SmartHR.escapeHtml(app.reference_no)}</strong>
+                <button class="btn btn-outline btn-sm" onclick="navigator.clipboard.writeText('${SmartHR.escapeHtml(app.reference_no)}');SmartHR.showToast('تم نسخ الرقم المرجعي','success');">نسخ</button>
+              </div>
+            </div>
+          </div>
+
+          <div class="grid-4" style="margin:30px 0 24px;">
+            <div class="card-subtle" style="text-align:center;">
+              <div class="mono" style="font-size:22px;font-weight:700;color:var(--olive);">${score}%</div>
+              <div style="font-size:12px;color:var(--text-secondary);">اختبار الجدارة</div>
+            </div>
+            <div class="card-subtle" style="text-align:center;">
+              <div class="mono" style="font-size:22px;font-weight:700;">${app.cv_match_score}%</div>
+              <div style="font-size:12px;color:var(--text-secondary);">مطابقة الخبرة والسيرة</div>
+            </div>
+            <div class="card-subtle" style="text-align:center;">
+              <div class="mono" style="font-size:22px;font-weight:700;color:var(--charcoal);">${app.ai_overall_score}%</div>
+              <div style="font-size:12px;color:var(--text-secondary);">التقييم الذكي المرجح</div>
+            </div>
+            <div class="card-subtle" style="text-align:center;">
+              <div class="mono" style="font-size:22px;font-weight:700;color:var(--olive);">${app.integrity_score}%</div>
+              <div style="font-size:12px;color:var(--text-secondary);">مؤشر نزاهة الاختبار</div>
+            </div>
+          </div>
+
+          <div class="grid-2">
+            <div class="card-subtle">
+              <h3 style="font-size:16px;margin-bottom:10px;color:var(--olive);">✦ أبرز نقاط القوة المرصودة</h3>
+              <ul style="padding-right:18px;font-size:13px;color:var(--text-secondary);display:flex;flex-direction:column;gap:8px;">
+                ${(report.strengths || ['أداء متميز يتجاوز معيار الاجتياز المعتمد']).map((s) => `<li>${SmartHR.escapeHtml(s)}</li>`).join('')}
+              </ul>
+            </div>
+
+            <div class="card-subtle" style="border-right:4px solid var(--saffron);">
+              <h3 style="font-size:16px;margin-bottom:10px;">📅 الخطوة القادمة في مسار التوظيف</h3>
+              ${
+                interview
+                  ? `
+                    <p style="font-size:13px;color:var(--text-secondary);margin-bottom:10px;">تم تحديد موعد مقابلتك الشخصية مع اللجنة:</p>
+                    <div style="font-size:14px;font-weight:700;margin-bottom:6px;">التاريخ: ${SmartHR.formatDate(interview.scheduled_date)} — الساعة: ${SmartHR.formatTime(interview.start_time)}</div>
+                    <a href="${SmartHR.escapeHtml(interview.meeting_url)}" target="_blank" rel="noopener" class="btn btn-olive btn-sm">فتح رابط قاعة Google Meet ↗</a>
+                  `
+                  : `
+                    <p style="font-size:13px;color:var(--text-secondary);line-height:1.7;">
+                      1. تُجري لجنة التوظيف التقييم المعياري لملفك (وزن 60% لجنة + 40% ذكاء اصطناعي).<br/>
+                      2. ستصلك رسالة دعوة رسمية عبر <strong>واتساب</strong> على جوالك تتضمن موعد المقابلة ورابط قاعة <strong>Google Meet</strong>.
+                    </p>
+                  `
+              }
+            </div>
+          </div>
+
+          <div style="margin-top:26px;padding-top:20px;border-top:1px solid var(--border-color);display:flex;justify-content:space-between;flex-wrap:wrap;gap:12px;">
+            <a href="index.html" class="btn btn-outline">العودة للرئيسية</a>
+            <a href="CandidateProfile.dc.html?app_id=${app.id}" class="btn btn-primary">معاينة ملفك كما يظهر للجنة التوظيف ←</a>
+          </div>
+        `;
+
+        requestAnimationFrame(() => {
+          setTimeout(() => {
+            const c = document.getElementById('progress-circle');
+            if (c) c.style.strokeDashoffset = String(offset);
+          }, 80);
+        });
+      } catch (err) {
+        mount.innerHTML = `<div style="color:var(--terracotta);text-align:center;">${SmartHR.escapeHtml(err.message)}</div>`;
+      }
+    }
+
+    loadPassResult();
+  </script>
+</body>
+</html>

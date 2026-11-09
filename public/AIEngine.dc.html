@@ -1,0 +1,147 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>محرك التحليل والفحص الأعمى | رُواء للتوظيف الذكي</title>
+  <link rel="stylesheet" href="css/design-system.css" />
+  <style>
+    .pipeline-step {
+      background: #FFFFFF;
+      border: 1px solid var(--border-color);
+      border-top: 5px solid var(--step-color, var(--charcoal));
+      border-radius: 16px;
+      padding: 20px;
+    }
+  </style>
+</head>
+<body>
+  <div class="admin-shell">
+    <div id="admin-sidebar-mount"></div>
+
+    <main class="admin-main">
+      <div class="admin-topbar">
+        <div>
+          <div class="page-eyebrow">الشفافية الخوارزمية ومنع التحيز</div>
+          <h1 class="page-title">محرك التحليل الذكي والفحص الأعمى (Blind AI Engine)</h1>
+          <p class="page-subtitle">آلية عمل خط أنابيب التقييم الآلي من لحظة رفع السيرة الذاتية وحتى إصدار الدرجة المرجحة ومؤشر النزاهة.</p>
+        </div>
+        <a href="Settings.dc.html" class="btn btn-outline">⚙️ إعدادات مزودي الذكاء الاصطناعي</a>
+      </div>
+
+      <!-- المراحل الأربع لخط أنابيب التحليل -->
+      <section class="grid-4" style="margin-bottom:26px;">
+        <div class="pipeline-step" style="--step-color:#17191C;">
+          <span class="code-chip" style="margin-bottom:10px;">STAGE 01</span>
+          <h3 style="font-size:16px;margin-bottom:6px;">استخراج وبناء السياق</h3>
+          <p style="font-size:13px;color:var(--text-secondary);">قراءة محتوى السيرة الذاتية (PDF/DOCX)، سنوات الخبرة، والمؤهل العلمي ومطابقتها مع متطلبات الوظيفة.</p>
+        </div>
+        <div class="pipeline-step" style="--step-color:#E0A21B;">
+          <span class="code-chip" style="background:#E0A21B;color:#17191C;margin-bottom:10px;">STAGE 02</span>
+          <h3 style="font-size:16px;margin-bottom:6px;">إخفاء الهوية (PII Redaction)</h3>
+          <p style="font-size:13px;color:var(--text-secondary);">حجب الاسم الكامل، البريد الإلكتروني، ورقم الجوال واستبدالها برمز مشفّر <span class="mono">CAND-BLIND</span> لمنع أي تحيز.</p>
+        </div>
+        <div class="pipeline-step" style="--step-color:#C8553D;">
+          <span class="code-chip" style="background:#C8553D;margin-bottom:10px;">STAGE 03</span>
+          <h3 style="font-size:16px;margin-bottom:6px;">التصحيح الدلالي والحسابي</h3>
+          <p style="font-size:13px;color:var(--text-secondary);">تصحيح الأسئلة الاختيارية والرقمية بمعادلات دقيقة، وتحليل الإجابات النصية وسابقة الأعمال وفق برومنت الوظيفة.</p>
+        </div>
+        <div class="pipeline-step" style="--step-color:#2F5D50;">
+          <span class="code-chip" style="background:#2F5D50;margin-bottom:10px;">STAGE 04</span>
+          <h3 style="font-size:16px;margin-bottom:6px;">مؤشر النزاهة والدمج</h3>
+          <p style="font-size:13px;color:var(--text-secondary);">دمج درجة الاختبار (70%) ومطابقة السيرة (30%) لتكوين درجة الـ AI، مع احتساب مستقل لمؤشر نزاهة الجلسة.</p>
+        </div>
+      </section>
+
+      <!-- مختبر المحاكاة التفاعلي الحي -->
+      <section class="grid-2">
+        <div class="card">
+          <h2 style="font-size:19px;margin-bottom:8px;">🧪 مختبر اختبار الفحص الأعمى الحي (Live Simulator)</h2>
+          <p style="font-size:13px;color:var(--text-secondary);margin-bottom:16px;">
+            أدخل نصاً تجريبياً يحتوي على اسم مرشح ورقم جوال وبريد إلكتروني وخبرات مهنية لاختبار كيف يقوم الخادم بطمس البيانات الشخصية وتقييم المطابقة.
+          </p>
+
+          <form id="ai-sim-form">
+            <div class="grid-2">
+              <div class="form-group">
+                <label class="form-label">الاسم التجريبي (سيتم حجبه)</label>
+                <input type="text" id="sim-name" class="form-control" value="سارة بنت عبدالله الغامدي" required />
+              </div>
+              <div class="form-group">
+                <label class="form-label">الوظيفة المرجعية</label>
+                <select id="sim-job" class="form-select"></select>
+              </div>
+            </div>
+
+            <div class="form-group">
+              <label class="form-label">مقتطف السيرة الذاتية التجريبي</label>
+              <textarea id="sim-cv" class="form-textarea" style="min-height:130px;">أنا سارة بنت عبدالله الغامدي، للتواصل جوال 0551234567 أو البريد sara.alghamdi@example-hr.sa. أمتلك خبرة 4.5 سنوات في مبيعات مشاريع الدهانات المعمارية والعوازل المائية B2B، وإعداد العروض الفنية TDS وحساب معدلات التغطية وهوامش الربح لدى المكاتب الاستشارية وشركات المقاولات.</textarea>
+            </div>
+
+            <button type="submit" class="btn btn-terracotta" style="width:100%;">تشغيل محاكاة الفحص الأعمى والتقييم الآن ←</button>
+          </form>
+        </div>
+
+        <div class="card" id="sim-output-card">
+          <h2 style="font-size:19px;margin-bottom:12px;">📤 مخرجات المعالجة المعماة من الخادم</h2>
+          <div id="sim-result-box" class="card-subtle" style="min-height:260px;display:flex;align-items:center;justify-content:center;color:var(--text-muted);font-size:14px;">
+            اضغط على زر تشغيل المحاكاة لمعاينة النص بعد إخفاء الهوية ونتيجة التحليل الفوري.
+          </div>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <script src="js/common.js"></script>
+  <script>
+    SmartHR.renderAdminSidebar('aiengine');
+
+    async function initSim() {
+      const jobsRes = await SmartHR.apiFetch('/api/jobs');
+      const sel = document.getElementById('sim-job');
+      (jobsRes.jobs || []).forEach((j) => {
+        const opt = document.createElement('option');
+        opt.value = j.id;
+        opt.textContent = `[${j.code}] ${j.title}`;
+        sel.appendChild(opt);
+      });
+
+      document.getElementById('ai-sim-form').addEventListener('submit', async (e) => {
+        e.preventDefault();
+        const box = document.getElementById('sim-result-box');
+        box.innerHTML = 'جاري تنفيذ إخفاء الهوية والتحليل على الخادم...';
+        try {
+          const res = await SmartHR.apiFetch('/api/ai/simulate', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              candidate_name: document.getElementById('sim-name').value,
+              job_id: sel.value,
+              sample_cv_text: document.getElementById('sim-cv').value
+            })
+          });
+
+          box.style.display = 'block';
+          box.style.color = 'var(--text-primary)';
+          box.innerHTML = `
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
+              <span class="badge badge-saffron mono">${SmartHR.escapeHtml(res.blind_code)}</span>
+              <span class="badge badge-olive mono">مطابقة السيرة: ${res.cv_match_score}%</span>
+            </div>
+            <div style="font-size:12px;font-weight:700;margin-bottom:6px;">النص المرسل لمحرك التقييم بعد طمس الهوية (PII Redacted):</div>
+            <div style="background:#FFF;border:1px solid var(--border-strong);padding:12px;border-radius:9px;font-size:13px;margin-bottom:14px;line-height:1.7;">
+              ${SmartHR.escapeHtml(res.anonymized_text)}
+            </div>
+            <div style="font-size:12px;font-weight:700;margin-bottom:6px;">ملخص التقرير المتولد (${SmartHR.escapeHtml(res.ai_report.provider_used)}):</div>
+            <p style="font-size:13px;color:var(--text-secondary);">${SmartHR.escapeHtml(res.ai_report.blind_summary)}</p>
+          `;
+        } catch (err) {
+          box.textContent = err.message;
+        }
+      });
+    }
+
+    initSim().catch((err) => SmartHR.showToast(err.message, 'error'));
+  </script>
+</body>
+</html>

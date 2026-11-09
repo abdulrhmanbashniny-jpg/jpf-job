@@ -1,0 +1,281 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>الترتيب الموزون للمرشحين | رُواء للتوظيف الذكي</title>
+  <link rel="stylesheet" href="css/design-system.css" />
+  <style>
+    .podium-grid {
+      display: grid;
+      grid-template-columns: 1fr 1.15fr 1fr;
+      gap: 20px;
+      align-items: end;
+      margin: 22px 0 28px;
+    }
+    .podium-card {
+      background: #FFFFFF;
+      border: 1.5px solid var(--border-color);
+      border-radius: 20px;
+      padding: 24px;
+      text-align: center;
+      position: relative;
+      box-shadow: var(--shadow-sm);
+    }
+    .podium-card.rank-1 {
+      background: var(--charcoal);
+      color: #FFFFFF;
+      border-top: 7px solid var(--saffron);
+      padding: 32px 24px;
+      box-shadow: var(--shadow-lg);
+    }
+    .podium-card.rank-2 {
+      border-top: 6px solid #8A93A2;
+    }
+    .podium-card.rank-3 {
+      border-top: 6px solid var(--terracotta);
+    }
+    .medal-badge {
+      width: 44px;
+      height: 44px;
+      border-radius: 50%;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      font-family: var(--font-mono);
+      font-weight: 800;
+      font-size: 18px;
+      margin-bottom: 10px;
+    }
+    @media (max-width: 920px) {
+      .podium-grid { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+  <div class="admin-shell">
+    <div id="admin-sidebar-mount"></div>
+
+    <main class="admin-main">
+      <div class="admin-topbar">
+        <div>
+          <div class="page-eyebrow">خوارزمية المفاضلة المعيارية</div>
+          <h1 class="page-title">ترتيب المرشحين الموزون (AI + اللجنة)</h1>
+          <p class="page-subtitle">مفاضلة شفافة تجمع بين التحليل الموضوعي للذكاء الاصطناعي (40%) والحكم المهني للجنة التوظيف (60%).</p>
+        </div>
+        <div style="display:flex;gap:10px;flex-wrap:wrap;">
+          <button id="export-excel-btn" class="btn btn-olive">📥 تصدير جدول الترتيب (Excel / CSV)</button>
+          <a href="Scheduler.dc.html" class="btn btn-primary">جدولة المرشحين الأعلى ترتيباً ←</a>
+        </div>
+      </div>
+
+      <!-- شريط التحكم بالأوزان والفلترة -->
+      <section class="card" style="margin-bottom:24px;">
+        <div style="display:grid;grid-template-columns:280px 1fr auto;gap:24px;align-items:center;" class="weights-bar">
+          <div>
+            <label class="form-label" for="rank-job-filter">تصفية الترتيب حسب الوظيفة:</label>
+            <select id="rank-job-filter" class="form-select">
+              <option value="all">جميع الوظائف النشطة</option>
+            </select>
+          </div>
+
+          <div>
+            <div style="display:flex;justify-content:space-between;font-size:13px;font-weight:700;margin-bottom:6px;">
+              <span>وزن الذكاء الاصطناعي: <strong class="mono" id="lbl-ai-w" style="color:var(--terracotta);">40%</strong></span>
+              <span>وزن تقييم اللجنة: <strong class="mono" id="lbl-comm-w" style="color:var(--olive);">60%</strong></span>
+            </div>
+            <input type="range" id="weight-slider" min="10" max="90" step="5" value="40" style="width:100%;accent-color:var(--charcoal);cursor:pointer;" />
+          </div>
+
+          <div style="display:flex;gap:8px;">
+            <button id="reset-40-60-btn" class="btn btn-outline btn-sm">إعادة 40/60</button>
+            <button id="save-weights-btn" class="btn btn-terracotta btn-sm">اعتماد الوزن في النظام ✓</button>
+          </div>
+        </div>
+      </section>
+
+      <!-- منصة التتويج للمراكز الثلاثة الأولى -->
+      <section id="podium-mount" class="podium-grid"></section>
+
+      <!-- جدول الترتيب التفصيلي -->
+      <section class="card">
+        <h2 style="font-size:18px;margin-bottom:14px;">الجدول التفصيلي للمفاضلة النهائية</h2>
+        <div class="table-wrap">
+          <table class="data-table">
+            <thead>
+              <tr>
+                <th>المركز</th>
+                <th>المرشح</th>
+                <th>الوظيفة</th>
+                <th>اختبار الجدارة</th>
+                <th>درجة الـ AI</th>
+                <th>متوسط اللجنة</th>
+                <th>النزاهة</th>
+                <th>الدرجة الموزونة</th>
+                <th>الحالة</th>
+                <th>الملف</th>
+              </tr>
+            </thead>
+            <tbody id="ranking-tbody"></tbody>
+          </table>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <script src="js/common.js"></script>
+  <script>
+    SmartHR.renderAdminSidebar('ranking');
+
+    let latestRanked = [];
+    let currentAiWeight = 40;
+
+    function renderPodium(list) {
+      const mount = document.getElementById('podium-mount');
+      if (!list.length) {
+        mount.innerHTML = '';
+        return;
+      }
+      const first = list[0];
+      const second = list[1];
+      const third = list[2];
+
+      const cardHtml = (c, rankNum, cls, bgMedal, txtMedal) => {
+        if (!c) return `<div></div>`;
+        const isDark = rankNum === 1;
+        return `
+          <div class="podium-card ${cls}">
+            <div class="medal-badge" style="background:${bgMedal};color:${txtMedal};">#${rankNum}</div>
+            <div style="margin-bottom:6px;"><span class="code-chip" style="${isDark ? 'background:#E0A21B;color:#17191C;' : ''}">${SmartHR.escapeHtml(c.job_code)}</span></div>
+            <h3 style="font-size:19px;color:${isDark ? '#FFF' : 'var(--charcoal)'};margin-bottom:4px;">${SmartHR.escapeHtml(c.full_name)}</h3>
+            <div style="font-size:12px;color:${isDark ? '#CFD3DA' : 'var(--text-muted)'};margin-bottom:14px;">${SmartHR.escapeHtml(c.job_title)}</div>
+            <div class="mono" style="font-size:32px;font-weight:800;color:${isDark ? '#E0A21B' : 'var(--olive)'};">${c.computed_weighted_score}%</div>
+            <div style="font-size:12px;color:${isDark ? '#B8BCC4' : 'var(--text-secondary)'};margin:6px 0 14px;">
+              AI: <span class="mono">${c.ai_overall_score}%</span> • اللجنة: <span class="mono">${c.committee_avg_score}%</span>
+            </div>
+            <a href="CandidateProfile.dc.html?app_id=${c.id}" class="btn ${isDark ? 'btn-saffron' : 'btn-outline'} btn-sm" style="width:100%;">فتح الملف والتقييم</a>
+          </div>
+        `;
+      };
+
+      mount.innerHTML =
+        cardHtml(second, 2, 'rank-2', '#E5E8EE', '#17191C') +
+        cardHtml(first, 1, 'rank-1', '#E0A21B', '#17191C') +
+        cardHtml(third, 3, 'rank-3', 'rgba(200,85,61,0.18)', '#C8553D');
+    }
+
+    async function loadRanking(customAiWeight = null) {
+      const jobId = document.getElementById('rank-job-filter').value;
+      const qs = new URLSearchParams();
+      if (jobId !== 'all') qs.set('job_id', jobId);
+      if (customAiWeight !== null) qs.set('ai_weight', String(customAiWeight));
+
+      const data = await SmartHR.apiFetch(`/api/ranking?${qs.toString()}`);
+      currentAiWeight = data.weights.ai_weight;
+      document.getElementById('weight-slider').value = currentAiWeight;
+      document.getElementById('lbl-ai-w').textContent = `${currentAiWeight}%`;
+      document.getElementById('lbl-comm-w').textContent = `${data.weights.committee_weight}%`;
+
+      latestRanked = data.ranked_candidates || [];
+      renderPodium(latestRanked);
+
+      const tbody = document.getElementById('ranking-tbody');
+      tbody.innerHTML = latestRanked.map((c) => `
+        <tr>
+          <td><strong class="mono" style="font-size:15px;">#${c.rank}</strong></td>
+          <td>
+            <div style="font-weight:700;">${SmartHR.escapeHtml(c.full_name)}</div>
+            <div class="mono" style="font-size:11px;color:var(--text-muted);">${SmartHR.escapeHtml(c.reference_no)}</div>
+          </td>
+          <td><span class="code-chip">${SmartHR.escapeHtml(c.job_code)}</span></td>
+          <td class="mono">${c.assessment_score}%</td>
+          <td class="mono" style="font-weight:600;">${c.ai_overall_score}%</td>
+          <td class="mono" style="font-weight:600;color:${c.evaluations_count > 0 ? 'var(--charcoal)' : 'var(--text-muted)'};">
+            ${c.evaluations_count > 0 ? `${c.committee_avg_score}%` : 'بانتظار اللجنة'}
+          </td>
+          <td class="mono">${c.integrity_score}%</td>
+          <td><strong class="mono" style="font-size:16px;color:var(--olive);">${c.computed_weighted_score}%</strong></td>
+          <td>${SmartHR.statusBadge(c.status)}</td>
+          <td><a href="CandidateProfile.dc.html?app_id=${c.id}" class="btn btn-outline btn-sm">عرض / تقييم</a></td>
+        </tr>
+      `).join('');
+    }
+
+    async function initRankingPage() {
+      const jobsRes = await SmartHR.apiFetch('/api/jobs?include_inactive=1');
+      const sel = document.getElementById('rank-job-filter');
+      (jobsRes.jobs || []).forEach((j) => {
+        const opt = document.createElement('option');
+        opt.value = j.id;
+        opt.textContent = `[${j.code}] ${j.title}`;
+        sel.appendChild(opt);
+      });
+
+      sel.addEventListener('change', () => loadRanking(currentAiWeight));
+
+      const slider = document.getElementById('weight-slider');
+      slider.addEventListener('input', () => {
+        const w = Number(slider.value);
+        document.getElementById('lbl-ai-w').textContent = `${w}%`;
+        document.getElementById('lbl-comm-w').textContent = `${100 - w}%`;
+        loadRanking(w);
+      });
+
+      document.getElementById('reset-40-60-btn').addEventListener('click', () => loadRanking(40));
+
+      document.getElementById('save-weights-btn').addEventListener('click', async () => {
+        try {
+          const w = Number(document.getElementById('weight-slider').value);
+          const res = await SmartHR.apiFetch('/api/ranking/weights', {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ ai_weight: w })
+          });
+          SmartHR.showToast(res.message, 'success');
+          await loadRanking();
+        } catch (err) {
+          SmartHR.showToast(err.message, 'error');
+        }
+      });
+
+      document.getElementById('export-excel-btn').addEventListener('click', () => {
+        if (!latestRanked.length) {
+          SmartHR.showToast('لا توجد بيانات لتصديرها حالياً', 'error');
+          return;
+        }
+        const headers = ['الترتيب', 'الرقم المرجعي', 'اسم المرشح', 'كود الوظيفة', 'المسمى الوظيفي', 'درجة الاختبار %', 'درجة AI %', 'متوسط اللجنة %', 'الدرجة الموزونة النهائية %', 'مؤشر النزاهة %', 'الحالة'];
+        const rows = latestRanked.map((r) => [
+          r.rank,
+          r.reference_no,
+          `"${String(r.full_name).replace(/"/g, '""')}"`,
+          r.job_code,
+          `"${String(r.job_title).replace(/"/g, '""')}"`,
+          r.assessment_score,
+          r.ai_overall_score,
+          r.committee_avg_score,
+          r.computed_weighted_score,
+          r.integrity_score,
+          r.status
+        ].join(','));
+
+        // إضافة UTF-8 BOM لضمان فتح العربية بشكل سليم في Microsoft Excel
+        const csvContent = '\uFEFF' + [headers.join(','), ...rows].join('\n');
+        const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `SmartHR_Ranking_${new Date().toISOString().slice(0, 10)}.csv`;
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        URL.revokeObjectURL(url);
+        SmartHR.showToast('تم تصدير ملف الترتيب الموزون المتوافق مع Excel بنجاح!', 'success');
+      });
+
+      await loadRanking();
+    }
+
+    initRankingPage().catch((err) => SmartHR.showToast(err.message, 'error'));
+  </script>
+</body>
+</html>
