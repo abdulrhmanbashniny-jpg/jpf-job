@@ -89,9 +89,18 @@
               </div>
             </div>
 
-            <div class="form-group">
-              <label class="form-label">أعضاء لجنة المقابلة</label>
-              <input type="text" id="sc-panel" class="form-control" value="لجنة التوظيف والاختيار المركزية" required />
+            <div class="grid-2">
+              <div class="form-group">
+                <label class="form-label">نوع المقابلات</label>
+                <select id="sc-mode" class="form-select">
+                  <option value="remote">🎥 عن بُعد (قاعة افتراضية)</option>
+                  <option value="in_person">🏢 حضوري في المقر (بطاقة الموقع)</option>
+                </select>
+              </div>
+              <div class="form-group">
+                <label class="form-label">أعضاء لجنة المقابلة</label>
+                <input type="text" id="sc-panel" class="form-control" value="لجنة التوظيف والاختيار المركزية" required />
+              </div>
             </div>
 
             <div style="margin-bottom:16px;">
@@ -176,9 +185,11 @@
             </td>
             <td><span class="code-chip">${SmartHR.escapeHtml(i.job_code)}</span></td>
             <td>
-              <a href="${SmartHR.escapeHtml(i.meeting_url)}" target="_blank" rel="noopener" class="btn btn-outline btn-sm mono" style="font-size:12px;">
-                🎥 فتح القاعة ↗
-              </a>
+              ${
+                i.interview_mode === 'in_person'
+                  ? `<a href="Visit.dc.html?ref=${encodeURIComponent(i.reference_no)}" target="_blank" rel="noopener" class="btn btn-terracotta btn-sm" style="font-size:12px;">🏢 بطاقة الموقع ↗</a>`
+                  : `<a href="${SmartHR.escapeHtml(i.meeting_url)}" target="_blank" rel="noopener" class="btn btn-outline btn-sm mono" style="font-size:12px;">🎥 فتح القاعة ↗</a>`
+              }
             </td>
             <td>${SmartHR.bookingBadge(i.booking_status)}</td>
             <td>
@@ -232,6 +243,7 @@
             exclude_dhuhr: document.getElementById('sc-exclude-dhuhr').checked,
             dhuhr_start: document.getElementById('sc-dhuhr-start').value,
             dhuhr_end: document.getElementById('sc-dhuhr-end').value,
+            interview_mode: document.getElementById('sc-mode').value,
             interviewer_panel: document.getElementById('sc-panel').value.trim(),
             application_ids: selectedIds
           })

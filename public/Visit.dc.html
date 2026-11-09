@@ -1,0 +1,215 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>بطاقة المقابلة وتفاصيل الوصول | رُواء للتوظيف الذكي</title>
+  <link rel="stylesheet" href="css/design-system.css" />
+  <style>
+    .pass-container {
+      max-width: 880px;
+      margin: 24px auto;
+      background: #FFFFFF;
+      border-radius: 24px;
+      border: 1.5px solid var(--border-color);
+      overflow: hidden;
+      box-shadow: var(--shadow-lg);
+    }
+    .pass-banner {
+      background: var(--charcoal);
+      color: #FFFFFF;
+      padding: 28px 34px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      flex-wrap: wrap;
+      gap: 16px;
+      border-bottom: 6px solid var(--saffron);
+    }
+    .entrance-photo {
+      width: 100%;
+      max-height: 340px;
+      object-fit: cover;
+      border-radius: 16px;
+      border: 1.5px solid var(--border-color);
+      background: #17191C;
+    }
+    .loc-pill {
+      background: var(--bg-subtle);
+      border: 1px solid var(--border-strong);
+      border-radius: 14px;
+      padding: 16px;
+    }
+  </style>
+</head>
+<body>
+  <div id="portal-header-mount"></div>
+
+  <main class="container-1440">
+    <div id="visit-pass-mount" class="pass-container">
+      <div style="padding:48px;text-align:center;">جاري تحميل بطاقة المقابلة وتفاصيل الموقع...</div>
+    </div>
+  </main>
+
+  <div id="portal-footer-mount"></div>
+
+  <script src="js/common.js"></script>
+  <script>
+    SmartHR.renderPortalHeader('visit');
+    SmartHR.renderPortalFooter();
+
+    async function loadVisitPass() {
+      const params = new URLSearchParams(window.location.search);
+      const ref = params.get('ref');
+      const mount = document.getElementById('visit-pass-mount');
+
+      if (!ref) {
+        mount.innerHTML = `<div style="padding:44px;text-align:center;color:var(--terracotta);">الرابط غير مكتمل — يرجى فتح الرابط المرسل إليك في رسالة واتساب.</div>`;
+        return;
+      }
+
+      try {
+        const res = await SmartHR.apiFetch(`/api/public/visit/${encodeURIComponent(ref)}`);
+        const cand = res.candidate;
+        const intv = res.interview;
+        const hrPhone = String(res.company_location?.hr_whatsapp_phone || '966550000000').replace(/\D/g, '');
+
+        if (!intv) {
+          mount.innerHTML = `
+            <div style="padding:44px;text-align:center;">
+              <h2 style="margin-bottom:8px;">مرحباً ${SmartHR.escapeHtml(cand.full_name)}</h2>
+              <p style="color:var(--text-secondary);">رقم طلبك <strong class="mono">${SmartHR.escapeHtml(cand.reference_no)}</strong> قيد جدولة الموعد النهائي من قِبل لجنة التوظيف.</p>
+            </div>
+          `;
+          return;
+        }
+
+        const isInPerson = intv.interview_mode === 'in_person';
+        const isConfirmed = intv.booking_status === 'confirmed' || intv.booking_status === 'completed';
+
+        const rescheduleWa = `https://wa.me/${hrPhone}?text=${encodeURIComponent(
+          `السلام عليكم، أنا المرشح ${cand.full_name} (رقم الطلب: ${cand.reference_no}) لوظيفة ${cand.job_title}. أرغب في الاستفسار أو التنسيق بخصوص موعد المقابلة المحدد يوم ${String(intv.scheduled_date).slice(0,10)}.`
+        )}`;
+
+        mount.innerHTML = `
+          <div class="pass-banner">
+            <div>
+              <div style="font-size:12px;color:var(--saffron);font-weight:700;margin-bottom:4px;">
+                ${isInPerson ? '🏢 بطاقة دخول ومقابلة حضورية في مقر الشركة' : '🎥 بطاقة مقابلة شخصية عن بُعد (أونلاين)'}
+              </div>
+              <h1 style="font-size:24px;color:#FFF;margin-bottom:4px;">${SmartHR.escapeHtml(cand.full_name)}</h1>
+              <div style="font-size:13.5px;color:#CFD3DA;">الوظيفة: <strong>${SmartHR.escapeHtml(cand.job_title)}</strong> (<span class="mono">${SmartHR.escapeHtml(cand.job_code)}</span>)</div>
+            </div>
+            <div style="background:rgba(255,255,255,0.08);border:1px solid rgba(255,255,255,0.2);padding:12px 18px;border-radius:14px;text-align:center;">
+              <div style="font-size:11px;color:#CFD3DA;">الرقم المرجعي لإبرازه للاستقبال</div>
+              <div class="mono" style="font-size:19px;font-weight:800;color:var(--saffron);margin-top:2px;">${SmartHR.escapeHtml(cand.reference_no)}</div>
+            </div>
+          </div>
+
+          <div style="padding:30px 34px;">
+            <!-- شريط التاريخ والوقت وحالة التأكيد -->
+            <div class="grid-3" style="margin-bottom:24px;">
+              <div class="loc-pill">
+                <div style="font-size:12px;color:var(--text-muted);">📅 تاريخ المقابلة</div>
+                <div style="font-size:16px;font-weight:700;margin-top:4px;">${SmartHR.formatDate(intv.scheduled_date)}</div>
+              </div>
+              <div class="loc-pill">
+                <div style="font-size:12px;color:var(--text-muted);">⏰ وقت البدء والمدة</div>
+                <div class="mono" style="font-size:16px;font-weight:700;margin-top:4px;">${SmartHR.formatTime(intv.start_time)} (${intv.duration_minutes} دقيقة)</div>
+              </div>
+              <div class="loc-pill">
+                <div style="font-size:12px;color:var(--text-muted);">📌 حالة الموعد</div>
+                <div style="margin-top:6px;" id="confirm-badge-box">
+                  ${isConfirmed ? '<span class="badge badge-olive">✓ مؤكد الحضور</span>' : '<span class="badge badge-saffron">بانتظار تأكيد حضورك</span>'}
+                </div>
+              </div>
+            </div>
+
+            ${
+              isInPerson
+                ? `
+                  <!-- تفاصيل المقر الحضوري: صورة المدخل + الدور + رقم المكتب + قوقل ماب -->
+                  <div style="margin-bottom:22px;">
+                    <h3 style="font-size:17px;margin-bottom:10px;">📸 صورة مدخل المقر وبوابة الاستقبال</h3>
+                    <img src="${SmartHR.escapeHtml(intv.entrance_image_url || '/img/hq-entrance.svg')}" alt="صورة مدخل المقر" class="entrance-photo" />
+                  </div>
+
+                  <div class="grid-3" style="margin-bottom:20px;">
+                    <div class="loc-pill" style="border-right:4px solid var(--charcoal);">
+                      <div style="font-size:12px;color:var(--text-muted);">🏢 المبنى والعنوان</div>
+                      <div style="font-size:14px;font-weight:700;margin-top:4px;">${SmartHR.escapeHtml(intv.building)}</div>
+                      ${intv.address_line ? `<div style="font-size:12px;color:var(--text-secondary);margin-top:3px;">${SmartHR.escapeHtml(intv.address_line)}</div>` : ''}
+                    </div>
+                    <div class="loc-pill" style="border-right:4px solid var(--saffron);">
+                      <div style="font-size:12px;color:var(--text-muted);">🛗 الدور / الطابق</div>
+                      <div style="font-size:17px;font-weight:800;color:var(--charcoal);margin-top:4px;">${SmartHR.escapeHtml(intv.floor)}</div>
+                    </div>
+                    <div class="loc-pill" style="border-right:4px solid var(--terracotta);">
+                      <div style="font-size:12px;color:var(--text-muted);">🚪 رقم المكتب / القاعة</div>
+                      <div style="font-size:17px;font-weight:800;color:var(--terracotta);margin-top:4px;">${SmartHR.escapeHtml(intv.office)}</div>
+                    </div>
+                  </div>
+
+                  <div class="card-subtle" style="margin-bottom:22px;font-size:13.5px;line-height:1.8;">
+                    <strong>📋 إرشادات الوصول والاستقبال:</strong><br/>
+                    ${SmartHR.escapeHtml(intv.arrival_instructions || '')}
+                  </div>
+
+                  <a href="${SmartHR.escapeHtml(intv.maps_url)}" target="_blank" rel="noopener" class="btn btn-primary btn-lg" style="width:100%;margin-bottom:14px;">
+                    📍 فتح موقع المقر والاتجاهات في خرائط قوقل (Google Maps) ↗
+                  </a>
+                `
+                : `
+                  <!-- تفاصيل المقابلة عن بُعد (أونلاين) -->
+                  <div class="card-subtle" style="border-right:4px solid var(--olive);margin-bottom:20px;padding:20px;">
+                    <h3 style="font-size:17px;margin-bottom:8px;">🎥 القاعة الافتراضية للمقابلة عن بُعد</h3>
+                    <p style="font-size:13.5px;color:var(--text-secondary);margin-bottom:14px;line-height:1.8;">
+                      تُعقد المقابلة أونلاين مع <strong>${SmartHR.escapeHtml(intv.interviewer_panel)}</strong>. يرجى التأكد من استقرار اتصال الإنترنت وعمل الكاميرا والميكروفون قبل الموعد بـ 5 دقائق.
+                    </p>
+                    <a href="${SmartHR.escapeHtml(intv.meeting_url)}" target="_blank" rel="noopener" class="btn btn-olive btn-lg" style="width:100%;">
+                      🎥 الدخول إلى القاعة الافتراضية للمقابلة الآن ↗
+                    </a>
+                  </div>
+                `
+            }
+
+            <!-- أزرار تأكيد الحضور أو التواصل عبر واتساب -->
+            <div style="display:flex;gap:12px;flex-wrap:wrap;padding-top:16px;border-top:1px solid var(--border-color);">
+              ${
+                isConfirmed
+                  ? `<button type="button" class="btn btn-olive" disabled style="flex:1;">✓ تم تسجيل تأكيد حضورك لدى اللجنة</button>`
+                  : `<button type="button" id="confirm-visit-btn" class="btn btn-terracotta" style="flex:1;">✓ أؤكد حضوري في هذا الموعد</button>`
+              }
+              <a href="${rescheduleWa}" target="_blank" rel="noopener" class="btn btn-outline">
+                💬 التواصل مع منسق التوظيف عبر واتساب
+              </a>
+              <button type="button" onclick="window.print()" class="btn btn-outline">🖨 طباعة البطاقة</button>
+            </div>
+          </div>
+        `;
+
+        const confBtn = document.getElementById('confirm-visit-btn');
+        if (confBtn) {
+          confBtn.addEventListener('click', async () => {
+            confBtn.disabled = true;
+            confBtn.textContent = 'جاري تسجيل التأكيد...';
+            try {
+              const r = await SmartHR.apiFetch(`/api/public/visit/${encodeURIComponent(cand.reference_no)}/confirm`, { method: 'POST' });
+              SmartHR.showToast(r.message, 'success');
+              loadVisitPass();
+            } catch (err) {
+              confBtn.disabled = false;
+              confBtn.textContent = '✓ أؤكد حضوري في هذا الموعد';
+              SmartHR.showToast(err.message, 'error');
+            }
+          });
+        }
+      } catch (err) {
+        mount.innerHTML = `<div style="padding:44px;text-align:center;color:var(--terracotta);">${SmartHR.escapeHtml(err.message)}</div>`;
+      }
+    }
+
+    loadVisitPass();
+  </script>
+</body>
+</html>

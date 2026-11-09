@@ -22,7 +22,7 @@ pool.on('error', (err) => {
 });
 
 /**
- * التحقق من وجود الجداول وتنفيذ الترقيات التلقائية (بما فيها جدول الصلاحيات staff_users)
+ * التحقق من وجود الجداول وتنفيذ الترقيات التلقائية السلسة (v2.1) دون مسح أي بيانات حالية
  */
 async function ensureDatabaseInitialized() {
   const client = await pool.connect();
@@ -43,7 +43,7 @@ async function ensureDatabaseInitialized() {
       console.log('[DB Init] تمت تهيئة قاعدة البيانات smart_hr_db بنجاح.');
     }
 
-    // ترقية تلقائية متوافقة مع الخوادم العاملة: إنشاء جدول حسابات اللجنة والصلاحيات (RBAC)
+    // 1. جدول حسابات اللجنة والصلاحيات (RBAC)
     await client.query(`
       CREATE TABLE IF NOT EXISTS staff_users (
         id              SERIAL PRIMARY KEY,
@@ -63,7 +63,6 @@ async function ensureDatabaseInitialized() {
       );
     `);
 
-    // إنشاء حساب المدير الرئيسي تلقائياً عند أول تشغيل باستخدام ADMIN_ACCESS_CODE من .env
     const countUsers = await client.query('SELECT COUNT(*)::int AS cnt FROM staff_users');
     if (countUsers.rows[0].cnt === 0) {
       const initialPass = process.env.ADMIN_ACCESS_CODE || 'RUWAA-HR-2026';
@@ -73,8 +72,65 @@ async function ensureDatabaseInitialized() {
          VALUES ($1, $2, $3, 'super_admin', $4, TRUE)`,
         ['admin', 'مدير النظام ورئيس اللجنة', 'المدير التنفيذي للموارد البشرية', pwdHash]
       );
-      console.log('[RBAC Init] تم تفعيل حساب المدير الافتراضي (username: admin) بكلمة المرور المعرّفة في ADMIN_ACCESS_CODE داخل .env');
+      console.log('[RBAC Init] تم تفعيل حساب المدير الافتراضي (username: admin)');
     }
+
+    // 2. ترقية v2.1: فصل المؤهل العلمي عن التخصص + حالة التحليل الذكي غير المتزامن + بيانات المقابلة الحضورية
+    await client.query(`
+      ALTER TABLE candidates
+        ADD COLUMN IF NOT EXISTS specialization VARCHAR(150) NOT NULL DEFAULT '';
+
+      ALTER TABLE applications
+        ADD COLUMN IF NOT EXISTS ai_analysis_status VARCHAR(30) NOT NULL DEFAULT 'completed';
+
+      ALTER TABLE interviews
+        ADD COLUMN IF NOT EXISTS interview_mode VARCHAR(20) NOT NULL DEFAULT 'remote',
+        ADD COLUMN IF NOT EXISTS location_building VARCHAR(220),
+        ADD COLUMN IF NOT EXISTS location_floor VARCHAR(80),
+        ADD COLUMN IF NOT EXISTS location_office VARCHAR(80),
+        ADD COLUMN IF NOT EXISTS location_maps_url TEXT,
+        ADD COLUMN IF NOT EXISTS location_image_url TEXT,
+        ADD COLUMN IF NOT EXISTS location_notes TEXT;
+    `);
+
+    // 3. إعداد افتراضي لبطاقة المقر الحضوري ورقم واتساب الموارد البشرية (للطلبات الفورية)
+    await client.query(
+      `INSERT INTO system_settings (setting_key, setting_value, category, description)
+       VALUES ($1, $2::jsonb, 'scheduler', 'بيانات مقر المقابلات الحضورية ورقم تواصل واتساب الموارد البشرية')
+       ON CONFLICT (setting_key) DO NOTHING`,
+      [
+        'company_location',
+        JSON.stringify({
+          hr_whatsapp_phone: '966550000000',
+          building_name: 'المقر الرئيسي — شركة رُواء للدهانات والحلول الهندسية',
+          address_line: 'طريق الملك عبدالعزيز، حي الشاطئ، جدة',
+          floor_number: 'الدور الثالث (3)',
+          office_number: 'قاعة الاجتماعات التنفيذية — مكتب 304',
+          google_maps_url: 'https://maps.google.com/?q=21.5800,39.1300',
+          entrance_image_url: '/img/hq-entrance.svg',
+          arrival_instructions: 'يرجى الحضور قبل الموعد بـ 10 دقائق، إبراز بطاقة المقابلة أو الرقم المرجعي لمكتب الاستقبال في الدور الأرضي، علماً بأن مواقف الزوار متاحة أمام البوابة الشمالية.'
+        })
+      ]
+    );
+
+    // 4. ترقية قوالب واتساب الخمسة (عن بُعد + حضوري + تأكيد + تذكير + قاعة/شكر) مع الحفاظ على التعديلات السابقة
+    const tplRes = await client.query("SELECT setting_value FROM system_settings WHERE setting_key = 'whatsapp_templates'");
+    const currTpl = tplRes.rows[0]?.setting_value || {};
+    const upgradedTemplates = {
+      interview_invite: currTpl.interview_invite || 'مرحباً {{name}}،\nيسعدنا إبلاغك باجتيازك المرحلة الأولى وتأهلك لمقابلة وظيفة ({{job_title}} - {{job_code}}).\n📅 الموعد: {{date}} الساعة {{time}}\n🎥 نوع المقابلة: عن بُعد (أونلاين)\nرابط القاعة الافتراضية وتأكيد الحضور:\n{{visit_url}}',
+      interview_inperson: currTpl.interview_inperson || 'مرحباً {{name}}،\nيسعدنا إبلاغك باجتيازك المرحلة الأولى وتأهلك لمقابلة حضورية لوظيفة ({{job_title}} - {{job_code}}).\n📅 الموعد: {{date}} الساعة {{time}}\n🏢 المقر: {{building}} — {{floor}} — {{office}}\n📍 بطاقة الوصول وصورة المدخل وموقع قوقل ماب وتأكيد الحضور:\n{{visit_url}}',
+      confirm_booking: currTpl.confirm_booking || 'تم تأكيد موعد مقابلتك بنجاح يا {{name}} ✓\nالوظيفة: {{job_title}}\nالموعد: {{date}} الساعة {{time}}\nبطاقة التفاصيل والوصول: {{visit_url}}',
+      reminder_day_before: currTpl.reminder_day_before || 'تذكير ودي يا {{name}}:\nمقابلتك لوظيفة ({{job_title}}) غداً بتاريخ {{date}} الساعة {{time}}.\nتفاصيل الموعد ورابط الدخول/الموقع: {{visit_url}}\nنتطلع للقائك.',
+      send_room_now: currTpl.send_room_now || 'حان موعد مقابلتك الآن يا {{name}} لوظيفة ({{job_title}}).\nاللجنة بانتظارك عبر الرابط التالي:\n{{meet_url}}',
+      thank_followup: currTpl.thank_followup || 'شكراً لحضورك مقابلة وظيفة ({{job_title}}) يا {{name}}.\nسعدنا بلقائك، وسنوافيك بالقرار النهائي خلال 5 إلى 7 أيام عمل بإذن الله.'
+    };
+
+    await client.query(
+      `INSERT INTO system_settings (setting_key, setting_value, category, description)
+       VALUES ('whatsapp_templates', $1::jsonb, 'whatsapp_templates', 'قوالب رسائل واتساب الهجينة للمراحل الخمس')
+       ON CONFLICT (setting_key) DO UPDATE SET setting_value = $1::jsonb`,
+      [JSON.stringify(upgradedTemplates)]
+    );
   } finally {
     client.release();
   }

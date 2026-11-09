@@ -94,14 +94,26 @@
             </div>
           </div>
 
-          <div class="grid-2">
+          <!-- فصل المؤهل العلمي عن التخصص وسنوات الخبرة كلٌّ في حقل مستقل -->
+          <div class="grid-3">
+            <div class="form-group">
+              <label class="form-label" for="qualification">المؤهل العلمي *</label>
+              <select id="qualification" name="qualification" class="form-select" required>
+                <option value="بكالوريوس" selected>بكالوريوس</option>
+                <option value="ماجستير">ماجستير</option>
+                <option value="دكتوراه">دكتوراه</option>
+                <option value="دبلوم عالي">دبلوم عالي</option>
+                <option value="دبلوم تقني / مهني">دبلوم تقني / مهني</option>
+                <option value="ثانوية عامة">ثانوية عامة</option>
+              </select>
+            </div>
+            <div class="form-group">
+              <label class="form-label" for="specialization">التخصص العلمي / المهني *</label>
+              <input type="text" id="specialization" name="specialization" class="form-control" placeholder="مثال: هندسة كيميائية / تسويق" required />
+            </div>
             <div class="form-group">
               <label class="form-label" for="years_experience">سنوات الخبرة العملية *</label>
               <input type="number" step="0.5" min="0" max="40" id="years_experience" name="years_experience" class="form-control mono" value="3" required />
-            </div>
-            <div class="form-group">
-              <label class="form-label" for="qualification">المؤهل العلمي والتخصص *</label>
-              <input type="text" id="qualification" name="qualification" class="form-control" placeholder="مثال: بكالوريوس تسويق / هندسة كيميائية" required />
             </div>
           </div>
 
@@ -177,7 +189,7 @@
           <ol style="padding-right:18px;font-size:13px;color:var(--text-secondary);display:flex;flex-direction:column;gap:6px;">
             <li>يصدر لك النظام رقماً مرجعياً فورياً بصيغة <span class="mono">APP-2026-XXXX</span>.</li>
             <li>يبدأ اختبار الجدارة المكوّن من <strong>10 أسئلة</strong> خلال <strong>${job.duration_minutes} دقيقة</strong>.</li>
-            <li>تظهر نتيجتك الفورية (اجتياز عند تحقيق <strong>≥${job.passing_score}%</strong>).</li>
+            <li>تظهر نتيجتك الفورية تلقائياً خلال ثوانٍ بعد إرسال الإجابات.</li>
           </ol>
         </div>
         <a href="Job.dc.html?id=${job.id}" class="btn btn-outline btn-sm" style="width:100%;">مراجعة الوصف الوظيفي الكامل</a>
@@ -252,7 +264,7 @@
         SmartHR.showToast(res.message || 'تم تسجيل الطلب بنجاح!', 'success');
         setTimeout(() => {
           window.location.href = `Assessment.dc.html?ref=${encodeURIComponent(res.reference_no)}`;
-        }, 500);
+        }, 400);
       } catch (err) {
         errBox.textContent = err.message;
         errBox.style.display = 'block';

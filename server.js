@@ -10,6 +10,8 @@ const multer = require('multer');
 const { pool, query, ensureDatabaseInitialized, logAudit } = require('./database/db');
 const {
   evaluateSubmission,
+  evaluateDeterministicInstant,
+  enrichReportWithExternalAI,
   anonymizeText,
   getProvidersEnvStatus,
   listOllamaModels,
@@ -32,8 +34,9 @@ const HOST = process.env.HOST || '0.0.0.0';
 const MAX_UPLOAD_MB = parseInt(process.env.MAX_UPLOAD_MB || '10', 10);
 
 const uploadsDir = path.join(__dirname, 'uploads');
-if (!fs.existsSync(uploadsDir)) {
-  fs.mkdirSync(uploadsDir, { recursive: true });
+const publicUploadsDir = path.join(uploadsDir, 'public');
+if (!fs.existsSync(publicUploadsDir)) {
+  fs.mkdirSync(publicUploadsDir, { recursive: true });
 }
 
 app.set('trust proxy', 1);
@@ -49,7 +52,7 @@ app.use((req, res, next) => {
 
 const apiLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
-  max: 600,
+  max: 800,
   standardHeaders: true,
   legacyHeaders: false,
   message: { error: 'تم تجاوز الحد المسموح للطلبات، يرجى المحاولة بعد قليل.' }
@@ -64,7 +67,7 @@ const loginLimiter = rateLimit({
   message: { error: 'محاولات دخول متكررة، يرجى الانتظار 15 دقيقة قبل المحاولة مجدداً.' }
 });
 
-const allowedExtensions = new Set(['.pdf', '.docx', '.doc', '.png', '.jpg', '.jpeg']);
+const allowedExtensions = new Set(['.pdf', '.docx', '.doc', '.png', '.jpg', '.jpeg', '.webp']);
 const storage = multer.diskStorage({
   destination: (_req, _file, cb) => cb(null, uploadsDir),
   filename: (_req, file, cb) => {
@@ -74,20 +77,41 @@ const storage = multer.diskStorage({
   }
 });
 
+const publicImageStorage = multer.diskStorage({
+  destination: (_req, _file, cb) => cb(null, publicUploadsDir),
+  filename: (_req, file, cb) => {
+    const ext = path.extname(file.originalname || '').toLowerCase();
+    const safeTag = crypto.randomBytes(5).toString('hex');
+    cb(null, `entrance-${Date.now()}-${safeTag}${ext}`);
+  }
+});
+
 const upload = multer({
   storage,
   limits: { fileSize: MAX_UPLOAD_MB * 1024 * 1024 },
   fileFilter: (_req, file, cb) => {
     const ext = path.extname(file.originalname || '').toLowerCase();
     if (!allowedExtensions.has(ext)) {
-      return cb(new Error('صيغة الملف غير مدعومة. الصيغ المسموحة: PDF, DOCX, PNG, JPG'));
+      return cb(new Error('صيغة الملف غير مدعومة. الصيغ المسموحة: PDF, DOCX, PNG, JPG, WEBP'));
+    }
+    cb(null, true);
+  }
+});
+
+const uploadPublicImage = multer({
+  storage: publicImageStorage,
+  limits: { fileSize: MAX_UPLOAD_MB * 1024 * 1024 },
+  fileFilter: (_req, file, cb) => {
+    const ext = path.extname(file.originalname || '').toLowerCase();
+    if (!new Set(['.png', '.jpg', '.jpeg', '.webp']).has(ext)) {
+      return cb(new Error('يرجى رفع صورة بصيغة PNG أو JPG أو WEBP لمدخل المقر.'));
     }
     cb(null, true);
   }
 });
 
 // ---------------------------------------------------------------------------------
-// بوابة الحماية الخلفية لصفحات اللجنة والمرفقات (قبل تقديم الملفات الثابتة!)
+// بوابة الحماية الخلفية لصفحات اللجنة والمرفقات (مع السماح ببطاقة الزيارة Visit.dc.html)
 // ---------------------------------------------------------------------------------
 const PROTECTED_PAGES = new Set([
   '/Dashboard.dc.html',
@@ -114,7 +138,9 @@ app.use((req, res, next) => {
   next();
 });
 
-// حماية مجلد السير الذاتية والمرفقات ليقتصر على أعضاء اللجنة المسجلين فقط
+// السماح بعرض صورة مدخل المقر فقط للزوار في بطاقة الوصول الحضورية، مع إبقاء السير الذاتية محمية
+app.use('/uploads/public', express.static(publicUploadsDir));
+
 app.use('/uploads', (req, res, next) => {
   const session = getSessionFromRequest(req);
   if (!session) {
@@ -126,7 +152,7 @@ app.use('/uploads', (req, res, next) => {
 app.use(express.static(path.join(__dirname, 'public')));
 
 // ---------------------------------------------------------------------------------
-// دوال مساعدة
+// دوال مساعدة وقوالب الرسائل الذكية (تدعم المتغيرات العربية والإنجليزية معاً)
 // ---------------------------------------------------------------------------------
 function normalizePhoneForWa(rawPhone) {
   let digits = String(rawPhone || '').replace(/\D/g, '');
@@ -142,6 +168,31 @@ function normalizePhoneForWa(rawPhone) {
 function buildWaLink(phone, messageBody) {
   const cleanPhone = normalizePhoneForWa(phone);
   return `https://wa.me/${cleanPhone}?text=${encodeURIComponent(messageBody)}`;
+}
+
+function getBaseOrigin(req) {
+  if (process.env.PUBLIC_BASE_URL) return String(process.env.PUBLIC_BASE_URL).replace(/\/+$/, '');
+  const proto = req.headers['x-forwarded-proto'] || req.protocol || 'https';
+  const host = req.headers['x-forwarded-host'] || req.get('host') || 'hrjpf.tech';
+  return `${proto}://${host}`;
+}
+
+function renderWhatsAppTemplate(tpl, ctx = {}) {
+  const appointmentStr = ctx.date && ctx.time ? `${ctx.date} · ${ctx.time}` : (ctx.date || ctx.time || '');
+  return String(tpl || '')
+    .replace(/\{\{name\}\}|\{الاسم\}/g, ctx.name || '')
+    .replace(/\{\{job_title\}\}|\{الوظيفة\}/g, ctx.job_title || '')
+    .replace(/\{\{job_code\}\}|\{كود_الوظيفة\}/g, ctx.job_code || '')
+    .replace(/\{\{ref\}\}|\{رقم_الطلب\}/g, ctx.reference_no || '')
+    .replace(/\{\{date\}\}|\{التاريخ\}/g, ctx.date || '')
+    .replace(/\{\{time\}\}|\{الوقت\}/g, ctx.time || '')
+    .replace(/\{موعد_المقابلة\}/g, appointmentStr)
+    .replace(/\{\{meet_url\}\}|\{رابط_القاعة\}/g, ctx.meet_url || ctx.visit_url || '')
+    .replace(/\{\{visit_url\}\}|\{رابط_الحجز\}|\{بطاقة_الموقع\}/g, ctx.visit_url || '')
+    .replace(/\{\{building\}\}|\{المقر\}/g, ctx.building || '')
+    .replace(/\{\{floor\}\}|\{الدور\}/g, ctx.floor || '')
+    .replace(/\{\{office\}\}|\{المكتب\}/g, ctx.office || '')
+    .replace(/\{\{maps_url\}\}|\{رابط_الخريطة\}/g, ctx.maps_url || '');
 }
 
 function sanitizeQuestionsForCandidate(questions) {
@@ -177,6 +228,20 @@ function minutesToTime(totalMin) {
   const h = Math.floor(totalMin / 60);
   const m = totalMin % 60;
   return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
+}
+
+async function getCompanyLocationConfig() {
+  const res = await query("SELECT setting_value FROM system_settings WHERE setting_key = 'company_location'");
+  return res.rows[0]?.setting_value || {
+    hr_whatsapp_phone: '966550000000',
+    building_name: 'المقر الرئيسي — شركة رُواء للدهانات والحلول الهندسية',
+    address_line: 'طريق الملك عبدالعزيز، جدة',
+    floor_number: 'الدور الثالث (3)',
+    office_number: 'مكتب 304 — قاعة الاجتماعات',
+    google_maps_url: 'https://maps.google.com/?q=21.5800,39.1300',
+    entrance_image_url: '/img/hq-entrance.svg',
+    arrival_instructions: 'يرجى الحضور قبل الموعد بـ 10 دقائق وإبراز بطاقة المقابلة للاستقبال.'
+  };
 }
 
 // ---------------------------------------------------------------------------------
@@ -242,7 +307,7 @@ app.post('/api/auth/login', loginLimiter, async (req, res) => {
   }
 });
 
-app.post('/api/auth/logout', (req, res) => {
+app.post('/api/auth/logout', (_req, res) => {
   clearSessionCookie(res);
   res.json({ message: 'تم تسجيل الخروج بنجاح.' });
 });
@@ -419,6 +484,7 @@ app.get('/api/health', async (_req, res) => {
     `);
     res.json({
       status: 'ok',
+      version: '2.1.0',
       timestamp: new Date().toISOString(),
       latency_ms: Date.now() - start,
       node_version: process.version,
@@ -485,7 +551,6 @@ app.get('/api/system/architecture', requireAuth(), async (_req, res) => {
   }
 });
 
-// مسارات استكشاف وفحص موديلات Ollama المحلية
 app.get('/api/ollama/models', requireAuth(['super_admin']), async (req, res) => {
   try {
     const customUrl = req.query.base_url || undefined;
@@ -843,7 +908,7 @@ app.put('/api/jobs/:id', requireAuth(['super_admin', 'hr_coordinator']), async (
 });
 
 // ---------------------------------------------------------------------------------
-// 3. التقديم ورفع السيرة الذاتية (POST /api/applications — بوابة المتقدمين العامة)
+// 3. التقديم ورفع السيرة الذاتية (مع فصل المؤهل العلمي عن التخصص)
 // ---------------------------------------------------------------------------------
 
 app.post('/api/applications', upload.single('cv_file'), async (req, res) => {
@@ -857,6 +922,7 @@ app.post('/api/applications', upload.single('cv_file'), async (req, res) => {
       city,
       years_experience,
       qualification,
+      specialization,
       portfolio_url,
       cv_summary_notes,
       privacy_consent
@@ -880,6 +946,9 @@ app.post('/api/applications', upload.single('cv_file'), async (req, res) => {
       return res.status(400).json({ error: 'يرجى إدخال رقم جوال صحيح (مثال: 0551234567).' });
     }
 
+    const cleanQual = String(qualification || 'بكالوريوس').trim();
+    const cleanSpec = String(specialization || '').trim();
+
     const jobRes = await client.query('SELECT * FROM jobs WHERE id = $1 AND is_active = TRUE', [parseInt(job_id, 10)]);
     if (!jobRes.rows.length) {
       return res.status(404).json({ error: 'الوظيفة المختارة غير متاحة حالياً للتقديم.' });
@@ -887,7 +956,7 @@ app.post('/api/applications', upload.single('cv_file'), async (req, res) => {
     const job = jobRes.rows[0];
 
     const storedPath = `/uploads/${req.file.filename}`;
-    const extracted = `${cv_summary_notes || ''} ${extractReadableTextFromUpload(req.file.path, req.file.originalname)}`.trim();
+    const extracted = `${cleanSpec} ${cv_summary_notes || ''} ${extractReadableTextFromUpload(req.file.path, req.file.originalname)}`.trim();
 
     await client.query('BEGIN');
 
@@ -925,17 +994,19 @@ app.post('/api/applications', upload.single('cv_file'), async (req, res) => {
           city = $2,
           years_experience = $3,
           qualification = $4,
-          portfolio_url = COALESCE($5, portfolio_url),
-          cv_filename = $6,
-          cv_stored_path = $7,
-          cv_extracted_text = $8,
+          specialization = $5,
+          portfolio_url = COALESCE($6, portfolio_url),
+          cv_filename = $7,
+          cv_stored_path = $8,
+          cv_extracted_text = $9,
           updated_at = NOW()
-        WHERE id = $9`,
+        WHERE id = $10`,
         [
           String(full_name).trim(),
           city || 'جدة',
           Math.max(0, parseFloat(years_experience || '0') || 0),
-          qualification || 'بكالوريوس',
+          cleanQual,
+          cleanSpec,
           portfolio_url || null,
           req.file.originalname,
           storedPath,
@@ -946,9 +1017,9 @@ app.post('/api/applications', upload.single('cv_file'), async (req, res) => {
     } else {
       const insCand = await client.query(
         `INSERT INTO candidates (
-          full_name, email, phone, city, years_experience, qualification,
+          full_name, email, phone, city, years_experience, qualification, specialization,
           portfolio_url, cv_filename, cv_stored_path, cv_extracted_text
-        ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
+        ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
         RETURNING id`,
         [
           String(full_name).trim(),
@@ -956,7 +1027,8 @@ app.post('/api/applications', upload.single('cv_file'), async (req, res) => {
           cleanPhone,
           city || 'جدة',
           Math.max(0, parseFloat(years_experience || '0') || 0),
-          qualification || 'بكالوريوس',
+          cleanQual,
+          cleanSpec,
           portfolio_url || null,
           req.file.originalname,
           storedPath,
@@ -984,7 +1056,7 @@ app.post('/api/applications', upload.single('cv_file'), async (req, res) => {
       action: 'APPLICATION_SUBMITTED',
       entityType: 'application',
       entityId: refNo,
-      metadata: { job_code: job.code, city: city || 'جدة', cv: req.file.originalname },
+      metadata: { job_code: job.code, qualification: cleanQual, specialization: cleanSpec, city: city || 'جدة' },
       ipAddress: req.ip
     });
 
@@ -1003,7 +1075,7 @@ app.post('/api/applications', upload.single('cv_file'), async (req, res) => {
 });
 
 // ---------------------------------------------------------------------------------
-// 4. جلب بيانات الطلبات (محمي للجنة، ومقيد بالرقم المرجعي للمتقدم فقط)
+// 4. جلب بيانات الطلبات + بطاقة المقابلة العامة للمرشح (Visit Pass)
 // ---------------------------------------------------------------------------------
 
 app.get('/api/applications', requireAuth(), async (req, res) => {
@@ -1029,9 +1101,9 @@ app.get('/api/applications', requireAuth(), async (req, res) => {
     const { rows } = await query(
       `SELECT
         a.*,
-        c.full_name, c.email, c.phone, c.city, c.years_experience, c.qualification, c.cv_filename, c.cv_stored_path,
+        c.full_name, c.email, c.phone, c.city, c.years_experience, c.qualification, c.specialization, c.cv_filename, c.cv_stored_path,
         j.code AS job_code, j.title AS job_title, j.department, j.accent_color, j.passing_score,
-        i.scheduled_date, i.start_time, i.meeting_url, i.booking_status,
+        i.scheduled_date, i.start_time, i.meeting_url, i.booking_status, i.interview_mode,
         (SELECT COUNT(*)::int FROM committee_evaluations ce WHERE ce.application_id = a.id) AS evaluations_count
       FROM applications a
       JOIN candidates c ON c.id = a.candidate_id
@@ -1054,7 +1126,6 @@ app.get('/api/applications/:idOrRef', async (req, res) => {
     const session = getSessionFromRequest(req);
     const isNum = /^\d+$/.test(idOrRef);
 
-    // منع المتصفح غير المسجل من استعراض الطلبات بالأرقام التسلسلية (Enumeration Protection)
     if (isNum && !session) {
       return res.status(401).json({ error: 'يلزم تسجيل الدخول بحساب اللجنة لاستعراض ملف المرشح.' });
     }
@@ -1062,7 +1133,7 @@ app.get('/api/applications/:idOrRef', async (req, res) => {
     const appRes = await query(
       `SELECT
         a.*,
-        c.full_name, c.email, c.phone, c.city, c.years_experience, c.qualification,
+        c.full_name, c.email, c.phone, c.city, c.years_experience, c.qualification, c.specialization,
         c.portfolio_url, c.cv_filename, c.cv_stored_path, c.cv_extracted_text,
         j.code AS job_code, j.title AS job_title, j.department, j.accent_color,
         j.passing_score, j.duration_minutes, j.questions AS job_questions, j.ai_prompt
@@ -1081,18 +1152,27 @@ app.get('/api/applications/:idOrRef', async (req, res) => {
     const isCommittee = Boolean(session) && req.query.mode === 'committee';
 
     if (!session) {
-      // استجابة محدودة وآمنة للمتقدم فقط عبر رقمه المرجعي
-      const interviewRes = await query(
-        'SELECT scheduled_date, start_time, meeting_url, booking_status FROM interviews WHERE application_id = $1',
-        [application.id]
-      );
+      const [interviewRes, locConfig] = await Promise.all([
+        query(
+          `SELECT scheduled_date, start_time, end_time, duration_minutes, meeting_platform, meeting_url,
+                  booking_status, interview_mode, location_building, location_floor, location_office,
+                  location_maps_url, location_image_url, location_notes
+           FROM interviews WHERE application_id = $1`,
+          [application.id]
+        ),
+        getCompanyLocationConfig()
+      ]);
+
       return res.json({
         application: {
           id: application.id,
           reference_no: application.reference_no,
           job_id: application.job_id,
           status: application.status,
+          ai_analysis_status: application.ai_analysis_status || 'completed',
           full_name: application.full_name,
+          qualification: application.qualification,
+          specialization: application.specialization,
           job_code: application.job_code,
           job_title: application.job_title,
           passing_score: application.passing_score,
@@ -1105,7 +1185,8 @@ app.get('/api/applications/:idOrRef', async (req, res) => {
           ai_report: application.ai_report,
           job_questions: sanitizeQuestionsForCandidate(application.job_questions)
         },
-        interview: interviewRes.rows[0] || null
+        interview: interviewRes.rows[0] || null,
+        hr_whatsapp_phone: locConfig.hr_whatsapp_phone || '966550000000'
       });
     }
 
@@ -1126,6 +1207,96 @@ app.get('/api/applications/:idOrRef', async (req, res) => {
       evaluations: evalsRes.rows,
       interview: interviewRes.rows[0] || null
     });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// بطاقة زيارة المقابلة وتأكيد الحضور للمرشح (عن بُعد أو حضوري مع صورة المدخل والخريطة)
+app.get('/api/public/visit/:ref', async (req, res) => {
+  try {
+    const ref = String(req.params.ref || '').trim();
+    const appRes = await query(
+      `SELECT a.id, a.reference_no, a.status, c.full_name, j.code AS job_code, j.title AS job_title, j.department
+       FROM applications a
+       JOIN candidates c ON c.id = a.candidate_id
+       JOIN jobs j ON j.id = a.job_id
+       WHERE UPPER(a.reference_no) = UPPER($1)`,
+      [ref]
+    );
+    if (!appRes.rows.length) {
+      return res.status(404).json({ error: 'لم يتم العثور على بطاقة المقابلة لهذا الرقم المرجعي.' });
+    }
+    const appRow = appRes.rows[0];
+    const [intRes, locCfg] = await Promise.all([
+      query('SELECT * FROM interviews WHERE application_id = $1', [appRow.id]),
+      getCompanyLocationConfig()
+    ]);
+    const interview = intRes.rows[0] || null;
+
+    res.json({
+      candidate: appRow,
+      interview: interview
+        ? {
+            id: interview.id,
+            interview_mode: interview.interview_mode || 'remote',
+            scheduled_date: interview.scheduled_date,
+            start_time: interview.start_time,
+            end_time: interview.end_time,
+            duration_minutes: interview.duration_minutes,
+            booking_status: interview.booking_status,
+            meeting_platform: interview.meeting_platform,
+            meeting_url: interview.meeting_url,
+            interviewer_panel: interview.interviewer_panel,
+            building: interview.location_building || locCfg.building_name,
+            address_line: locCfg.address_line || '',
+            floor: interview.location_floor || locCfg.floor_number,
+            office: interview.location_office || locCfg.office_number,
+            maps_url: interview.location_maps_url || locCfg.google_maps_url,
+            entrance_image_url: interview.location_image_url || locCfg.entrance_image_url || '/img/hq-entrance.svg',
+            arrival_instructions: interview.location_notes || locCfg.arrival_instructions
+          }
+        : null,
+      company_location: locCfg
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/public/visit/:ref/confirm', async (req, res) => {
+  try {
+    const ref = String(req.params.ref || '').trim();
+    const appRes = await query(
+      `SELECT a.id, a.reference_no, c.full_name
+       FROM applications a JOIN candidates c ON c.id = a.candidate_id
+       WHERE UPPER(a.reference_no) = UPPER($1)`,
+      [ref]
+    );
+    if (!appRes.rows.length) return res.status(404).json({ error: 'الطلب غير موجود.' });
+
+    const { rows } = await query(
+      `UPDATE interviews SET booking_status = 'confirmed', updated_at = NOW()
+       WHERE application_id = $1 RETURNING *`,
+      [appRes.rows[0].id]
+    );
+    if (!rows.length) return res.status(404).json({ error: 'لا توجد مقابلة مجدولة لهذا الطلب بعد.' });
+
+    await query(
+      `UPDATE wa_messages SET queue_status = 'confirmed' WHERE interview_id = $1`,
+      [rows[0].id]
+    );
+
+    await logAudit({
+      actor: appRes.rows[0].full_name,
+      actorRole: 'candidate',
+      action: 'INTERVIEW_CONFIRMED_BY_CANDIDATE',
+      entityType: 'interview',
+      entityId: appRes.rows[0].reference_no,
+      ipAddress: req.ip
+    });
+
+    res.json({ message: 'تم تأكيد حضورك للمقابلة بنجاح! نتطلع للقائك.', booking_status: 'confirmed' });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -1158,7 +1329,7 @@ app.patch('/api/applications/:id/status', requireAuth(), async (req, res) => {
 });
 
 // ---------------------------------------------------------------------------------
-// 5. اختبار الجدارة التفاعلي وتقييم الذكاء الاصطناعي (للمتقدم)
+// 5. اختبار الجدارة غير المتزامن (فوري بلا تعليق + عداد 60 ثانية + استطلاع حي)
 // ---------------------------------------------------------------------------------
 
 app.post('/api/assessments/upload-attachment', upload.single('attachment_file'), (req, res) => {
@@ -1172,6 +1343,47 @@ app.post('/api/assessments/upload-attachment', upload.single('attachment_file'),
   });
 });
 
+app.get('/api/assessments/status/:ref', async (req, res) => {
+  try {
+    const ref = String(req.params.ref || '').trim();
+    const [appRes, locCfg] = await Promise.all([
+      query(
+        `SELECT a.reference_no, a.status, a.ai_analysis_status, a.assessment_score, a.ai_overall_score,
+                c.full_name, j.title AS job_title, j.code AS job_code, j.passing_score
+         FROM applications a
+         JOIN candidates c ON c.id = a.candidate_id
+         JOIN jobs j ON j.id = a.job_id
+         WHERE UPPER(a.reference_no) = UPPER($1)`,
+        [ref]
+      ),
+      getCompanyLocationConfig()
+    ]);
+
+    if (!appRes.rows.length) {
+      return res.status(404).json({ error: 'الطلب غير موجود.' });
+    }
+    const row = appRes.rows[0];
+    const passed = Number(row.assessment_score) >= Number(row.passing_score || 60);
+    const analysisDone = row.status !== 'assessment_pending' && (row.ai_analysis_status === 'completed' || row.ai_analysis_status === 'fallback');
+
+    res.json({
+      reference_no: row.reference_no,
+      full_name: row.full_name,
+      job_title: row.job_title,
+      job_code: row.job_code,
+      status: row.status,
+      ai_analysis_status: row.ai_analysis_status || 'completed',
+      ready: analysisDone,
+      passed,
+      assessment_score: Number(row.assessment_score),
+      hr_whatsapp_phone: locCfg.hr_whatsapp_phone || '966550000000',
+      redirect_url: `${passed ? 'ResultPass.dc.html' : 'ResultFail.dc.html'}?ref=${encodeURIComponent(row.reference_no)}`
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 app.post('/api/assessments/submit', async (req, res) => {
   const client = await pool.connect();
   try {
@@ -1181,7 +1393,7 @@ app.post('/api/assessments/submit', async (req, res) => {
     }
 
     const appRes = await client.query(
-      `SELECT a.*, c.full_name, c.email, c.phone, c.years_experience, c.qualification,
+      `SELECT a.*, c.full_name, c.email, c.phone, c.years_experience, c.qualification, c.specialization,
               c.portfolio_url, c.cv_filename, c.cv_stored_path, c.cv_extracted_text
        FROM applications a
        JOIN candidates c ON c.id = a.candidate_id
@@ -1193,15 +1405,18 @@ app.post('/api/assessments/submit', async (req, res) => {
       return res.status(404).json({ error: 'الطلب غير موجود.' });
     }
     const appRow = appRes.rows[0];
+    const locCfg = await getCompanyLocationConfig();
 
     if (appRow.assessed_at && appRow.status !== 'assessment_pending') {
       const alreadyPassed = Number(appRow.assessment_score) >= 60;
       return res.status(200).json({
         already_submitted: true,
         reference_no: appRow.reference_no,
-        assessment_score: Number(appRow.assessment_score),
-        ai_overall_score: Number(appRow.ai_overall_score),
+        full_name: appRow.full_name,
         passed: alreadyPassed,
+        ai_analysis_status: appRow.ai_analysis_status || 'completed',
+        ready: (appRow.ai_analysis_status || 'completed') !== 'processing',
+        hr_whatsapp_phone: locCfg.hr_whatsapp_phone || '966550000000',
         redirect_url: `${alreadyPassed ? 'ResultPass.dc.html' : 'ResultFail.dc.html'}?ref=${encodeURIComponent(appRow.reference_no)}`
       });
     }
@@ -1211,8 +1426,11 @@ app.post('/api/assessments/submit', async (req, res) => {
 
     const settingsRes = await client.query("SELECT setting_value FROM system_settings WHERE setting_key = 'ai_engine_config'");
     const aiConfig = settingsRes.rows[0]?.setting_value || {};
+    const requestedProvider = aiConfig.active_provider || process.env.AI_DEFAULT_PROVIDER || 'smart-rubric';
+    const usesAsyncAI = requestedProvider !== 'smart-rubric';
 
-    const evaluation = await evaluateSubmission({
+    // 1. تصحيح فوري وحفظ النتيجة في قاعدة البيانات خلال أجزاء من الثانية لمنع أي تعليق!
+    const baseEval = evaluateDeterministicInstant({
       job,
       candidate: appRow,
       answers,
@@ -1220,16 +1438,16 @@ app.post('/api/assessments/submit', async (req, res) => {
       aiConfig
     });
 
-    const newStatus = evaluation.passed ? 'passed_assessment' : 'failed_assessment';
+    const newStatus = baseEval.passed ? 'passed_assessment' : 'failed_assessment';
     const timeSpent = Math.max(0, parseInt(telemetry.time_spent_seconds || 0, 10) || 0);
     const tabSwitches = Math.max(0, parseInt(telemetry.tab_switches || 0, 10) || 0);
     const pasteAttempts = Math.max(0, parseInt(telemetry.paste_attempts || 0, 10) || 0);
+    const initialAiStatus = usesAsyncAI ? 'processing' : 'completed';
 
     await client.query('BEGIN');
-
     await client.query('DELETE FROM assessment_answers WHERE application_id = $1', [appRow.id]);
 
-    for (const item of evaluation.gradedItems) {
+    for (const item of baseEval.gradedItems) {
       await client.query(
         `INSERT INTO assessment_answers (
           application_id, question_index, question_type, question_text,
@@ -1261,19 +1479,21 @@ app.post('/api/assessments/submit', async (req, res) => {
         paste_attempts = $7,
         time_spent_seconds = $8,
         ai_report = $9::jsonb,
+        ai_analysis_status = $10,
         assessed_at = NOW(),
         updated_at = NOW()
-      WHERE id = $10`,
+      WHERE id = $11`,
       [
         newStatus,
-        evaluation.cvMatchScore,
-        evaluation.assessmentScore,
-        evaluation.aiOverallScore,
-        evaluation.integrityScore,
+        baseEval.cvMatchScore,
+        baseEval.assessmentScore,
+        baseEval.aiOverallScore,
+        baseEval.integrityScore,
         tabSwitches,
         pasteAttempts,
         timeSpent,
-        JSON.stringify(evaluation.aiReport),
+        JSON.stringify(baseEval.aiReport),
+        initialAiStatus,
         appRow.id
       ]
     );
@@ -1281,34 +1501,64 @@ app.post('/api/assessments/submit', async (req, res) => {
     await client.query('SELECT fn_sync_application_weighted_score($1)', [appRow.id]);
     await client.query('COMMIT');
 
-    await logAudit({
-      actor: `محرك التحليل (${evaluation.aiReport.provider_used})`,
-      actorRole: 'ai_engine',
-      action: 'ASSESSMENT_SUBMITTED_AND_GRADED',
-      entityType: 'application',
-      entityId: appRow.reference_no,
-      metadata: {
-        job_code: job.code,
-        provider: evaluation.aiReport.provider_used,
-        assessment_score: evaluation.assessmentScore,
-        ai_overall_score: evaluation.aiOverallScore,
-        integrity_score: evaluation.integrityScore,
-        passed: evaluation.passed
-      },
-      ipAddress: req.ip
-    });
+    const redirectUrl = `${baseEval.passed ? 'ResultPass.dc.html' : 'ResultFail.dc.html'}?ref=${encodeURIComponent(appRow.reference_no)}`;
+
+    // 2. إذا كان Ollama أو مزود خارجي مفعلاً، يشتغل في الخلفية فور إرجاع الاستجابة للمتصفح!
+    if (usesAsyncAI) {
+      setImmediate(async () => {
+        try {
+          const enrichedReport = await enrichReportWithExternalAI({
+            job,
+            candidate: appRow,
+            baseEval,
+            aiConfig
+          });
+          await query(
+            `UPDATE applications
+             SET ai_report = $1::jsonb, ai_analysis_status = 'completed', updated_at = NOW()
+             WHERE id = $2`,
+            [JSON.stringify(enrichedReport), appRow.id]
+          );
+          await logAudit({
+            actor: `محرك التحليل (${enrichedReport.provider_used})`,
+            actorRole: 'ai_engine',
+            action: 'ASSESSMENT_AI_ENRICHED',
+            entityType: 'application',
+            entityId: appRow.reference_no,
+            metadata: { provider: enrichedReport.provider_used, score: baseEval.assessmentScore }
+          });
+        } catch (bgErr) {
+          console.error('[Async AI Error]:', bgErr.message);
+          await query(
+            `UPDATE applications SET ai_analysis_status = 'fallback', updated_at = NOW() WHERE id = $1`,
+            [appRow.id]
+          ).catch(() => {});
+        }
+      });
+    } else {
+      await logAudit({
+        actor: 'محرك التقييم المدمج (smart-rubric)',
+        actorRole: 'ai_engine',
+        action: 'ASSESSMENT_SUBMITTED_AND_GRADED',
+        entityType: 'application',
+        entityId: appRow.reference_no,
+        metadata: { assessment_score: baseEval.assessmentScore, passed: baseEval.passed },
+        ipAddress: req.ip
+      });
+    }
 
     res.json({
-      message: 'تم تصحيح الاختبار وإصدار التقرير الفوري بنجاح.',
+      message: 'تم استلام وحفظ إجاباتك بنجاح، جاري استكمال التحليل الذكي.',
       reference_no: appRow.reference_no,
-      passed: evaluation.passed,
-      passing_score: Number(job.passing_score),
-      assessment_score: evaluation.assessmentScore,
-      cv_match_score: evaluation.cvMatchScore,
-      ai_overall_score: evaluation.aiOverallScore,
-      integrity_score: evaluation.integrityScore,
-      ai_report: evaluation.aiReport,
-      redirect_url: `${evaluation.passed ? 'ResultPass.dc.html' : 'ResultFail.dc.html'}?ref=${encodeURIComponent(appRow.reference_no)}`
+      full_name: appRow.full_name,
+      job_title: job.title,
+      job_code: job.code,
+      passed: baseEval.passed,
+      ready: !usesAsyncAI,
+      ai_analysis_status: initialAiStatus,
+      assessment_score: baseEval.assessmentScore,
+      hr_whatsapp_phone: locCfg.hr_whatsapp_phone || '966550000000',
+      redirect_url: redirectUrl
     });
   } catch (err) {
     await client.query('ROLLBACK').catch(() => {});
@@ -1319,7 +1569,7 @@ app.post('/api/assessments/submit', async (req, res) => {
 });
 
 // ---------------------------------------------------------------------------------
-// 6. إحصائيات لوحة التحكم المركزية (محمية لأعضاء اللجنة)
+// 6. إحصائيات لوحة التحكم المركزية
 // ---------------------------------------------------------------------------------
 
 app.get('/api/stats', requireAuth(), async (_req, res) => {
@@ -1357,7 +1607,7 @@ app.get('/api/stats', requireAuth(), async (_req, res) => {
       SELECT
         a.id, a.reference_no, a.status, a.assessment_score, a.ai_overall_score,
         a.committee_avg_score, a.final_weighted_score, a.integrity_score, a.submitted_at,
-        c.full_name, c.city,
+        c.full_name, c.city, c.qualification, c.specialization,
         j.code AS job_code, j.title AS job_title, j.department, j.accent_color
       FROM applications a
       JOIN candidates c ON c.id = a.candidate_id
@@ -1404,7 +1654,7 @@ app.get('/api/stats', requireAuth(), async (_req, res) => {
 });
 
 // ---------------------------------------------------------------------------------
-// 7. تقييم لجنة التوظيف والترتيب الموزون (محمي بالصلاحيات)
+// 7. تقييم لجنة التوظيف والترتيب الموزون (مع معلومات المقابلة وزر واتساب المباشر)
 // ---------------------------------------------------------------------------------
 
 app.post('/api/evaluations', requireAuth(['super_admin', 'committee_member']), async (req, res) => {
@@ -1509,8 +1759,11 @@ app.post('/api/evaluations', requireAuth(['super_admin', 'committee_member']), a
 
 app.get('/api/ranking', requireAuth(), async (req, res) => {
   try {
-    const { job_id } = req.query;
-    const weightsRes = await query("SELECT setting_value FROM system_settings WHERE setting_key = 'ranking_weights'");
+    const { job_id, passed_only } = req.query;
+    const [weightsRes, locCfg] = await Promise.all([
+      query("SELECT setting_value FROM system_settings WHERE setting_key = 'ranking_weights'"),
+      getCompanyLocationConfig()
+    ]);
     const weights = weightsRes.rows[0]?.setting_value || { ai_weight: 40, committee_weight: 60 };
 
     const aiWeight = req.query.ai_weight !== undefined ? Number(req.query.ai_weight) : Number(weights.ai_weight ?? 40);
@@ -1518,6 +1771,9 @@ app.get('/api/ranking', requireAuth(), async (req, res) => {
 
     const params = [];
     let filterSql = "WHERE a.status != 'assessment_pending'";
+    if (passed_only === '1') {
+      filterSql += " AND a.status != 'failed_assessment'";
+    }
     if (job_id && job_id !== 'all') {
       params.push(parseInt(job_id, 10));
       filterSql += ` AND a.job_id = $${params.length}`;
@@ -1527,10 +1783,10 @@ app.get('/api/ranking', requireAuth(), async (req, res) => {
       `SELECT
         a.id, a.reference_no, a.status, a.cv_match_score, a.assessment_score,
         a.ai_overall_score, a.committee_avg_score, a.final_weighted_score, a.integrity_score,
-        c.full_name, c.email, c.phone, c.city, c.years_experience, c.qualification,
-        j.id AS job_id, j.code AS job_code, j.title AS job_title, j.department, j.accent_color,
+        c.full_name, c.email, c.phone, c.city, c.years_experience, c.qualification, c.specialization,
+        j.id AS job_id, j.code AS job_code, j.title AS job_title, j.department, j.accent_color, j.passing_score,
         (SELECT COUNT(*)::int FROM committee_evaluations ce WHERE ce.application_id = a.id) AS evaluations_count,
-        i.scheduled_date, i.start_time, i.booking_status
+        i.id AS interview_id, i.scheduled_date, i.start_time, i.booking_status, i.interview_mode, i.meeting_url
       FROM applications a
       JOIN candidates c ON c.id = a.candidate_id
       JOIN jobs j ON j.id = a.job_id
@@ -1545,15 +1801,22 @@ app.get('/api/ranking', requireAuth(), async (req, res) => {
       const dynamicScore = r.evaluations_count > 0
         ? Number(((ai * (aiWeight / 100)) + (comm * (commWeight / 100))).toFixed(2))
         : Number((ai * (aiWeight / 100)).toFixed(2));
+      const passedStage1 = Number(r.assessment_score) >= Number(r.passing_score || 60);
       return {
         ...r,
+        passed_stage_1: passedStage1,
         computed_weighted_score: dynamicScore
       };
-    }).sort((a, b) => b.computed_weighted_score - a.computed_weighted_score);
+    }).sort((a, b) => {
+      // المتأهلون للمرحلة الأولى يظهرون دائماً في الصدارة فوق غير المجتازين
+      if (a.passed_stage_1 !== b.passed_stage_1) return a.passed_stage_1 ? -1 : 1;
+      return b.computed_weighted_score - a.computed_weighted_score;
+    });
 
     res.json({
       weights: { ai_weight: aiWeight, committee_weight: commWeight },
       saved_weights: weights,
+      company_location: locCfg,
       ranked_candidates: computed.map((item, idx) => ({ ...item, rank: idx + 1 }))
     });
   } catch (err) {
@@ -1592,7 +1855,7 @@ app.put('/api/ranking/weights', requireAuth(['super_admin']), async (req, res) =
 });
 
 // ---------------------------------------------------------------------------------
-// 8. جدولة المقابلات الذكية واستثناء صلاة الظهر (محمي بالصلاحيات)
+// 8. جدولة المقابلات (الفردية السريعة من الترتيب + الجماعية الذكية — عن بُعد وحضوري)
 // ---------------------------------------------------------------------------------
 
 app.get('/api/interviews', requireAuth(), async (req, res) => {
@@ -1605,43 +1868,227 @@ app.get('/api/interviews', requireAuth(), async (req, res) => {
       whereSql = 'WHERE i.scheduled_date = $1';
     }
 
-    const { rows } = await query(
-      `SELECT
-        i.*,
-        a.reference_no, a.final_weighted_score, a.ai_overall_score, a.committee_avg_score, a.status AS app_status,
-        c.full_name, c.phone, c.email, c.city,
-        j.code AS job_code, j.title AS job_title, j.department, j.accent_color,
-        (SELECT wm.id FROM wa_messages wm WHERE wm.interview_id = i.id ORDER BY wm.id DESC LIMIT 1) AS wa_message_id,
-        (SELECT wm.queue_status FROM wa_messages wm WHERE wm.interview_id = i.id ORDER BY wm.id DESC LIMIT 1) AS wa_status
-      FROM interviews i
-      JOIN applications a ON a.id = i.application_id
-      JOIN candidates c ON c.id = a.candidate_id
-      JOIN jobs j ON j.id = a.job_id
-      ${whereSql}
-      ORDER BY i.scheduled_date ASC, i.start_time ASC`,
-      params
-    );
-
-    const eligibleRes = await query(`
-      SELECT
-        a.id AS application_id, a.reference_no, a.final_weighted_score, a.ai_overall_score, a.assessment_score,
-        c.full_name, c.phone,
-        j.code AS job_code, j.title AS job_title
-      FROM applications a
-      JOIN candidates c ON c.id = a.candidate_id
-      JOIN jobs j ON j.id = a.job_id
-      LEFT JOIN interviews i ON i.application_id = a.id
-      WHERE i.id IS NULL
-        AND a.status IN ('passed_assessment', 'under_review')
-      ORDER BY a.final_weighted_score DESC, a.ai_overall_score DESC;
-    `);
+    const [intRes, eligibleRes, locCfg] = await Promise.all([
+      query(
+        `SELECT
+          i.*,
+          a.reference_no, a.final_weighted_score, a.ai_overall_score, a.committee_avg_score, a.status AS app_status,
+          c.full_name, c.phone, c.email, c.city,
+          j.code AS job_code, j.title AS job_title, j.department, j.accent_color,
+          (SELECT wm.id FROM wa_messages wm WHERE wm.interview_id = i.id ORDER BY wm.id DESC LIMIT 1) AS wa_message_id,
+          (SELECT wm.queue_status FROM wa_messages wm WHERE wm.interview_id = i.id ORDER BY wm.id DESC LIMIT 1) AS wa_status,
+          (SELECT wm.wa_link FROM wa_messages wm WHERE wm.interview_id = i.id ORDER BY wm.id DESC LIMIT 1) AS wa_link
+        FROM interviews i
+        JOIN applications a ON a.id = i.application_id
+        JOIN candidates c ON c.id = a.candidate_id
+        JOIN jobs j ON j.id = a.job_id
+        ${whereSql}
+        ORDER BY i.scheduled_date ASC, i.start_time ASC`,
+        params
+      ),
+      query(`
+        SELECT
+          a.id AS application_id, a.reference_no, a.final_weighted_score, a.ai_overall_score, a.assessment_score,
+          c.full_name, c.phone,
+          j.code AS job_code, j.title AS job_title
+        FROM applications a
+        JOIN candidates c ON c.id = a.candidate_id
+        JOIN jobs j ON j.id = a.job_id
+        LEFT JOIN interviews i ON i.application_id = a.id
+        WHERE i.id IS NULL
+          AND a.status IN ('passed_assessment', 'under_review')
+        ORDER BY a.final_weighted_score DESC, a.ai_overall_score DESC;
+      `),
+      getCompanyLocationConfig()
+    ]);
 
     res.json({
-      interviews: rows,
-      unscheduled_qualified: eligibleRes.rows
+      interviews: intRes.rows,
+      unscheduled_qualified: eligibleRes.rows,
+      company_location: locCfg
     });
   } catch (err) {
     res.status(500).json({ error: err.message });
+  }
+});
+
+// جدولة سريعة لمرشح واحد مباشرة من صفحة الترتيب (عن بُعد أو حضوري) وتوليد رسالة واتساب فورية
+app.post('/api/interviews/schedule-single', requireAuth(['super_admin', 'hr_coordinator', 'committee_member']), async (req, res) => {
+  const client = await pool.connect();
+  try {
+    const {
+      application_id,
+      scheduled_date,
+      start_time = '10:00',
+      duration_minutes = 30,
+      interview_mode = 'remote',
+      meeting_url,
+      location_building,
+      location_floor,
+      location_office,
+      location_maps_url,
+      location_image_url,
+      location_notes,
+      interviewer_panel = 'لجنة التوظيف والاختيار المركزية',
+      mark_sent = false
+    } = req.body;
+
+    if (!application_id || !scheduled_date || !start_time) {
+      return res.status(400).json({ error: 'يرجى تحديد المرشح وتاريخ ووقت المقابلة.' });
+    }
+
+    const candRes = await client.query(
+      `SELECT a.id AS application_id, a.reference_no, c.full_name, c.phone, j.code AS job_code, j.title AS job_title
+       FROM applications a
+       JOIN candidates c ON c.id = a.candidate_id
+       JOIN jobs j ON j.id = a.job_id
+       WHERE a.id = $1`,
+      [parseInt(application_id, 10)]
+    );
+    if (!candRes.rows.length) {
+      return res.status(404).json({ error: 'المرشح المطلوب غير موجود.' });
+    }
+    const cand = candRes.rows[0];
+    const locCfg = await getCompanyLocationConfig();
+    const tplRes = await client.query("SELECT setting_value FROM system_settings WHERE setting_key = 'whatsapp_templates'");
+    const templates = tplRes.rows[0]?.setting_value || {};
+
+    const dur = Math.max(15, parseInt(duration_minutes, 10) || 30);
+    const endStr = minutesToTime(timeToMinutes(start_time) + dur);
+    const origin = getBaseOrigin(req);
+    const visitUrl = `${origin}/Visit.dc.html?ref=${encodeURIComponent(cand.reference_no)}`;
+
+    const isRemote = interview_mode !== 'in_person';
+    const defaultRoom = `https://meet.jit.si/JPF-${cand.job_code.replace(/[^a-zA-Z0-9]/g, '')}-${cand.reference_no.slice(-4)}`;
+    const finalMeetUrl = isRemote ? (meeting_url && String(meeting_url).trim() ? String(meeting_url).trim() : defaultRoom) : visitUrl;
+
+    const finalBuilding = location_building || locCfg.building_name;
+    const finalFloor = location_floor || locCfg.floor_number;
+    const finalOffice = location_office || locCfg.office_number;
+    const finalMaps = location_maps_url || locCfg.google_maps_url;
+    const finalImg = location_image_url || locCfg.entrance_image_url || '/img/hq-entrance.svg';
+    const finalNotes = location_notes || locCfg.arrival_instructions;
+
+    await client.query('BEGIN');
+
+    const intIns = await client.query(
+      `INSERT INTO interviews (
+        application_id, scheduled_date, start_time, end_time, duration_minutes,
+        meeting_platform, meeting_url, interviewer_panel, booking_status,
+        interview_mode, location_building, location_floor, location_office,
+        location_maps_url, location_image_url, location_notes, notes
+      ) VALUES ($1,$2::date,$3::time,$4::time,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)
+      ON CONFLICT (application_id) DO UPDATE SET
+        scheduled_date = EXCLUDED.scheduled_date,
+        start_time = EXCLUDED.start_time,
+        end_time = EXCLUDED.end_time,
+        duration_minutes = EXCLUDED.duration_minutes,
+        meeting_platform = EXCLUDED.meeting_platform,
+        meeting_url = EXCLUDED.meeting_url,
+        interviewer_panel = EXCLUDED.interviewer_panel,
+        interview_mode = EXCLUDED.interview_mode,
+        location_building = EXCLUDED.location_building,
+        location_floor = EXCLUDED.location_floor,
+        location_office = EXCLUDED.location_office,
+        location_maps_url = EXCLUDED.location_maps_url,
+        location_image_url = EXCLUDED.location_image_url,
+        location_notes = EXCLUDED.location_notes,
+        booking_status = CASE WHEN $18::boolean THEN 'invitation_sent' ELSE 'scheduled' END,
+        updated_at = NOW()
+      RETURNING *`,
+      [
+        cand.application_id,
+        scheduled_date,
+        start_time,
+        endStr,
+        dur,
+        isRemote ? 'قاعة افتراضية (أونلاين)' : 'مقابلة حضورية في المقر',
+        finalMeetUrl,
+        interviewer_panel,
+        mark_sent ? 'invitation_sent' : 'scheduled',
+        isRemote ? 'remote' : 'in_person',
+        finalBuilding,
+        finalFloor,
+        finalOffice,
+        finalMaps,
+        finalImg,
+        finalNotes,
+        isRemote ? 'مقابلة عن بُعد' : `حضوري: ${finalFloor} - ${finalOffice}`,
+        Boolean(mark_sent)
+      ]
+    );
+
+    await client.query(
+      "UPDATE applications SET status = 'interview_scheduled', updated_at = NOW() WHERE id = $1",
+      [cand.application_id]
+    );
+
+    const tplKey = isRemote ? 'interview_invite' : 'interview_inperson';
+    const rawTpl = templates[tplKey] || (isRemote
+      ? 'مرحباً {الاسم}،\nيسعدنا دعوتك لمقابلة وظيفة ({الوظيفة}) عن بُعد.\n📅 الموعد: {موعد_المقابلة}\n🎥 رابط القاعة وتأكيد الحضور:\n{رابط_الحجز}'
+      : 'مرحباً {الاسم}،\nيسعدنا دعوتك لمقابلة حضورية لوظيفة ({الوظيفة}).\n📅 الموعد: {موعد_المقابلة}\n🏢 الموقع: {المقر} — {الدور} — {المكتب}\n📍 بطاقة الوصول وصورة المدخل وخريطة قوقل:\n{بطاقة_الموقع}');
+
+    const msgBody = renderWhatsAppTemplate(rawTpl, {
+      name: cand.full_name,
+      job_title: cand.job_title,
+      job_code: cand.job_code,
+      reference_no: cand.reference_no,
+      date: scheduled_date,
+      time: start_time,
+      meet_url: finalMeetUrl,
+      visit_url: visitUrl,
+      building: finalBuilding,
+      floor: finalFloor,
+      office: finalOffice,
+      maps_url: finalMaps
+    });
+
+    const waLink = buildWaLink(cand.phone, msgBody);
+    const qStatus = mark_sent ? 'sent' : 'queued';
+
+    const waIns = await client.query(
+      `INSERT INTO wa_messages (
+        application_id, interview_id, template_key, recipient_name, recipient_phone,
+        message_body, wa_link, queue_status, sent_by, sent_at
+      ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8::varchar,$9, CASE WHEN $8::varchar = 'sent' THEN NOW() ELSE NULL END)
+      RETURNING *`,
+      [
+        cand.application_id,
+        intIns.rows[0].id,
+        tplKey,
+        cand.full_name,
+        normalizePhoneForWa(cand.phone),
+        msgBody,
+        waLink,
+        qStatus,
+        mark_sent ? req.user.full_name : null
+      ]
+    );
+
+    await client.query('COMMIT');
+
+    await logAudit({
+      actor: req.user.full_name,
+      actorRole: req.user.role,
+      action: 'SINGLE_INTERVIEW_SCHEDULED',
+      entityType: 'interview',
+      entityId: cand.reference_no,
+      metadata: { mode: isRemote ? 'remote' : 'in_person', date: scheduled_date, time: start_time },
+      ipAddress: req.ip
+    });
+
+    res.status(201).json({
+      message: 'تم اعتماد الموعد وتجهيز رسالة واتساب وبطاقة المقابلة بنجاح.',
+      interview: intIns.rows[0],
+      wa_message: waIns.rows[0],
+      wa_link: waLink,
+      visit_url: visitUrl
+    });
+  } catch (err) {
+    await client.query('ROLLBACK').catch(() => {});
+    res.status(500).json({ error: err.message });
+  } finally {
+    client.release();
   }
 });
 
@@ -1657,6 +2104,7 @@ app.post('/api/interviews/auto-schedule', requireAuth(['super_admin', 'hr_coordi
       exclude_dhuhr = true,
       dhuhr_start = '12:00',
       dhuhr_end = '12:45',
+      interview_mode = 'remote',
       interviewer_panel = 'لجنة التوظيف والاختيار المركزية',
       application_ids
     } = req.body;
@@ -1664,6 +2112,9 @@ app.post('/api/interviews/auto-schedule', requireAuth(['super_admin', 'hr_coordi
     const scheduleDate = target_date || new Date().toISOString().slice(0, 10);
     const duration = Math.max(15, parseInt(slot_duration_minutes, 10) || 30);
     const buffer = Math.max(0, parseInt(buffer_minutes, 10) || 10);
+    const isRemote = interview_mode !== 'in_person';
+    const origin = getBaseOrigin(req);
+    const locCfg = await getCompanyLocationConfig();
 
     let candidatesQuery = `
       SELECT a.id AS application_id, a.reference_no, c.full_name, c.phone, j.code AS job_code, j.title AS job_title
@@ -1706,8 +2157,9 @@ app.post('/api/interviews/auto-schedule', requireAuth(['super_admin', 'hr_coordi
     const prayerEnd = timeToMinutes(dhuhr_end);
 
     const tplRes = await client.query("SELECT setting_value FROM system_settings WHERE setting_key = 'whatsapp_templates'");
-    const inviteTemplate = tplRes.rows[0]?.setting_value?.interview_invite ||
-      'السلام عليكم أ. {{name}}، يسعدنا دعوتك لمقابلة وظيفة ({{job_title}} - {{job_code}}) بتاريخ {{date}} الساعة {{time}} عبر Google Meet: {{meet_url}}';
+    const templates = tplRes.rows[0]?.setting_value || {};
+    const tplKey = isRemote ? 'interview_invite' : 'interview_inperson';
+    const inviteTemplate = templates[tplKey] || 'مرحباً {الاسم}، يسعدنا دعوتك لمقابلة ({الوظيفة}) بتاريخ {موعد_المقابلة}. التفاصيل وتأكيد الحضور: {رابط_الحجز}';
 
     await client.query('BEGIN');
 
@@ -1733,25 +2185,53 @@ app.post('/api/interviews/auto-schedule', requireAuth(['super_admin', 'hr_coordi
 
         const startStr = minutesToTime(slotStart);
         const endStr = minutesToTime(slotEnd);
-        const roomSlug = `ruw-${cand.job_code.toLowerCase().replace(/[^a-z0-9]/g, '')}-${crypto.randomBytes(2).toString('hex')}`;
-        const meetUrl = `https://meet.google.com/${roomSlug}`;
+        const visitUrl = `${origin}/Visit.dc.html?ref=${encodeURIComponent(cand.reference_no)}`;
+        const meetUrl = isRemote
+          ? `https://meet.jit.si/JPF-${cand.job_code.replace(/[^a-zA-Z0-9]/g, '')}-${cand.reference_no.slice(-4)}`
+          : visitUrl;
 
         const intIns = await client.query(
           `INSERT INTO interviews (
             application_id, scheduled_date, start_time, end_time, duration_minutes,
-            meeting_platform, meeting_url, interviewer_panel, booking_status, notes
-          ) VALUES ($1,$2,$3::time,$4::time,$5,'Google Meet',$6,$7,'scheduled','جدولة تلقائية ذكية')
+            meeting_platform, meeting_url, interviewer_panel, booking_status,
+            interview_mode, location_building, location_floor, location_office,
+            location_maps_url, location_image_url, location_notes, notes
+          ) VALUES ($1,$2,$3::time,$4::time,$5,$6,$7,$8,'scheduled',$9,$10,$11,$12,$13,$14,$15,'جدولة تلقائية ذكية')
           ON CONFLICT (application_id) DO UPDATE SET
             scheduled_date = EXCLUDED.scheduled_date,
             start_time = EXCLUDED.start_time,
             end_time = EXCLUDED.end_time,
             duration_minutes = EXCLUDED.duration_minutes,
+            meeting_platform = EXCLUDED.meeting_platform,
             meeting_url = EXCLUDED.meeting_url,
             interviewer_panel = EXCLUDED.interviewer_panel,
+            interview_mode = EXCLUDED.interview_mode,
+            location_building = EXCLUDED.location_building,
+            location_floor = EXCLUDED.location_floor,
+            location_office = EXCLUDED.location_office,
+            location_maps_url = EXCLUDED.location_maps_url,
+            location_image_url = EXCLUDED.location_image_url,
+            location_notes = EXCLUDED.location_notes,
             booking_status = 'rescheduled',
             updated_at = NOW()
           RETURNING *`,
-          [cand.application_id, scheduleDate, startStr, endStr, duration, meetUrl, interviewer_panel]
+          [
+            cand.application_id,
+            scheduleDate,
+            startStr,
+            endStr,
+            duration,
+            isRemote ? 'قاعة افتراضية (أونلاين)' : 'مقابلة حضورية في المقر',
+            meetUrl,
+            interviewer_panel,
+            isRemote ? 'remote' : 'in_person',
+            locCfg.building_name,
+            locCfg.floor_number,
+            locCfg.office_number,
+            locCfg.google_maps_url,
+            locCfg.entrance_image_url || '/img/hq-entrance.svg',
+            locCfg.arrival_instructions
+          ]
         );
 
         await client.query(
@@ -1759,13 +2239,20 @@ app.post('/api/interviews/auto-schedule', requireAuth(['super_admin', 'hr_coordi
           [cand.application_id]
         );
 
-        const msgBody = inviteTemplate
-          .replace(/\{\{name\}\}/g, cand.full_name)
-          .replace(/\{\{job_title\}\}/g, cand.job_title)
-          .replace(/\{\{job_code\}\}/g, cand.job_code)
-          .replace(/\{\{date\}\}/g, scheduleDate)
-          .replace(/\{\{time\}\}/g, startStr)
-          .replace(/\{\{meet_url\}\}/g, meetUrl);
+        const msgBody = renderWhatsAppTemplate(inviteTemplate, {
+          name: cand.full_name,
+          job_title: cand.job_title,
+          job_code: cand.job_code,
+          reference_no: cand.reference_no,
+          date: scheduleDate,
+          time: startStr,
+          meet_url: meetUrl,
+          visit_url: visitUrl,
+          building: locCfg.building_name,
+          floor: locCfg.floor_number,
+          office: locCfg.office_number,
+          maps_url: locCfg.google_maps_url
+        });
 
         const waLink = buildWaLink(cand.phone, msgBody);
 
@@ -1773,8 +2260,8 @@ app.post('/api/interviews/auto-schedule', requireAuth(['super_admin', 'hr_coordi
           `INSERT INTO wa_messages (
             application_id, interview_id, template_key, recipient_name, recipient_phone,
             message_body, wa_link, queue_status
-          ) VALUES ($1,$2,'interview_invite',$3,$4,$5,$6,'queued')`,
-          [cand.application_id, intIns.rows[0].id, cand.full_name, normalizePhoneForWa(cand.phone), msgBody, waLink]
+          ) VALUES ($1,$2,$3,$4,$5,$6,$7,'queued')`,
+          [cand.application_id, intIns.rows[0].id, tplKey, cand.full_name, normalizePhoneForWa(cand.phone), msgBody, waLink]
         );
 
         bookedRanges.push([slotStart, slotEnd]);
@@ -1783,7 +2270,8 @@ app.post('/api/interviews/auto-schedule', requireAuth(['super_admin', 'hr_coordi
           full_name: cand.full_name,
           job_code: cand.job_code,
           job_title: cand.job_title,
-          wa_link: waLink
+          wa_link: waLink,
+          visit_url: visitUrl
         });
 
         cursor = slotEnd + buffer;
@@ -1794,20 +2282,6 @@ app.post('/api/interviews/auto-schedule', requireAuth(['super_admin', 'hr_coordi
       if (!slotFound) break;
     }
 
-    await client.query(
-      `UPDATE system_settings SET setting_value = $1::jsonb, updated_at = NOW() WHERE setting_key = 'scheduler_config'`,
-      [JSON.stringify({
-        work_start,
-        work_end,
-        slot_duration_minutes: duration,
-        buffer_minutes: buffer,
-        dhuhr_break_start: dhuhr_start,
-        dhuhr_break_end: dhuhr_end,
-        default_platform: 'Google Meet',
-        panel_name: interviewer_panel
-      })]
-    );
-
     await client.query('COMMIT');
 
     await logAudit({
@@ -1816,12 +2290,12 @@ app.post('/api/interviews/auto-schedule', requireAuth(['super_admin', 'hr_coordi
       action: 'AUTO_SCHEDULE_EXECUTED',
       entityType: 'interviews',
       entityId: scheduleDate,
-      metadata: { scheduled_count: scheduled.length, exclude_dhuhr },
+      metadata: { scheduled_count: scheduled.length, mode: interview_mode, exclude_dhuhr },
       ipAddress: req.ip
     });
 
     res.status(201).json({
-      message: `تمت جدولة ${scheduled.length} مقابلة وتوليد روابط Google Meet وطابور رسائل واتساب بنجاح.`,
+      message: `تمت جدولة ${scheduled.length} مقابلة (${isRemote ? 'عن بُعد' : 'حضورية'}) وتجهيز طابور رسائل واتساب بنجاح.`,
       scheduled
     });
   } catch (err) {
@@ -1861,7 +2335,7 @@ app.patch('/api/interviews/:id', requireAuth(['super_admin', 'hr_coordinator', '
 });
 
 // ---------------------------------------------------------------------------------
-// 9. طابور رسائل واتساب الهجين (محمي بالصلاحيات)
+// 9. طابور رسائل واتساب الهجين وقوالب المراحل الخمس
 // ---------------------------------------------------------------------------------
 
 app.get('/api/wa-messages', requireAuth(), async (req, res) => {
@@ -1874,43 +2348,95 @@ app.get('/api/wa-messages', requireAuth(), async (req, res) => {
       whereSql = 'WHERE wm.queue_status = $1';
     }
 
-    const { rows } = await query(
-      `SELECT
-        wm.*,
-        a.reference_no,
-        j.code AS job_code, j.title AS job_title, j.accent_color,
-        i.scheduled_date, i.start_time, i.meeting_url, i.booking_status
-      FROM wa_messages wm
-      LEFT JOIN applications a ON a.id = wm.application_id
-      LEFT JOIN jobs j ON j.id = a.job_id
-      LEFT JOIN interviews i ON i.id = wm.interview_id
-      ${whereSql}
-      ORDER BY
-        CASE wm.queue_status WHEN 'queued' THEN 1 WHEN 'sent' THEN 2 ELSE 3 END,
-        wm.created_at DESC`,
-      params
-    );
+    const [msgRes, tplRes, locCfg] = await Promise.all([
+      query(
+        `SELECT
+          wm.*,
+          a.reference_no,
+          j.code AS job_code, j.title AS job_title, j.accent_color,
+          i.scheduled_date, i.start_time, i.meeting_url, i.booking_status, i.interview_mode,
+          i.location_building, i.location_floor, i.location_office, i.location_maps_url
+        FROM wa_messages wm
+        LEFT JOIN applications a ON a.id = wm.application_id
+        LEFT JOIN jobs j ON j.id = a.job_id
+        LEFT JOIN interviews i ON i.id = wm.interview_id
+        ${whereSql}
+        ORDER BY
+          CASE wm.queue_status WHEN 'queued' THEN 1 WHEN 'sent' THEN 2 ELSE 3 END,
+          wm.created_at DESC`,
+        params
+      ),
+      query("SELECT setting_value FROM system_settings WHERE setting_key = 'whatsapp_templates'"),
+      getCompanyLocationConfig()
+    ]);
 
-    res.json({ messages: rows });
+    const origin = getBaseOrigin(req);
+    const enrichedMessages = msgRes.rows.map((m) => ({
+      ...m,
+      visit_url: m.reference_no ? `${origin}/Visit.dc.html?ref=${encodeURIComponent(m.reference_no)}` : origin
+    }));
+
+    res.json({
+      messages: enrichedMessages,
+      templates: tplRes.rows[0]?.setting_value || {},
+      company_location: locCfg
+    });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
 
-app.post('/api/wa-messages', requireAuth(['super_admin', 'hr_coordinator']), async (req, res) => {
+// حفظ قوالب واتساب من داخل صفحة Interviews.dc.html مباشرةً (للمدير أو منسق الموارد البشرية)
+app.put('/api/wa-templates', requireAuth(['super_admin', 'hr_coordinator']), async (req, res) => {
   try {
-    const { application_id, recipient_name, recipient_phone, message_body, template_key = 'custom' } = req.body;
+    const incoming = req.body?.templates;
+    if (!incoming || typeof incoming !== 'object') {
+      return res.status(400).json({ error: 'بيانات القوالب غير صالحة.' });
+    }
+    const currRes = await query("SELECT setting_value FROM system_settings WHERE setting_key = 'whatsapp_templates'");
+    const merged = { ...(currRes.rows[0]?.setting_value || {}), ...incoming };
+
+    await query(
+      `INSERT INTO system_settings (setting_key, setting_value, category, description, updated_by, updated_at)
+       VALUES ('whatsapp_templates', $1::jsonb, 'whatsapp_templates', 'قوالب رسائل واتساب الهجينة', $2, NOW())
+       ON CONFLICT (setting_key) DO UPDATE SET
+         setting_value = $1::jsonb,
+         updated_by = $2,
+         updated_at = NOW()`,
+      [JSON.stringify(merged), req.user.full_name]
+    );
+
+    res.json({ message: 'تم حفظ القالب بنجاح!', templates: merged });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/wa-messages', requireAuth(['super_admin', 'hr_coordinator', 'committee_member']), async (req, res) => {
+  try {
+    const { application_id, interview_id, recipient_name, recipient_phone, message_body, template_key = 'custom', mark_sent = false } = req.body;
     if (!recipient_name || !recipient_phone || !message_body) {
       return res.status(400).json({ error: 'اسم المستلم ورقم الجوال ونص الرسالة مطلوبة.' });
     }
     const cleanPhone = normalizePhoneForWa(recipient_phone);
     const waLink = buildWaLink(cleanPhone, message_body);
+    const st = mark_sent ? 'sent' : 'queued';
 
     const { rows } = await query(
-      `INSERT INTO wa_messages (application_id, template_key, recipient_name, recipient_phone, message_body, wa_link, queue_status)
-       VALUES ($1,$2,$3,$4,$5,$6,'queued')
+      `INSERT INTO wa_messages (application_id, interview_id, template_key, recipient_name, recipient_phone, message_body, wa_link, queue_status, sent_by, sent_at)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9, CASE WHEN $8 = 'sent' THEN NOW() ELSE NULL END)
        RETURNING *`,
-      [application_id ? parseInt(application_id, 10) : null, template_key, recipient_name, cleanPhone, message_body, waLink]
+      [
+        application_id ? parseInt(application_id, 10) : null,
+        interview_id ? parseInt(interview_id, 10) : null,
+        template_key,
+        recipient_name,
+        cleanPhone,
+        message_body,
+        waLink,
+        st,
+        mark_sent ? req.user.full_name : null
+      ]
     );
     res.status(201).json({ message: rows[0] });
   } catch (err) {
@@ -1968,8 +2494,40 @@ app.patch('/api/wa-messages/:id', requireAuth(['super_admin', 'hr_coordinator', 
 });
 
 // ---------------------------------------------------------------------------------
-// 10. محاكي الفحص الأعمى والإعدادات وسجل التدقيق (محمي بالصلاحيات)
+// 10. إعدادات المقر وصورة المدخل ومحاكي الفحص الأعمى وسجل التدقيق
 // ---------------------------------------------------------------------------------
+
+app.post('/api/settings/upload-location-image', requireAuth(['super_admin', 'hr_coordinator']), uploadPublicImage.single('entrance_image'), (req, res) => {
+  if (!req.file) {
+    return res.status(400).json({ error: 'لم يتم اختيار صورة صالحة لمدخل المقر.' });
+  }
+  res.json({
+    entrance_image_url: `/uploads/public/${req.file.filename}`,
+    size_kb: Math.round(req.file.size / 1024)
+  });
+});
+
+app.put('/api/settings/company_location', requireAuth(['super_admin', 'hr_coordinator']), async (req, res) => {
+  try {
+    const val = req.body?.setting_value;
+    if (!val || typeof val !== 'object') {
+      return res.status(400).json({ error: 'بيانات المقر غير صالحة.' });
+    }
+    const { rows } = await query(
+      `INSERT INTO system_settings (setting_key, setting_value, category, description, updated_by, updated_at)
+       VALUES ('company_location', $1::jsonb, 'scheduler', 'بيانات مقر المقابلات الحضورية ورقم واتساب الموارد البشرية', $2, NOW())
+       ON CONFLICT (setting_key) DO UPDATE SET
+         setting_value = $1::jsonb,
+         updated_by = $2,
+         updated_at = NOW()
+       RETURNING *`,
+      [JSON.stringify(val), req.user.full_name]
+    );
+    res.json({ setting: rows[0], message: 'تم حفظ بيانات المقر وصورة المدخل ورقم التواصل بنجاح!' });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
 
 app.post('/api/ai/simulate', requireAuth(), async (req, res) => {
   try {
@@ -1999,6 +2557,7 @@ app.post('/api/ai/simulate', requireAuth(), async (req, res) => {
         full_name: candidate_name,
         years_experience: 4,
         qualification: 'بكالوريوس',
+        specialization: 'هندسة كيميائية',
         cv_filename: 'simulated.pdf',
         cv_extracted_text: anonymized
       },
@@ -2024,7 +2583,7 @@ app.post('/api/ai/simulate', requireAuth(), async (req, res) => {
   }
 });
 
-app.get('/api/settings', requireAuth(['super_admin']), async (_req, res) => {
+app.get('/api/settings', requireAuth(['super_admin', 'hr_coordinator']), async (_req, res) => {
   try {
     const { rows } = await query('SELECT * FROM system_settings ORDER BY setting_key ASC');
     const settingsMap = {};
@@ -2114,8 +2673,8 @@ ensureDatabaseInitialized()
   .then(() => {
     app.listen(PORT, HOST, () => {
       console.log(`=============================================================`);
-      console.log(`🚀 منصة التوظيف الذكية تعمل الآن على http://${HOST}:${PORT}`);
-      console.log(`🔒 نظام الصلاحيات (RBAC) وتكامل Ollama مفعّلان بالكامل`);
+      console.log(`🚀 منصة التوظيف الذكية v2.1 تعمل الآن على http://${HOST}:${PORT}`);
+      console.log(`🔒 نظام الصلاحيات + العداد الذكي 60s + بطاقة الزيارة مفعّلة`);
       console.log(`=============================================================`);
     });
   })

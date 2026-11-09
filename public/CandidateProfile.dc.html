@@ -98,7 +98,7 @@
                 <h2 style="font-size:24px;margin-bottom:4px;">${SmartHR.escapeHtml(currentApp.full_name)}</h2>
                 <div style="font-size:13px;color:var(--text-secondary);display:flex;gap:16px;flex-wrap:wrap;">
                   <span>📍 ${SmartHR.escapeHtml(currentApp.city)}</span>
-                  <span>🎓 ${SmartHR.escapeHtml(currentApp.qualification)}</span>
+                  <span>🎓 ${SmartHR.escapeHtml(currentApp.qualification)}${currentApp.specialization ? ` — ${SmartHR.escapeHtml(currentApp.specialization)}` : ''}</span>
                   <span>⏳ خبرة <strong class="mono">${currentApp.years_experience}</strong> سنوات</span>
                   <span class="mono">📞 ${SmartHR.escapeHtml(currentApp.phone)}</span>
                   <span class="mono">✉️ ${SmartHR.escapeHtml(currentApp.email)}</span>
