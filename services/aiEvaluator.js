@@ -67,6 +67,9 @@ function resolveOllamaBaseUrl(customUrl) {
 async function listOllamaModels(customBaseUrl) {
   const candidates = [
     resolveOllamaBaseUrl(customBaseUrl),
+    'http://ollama-yk6j-ollama-1:11434',
+    'http://ollama:11434',
+    'http://host.docker.internal:11434',
     'http://127.0.0.1:11434',
     'http://172.17.0.1:11434'
   ];
@@ -74,7 +77,7 @@ async function listOllamaModels(customBaseUrl) {
 
   for (const baseUrl of uniqueUrls) {
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 3500);
+    const timer = setTimeout(() => controller.abort(), 4000);
     try {
       const res = await fetch(`${baseUrl}/api/tags`, { signal: controller.signal });
       clearTimeout(timer);
@@ -97,18 +100,18 @@ async function listOllamaModels(customBaseUrl) {
     reachable: false,
     base_url: resolveOllamaBaseUrl(customBaseUrl),
     models: [],
-    hint: 'تأكد من تشغيل خدمة Ollama وتفعيل OLLAMA_HOST=0.0.0.0:11434 ليتمكن Docker من الوصول إليها.'
+    hint: 'تأكد من تشغيل خدمة Ollama والسماح لجسر Docker بالوصول إلى المنفذ 11434.'
   };
 }
 
 /**
- * فحص استجابة موديل Ollama فعلياً
+ * فحص استجابة موديل Ollama فعلياً (مُحسّن لبيئات CPU و GPU معاً)
  */
 async function testOllamaModel({ baseUrl, model }) {
   const url = resolveOllamaBaseUrl(baseUrl);
   const start = Date.now();
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), 35000);
+  const timer = setTimeout(() => controller.abort(), 120000);
   try {
     const res = await fetch(`${url}/api/chat`, {
       method: 'POST',
@@ -117,7 +120,8 @@ async function testOllamaModel({ baseUrl, model }) {
         model,
         stream: false,
         format: 'json',
-        options: { temperature: 0.1 },
+        keep_alive: '30m',
+        options: { temperature: 0.1, num_ctx: 2048, num_predict: 120 },
         messages: [
           {
             role: 'user',
@@ -320,14 +324,14 @@ function gradeQuestionsDeterministically(jobQuestions, submittedAnswers) {
  * استدعاء مزود ذكاء اصطناعي (يدعم Ollama المحلي + OpenAI + Gemini + Claude + DeepSeek)
  */
 async function callExternalAIProvider(provider, config, systemPrompt, userPayload) {
-  const timeoutMs = provider === 'ollama' ? 45000 : 12000;
+  const timeoutMs = provider === 'ollama' ? 120000 : 12000;
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
 
   try {
     if (provider === 'ollama') {
       const baseUrl = resolveOllamaBaseUrl(config.ollama_base_url);
-      const model = config.model_name || process.env.OLLAMA_MODEL || 'qwen2.5:7b';
+      const model = config.model_name || process.env.OLLAMA_MODEL || 'qwen2.5:3b';
       const res = await fetch(`${baseUrl}/api/chat`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -335,7 +339,12 @@ async function callExternalAIProvider(provider, config, systemPrompt, userPayloa
           model,
           stream: false,
           format: 'json',
-          options: { temperature: Number(config.temperature ?? 0.2) },
+          keep_alive: '30m',
+          options: {
+            temperature: Number(config.temperature ?? 0.2),
+            num_ctx: 2048,
+            num_predict: 450
+          },
           messages: [
             { role: 'system', content: systemPrompt },
             { role: 'user', content: JSON.stringify(userPayload) }
