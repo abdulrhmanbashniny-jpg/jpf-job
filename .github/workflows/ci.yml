@@ -43,17 +43,34 @@ jobs:
           DATABASE_URL: postgresql://postgres:postgres_ci_password@127.0.0.1:5432/smart_hr_db
         run: npm run db:init
 
-      - name: Verify API & All 14 Frontend Pages
+      - name: Verify Public Portal, RBAC Protection, Session Auth & Ollama Endpoints
         env:
           PORT: 3000
           HOST: 127.0.0.1
+          ADMIN_ACCESS_CODE: CI-TEST-ADMIN-2026
           DATABASE_URL: postgresql://postgres:postgres_ci_password@127.0.0.1:5432/smart_hr_db
         run: |
           node server.js &
           SERVER_PID=$!
           sleep 3
+          # 1. فحص الصحة وبوابة المتقدمين العامة
           curl -fsS http://127.0.0.1:3000/api/health
           curl -fsS http://127.0.0.1:3000/index.html >/dev/null
-          curl -fsS http://127.0.0.1:3000/Dashboard.dc.html >/dev/null
-          curl -fsS http://127.0.0.1:3000/Ranking.dc.html >/dev/null
+          curl -fsS http://127.0.0.1:3000/Login.dc.html >/dev/null
+
+          # 2. التأكد من منع الزوار غير المسجلين من دخول صفحات اللجنة (302 Redirect) و API (401)
+          DASH_CODE=$(curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:3000/Dashboard.dc.html)
+          test "$DASH_CODE" = "302"
+          API_CODE=$(curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:3000/api/stats)
+          test "$API_CODE" = "401"
+
+          # 3. تسجيل الدخول بحساب المدير وفحص صفحات اللجنة وموديلات Ollama
+          curl -fsS -c /tmp/cookies.txt -X POST http://127.0.0.1:3000/api/auth/login \
+            -H "Content-Type: application/json" \
+            -d '{"username":"admin","password":"CI-TEST-ADMIN-2026"}'
+          curl -fsS -b /tmp/cookies.txt http://127.0.0.1:3000/Dashboard.dc.html >/dev/null
+          curl -fsS -b /tmp/cookies.txt http://127.0.0.1:3000/Users.dc.html >/dev/null
+          curl -fsS -b /tmp/cookies.txt http://127.0.0.1:3000/api/stats >/dev/null
+          curl -fsS -b /tmp/cookies.txt http://127.0.0.1:3000/api/ollama/models >/dev/null
+          rm -f /tmp/cookies.txt
           kill $SERVER_PID

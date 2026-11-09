@@ -19,7 +19,6 @@ function normalizeNumber(raw) {
 function anonymizeText(text, candidate = {}) {
   if (!text) return '';
   let clean = String(text);
-  // إخفاء البريد الإلكتروني وأرقام الجوال
   clean = clean.replace(/[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/g, '[بريد_محجوب]');
   clean = clean.replace(/(\+?966|05)\d{8,9}/g, '[جوال_محجوب]');
   if (candidate.full_name) {
@@ -30,6 +29,118 @@ function anonymizeText(text, candidate = {}) {
     }
   }
   return clean;
+}
+
+/**
+ * استخراج JSON بأمان حتى من نماذج التفكير مثل deepseek-r1 على Ollama
+ */
+function safeParseModelJson(rawText) {
+  if (!rawText) return null;
+  const cleaned = String(rawText)
+    .replace(/<think>[\s\S]*?<\/think>/gi, '')
+    .replace(/```json/gi, '')
+    .replace(/```/g, '')
+    .trim();
+  try {
+    return JSON.parse(cleaned);
+  } catch (_e) {
+    const match = cleaned.match(/\{[\s\S]*\}/);
+    if (match) {
+      try {
+        return JSON.parse(match[0]);
+      } catch (_e2) {
+        return null;
+      }
+    }
+    return null;
+  }
+}
+
+function resolveOllamaBaseUrl(customUrl) {
+  const raw = customUrl || process.env.OLLAMA_BASE_URL || 'http://host.docker.internal:11434';
+  return String(raw).replace(/\/+$/, '');
+}
+
+/**
+ * جلب قائمة الموديلات المثبتة فعلياً على خادم Ollama المحلي
+ */
+async function listOllamaModels(customBaseUrl) {
+  const candidates = [
+    resolveOllamaBaseUrl(customBaseUrl),
+    'http://127.0.0.1:11434',
+    'http://172.17.0.1:11434'
+  ];
+  const uniqueUrls = [...new Set(candidates)];
+
+  for (const baseUrl of uniqueUrls) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 3500);
+    try {
+      const res = await fetch(`${baseUrl}/api/tags`, { signal: controller.signal });
+      clearTimeout(timer);
+      if (res.ok) {
+        const data = await res.json();
+        const models = (data.models || []).map((m) => ({
+          name: m.name,
+          size_gb: m.size ? Number((m.size / (1024 ** 3)).toFixed(2)) : null,
+          family: m.details?.family || '',
+          parameter_size: m.details?.parameter_size || ''
+        }));
+        return { reachable: true, base_url: baseUrl, models };
+      }
+    } catch (_err) {
+      clearTimeout(timer);
+    }
+  }
+
+  return {
+    reachable: false,
+    base_url: resolveOllamaBaseUrl(customBaseUrl),
+    models: [],
+    hint: 'تأكد من تشغيل خدمة Ollama وتفعيل OLLAMA_HOST=0.0.0.0:11434 ليتمكن Docker من الوصول إليها.'
+  };
+}
+
+/**
+ * فحص استجابة موديل Ollama فعلياً
+ */
+async function testOllamaModel({ baseUrl, model }) {
+  const url = resolveOllamaBaseUrl(baseUrl);
+  const start = Date.now();
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 35000);
+  try {
+    const res = await fetch(`${url}/api/chat`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model,
+        stream: false,
+        format: 'json',
+        options: { temperature: 0.1 },
+        messages: [
+          {
+            role: 'user',
+            content: 'أجب بصيغة JSON فقط تحتوي على المفتاح status وقيمته "جاهز للعمل بالعربية" والمفتاح engine وقيمته اسم الموديل.'
+          }
+        ]
+      }),
+      signal: controller.signal
+    });
+    if (!res.ok) {
+      const txt = await res.text();
+      throw new Error(`Ollama HTTP ${res.status}: ${txt.slice(0, 180)}`);
+    }
+    const data = await res.json();
+    return {
+      ok: true,
+      latency_ms: Date.now() - start,
+      model: data.model || model,
+      reply: safeParseModelJson(data.message?.content) || data.message?.content
+    };
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 /**
@@ -206,14 +317,37 @@ function gradeQuestionsDeterministically(jobQuestions, submittedAnswers) {
 }
 
 /**
- * استدعاء مزود ذكاء اصطناعي خارجي (اختياري عبر متغيرات البيئة فقط على الخادم)
+ * استدعاء مزود ذكاء اصطناعي (يدعم Ollama المحلي + OpenAI + Gemini + Claude + DeepSeek)
  */
 async function callExternalAIProvider(provider, config, systemPrompt, userPayload) {
+  const timeoutMs = provider === 'ollama' ? 45000 : 12000;
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), 12000);
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
 
   try {
-    if (provider === 'openai' && process.env.OPENAI_API_KEY) {
+    if (provider === 'ollama') {
+      const baseUrl = resolveOllamaBaseUrl(config.ollama_base_url);
+      const model = config.model_name || process.env.OLLAMA_MODEL || 'qwen2.5:7b';
+      const res = await fetch(`${baseUrl}/api/chat`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          model,
+          stream: false,
+          format: 'json',
+          options: { temperature: Number(config.temperature ?? 0.2) },
+          messages: [
+            { role: 'system', content: systemPrompt },
+            { role: 'user', content: JSON.stringify(userPayload) }
+          ]
+        }),
+        signal: controller.signal
+      });
+      if (res.ok) {
+        const data = await res.json();
+        return safeParseModelJson(data.message?.content);
+      }
+    } else if (provider === 'openai' && process.env.OPENAI_API_KEY) {
       const model = config.model_name || process.env.OPENAI_MODEL || 'gpt-4o-mini';
       const res = await fetch('https://api.openai.com/v1/chat/completions', {
         method: 'POST',
@@ -234,7 +368,7 @@ async function callExternalAIProvider(provider, config, systemPrompt, userPayloa
       });
       if (res.ok) {
         const data = await res.json();
-        return JSON.parse(data.choices?.[0]?.message?.content || '{}');
+        return safeParseModelJson(data.choices?.[0]?.message?.content);
       }
     } else if (provider === 'gemini' && process.env.GEMINI_API_KEY) {
       const model = process.env.GEMINI_MODEL || 'gemini-2.0-flash';
@@ -250,8 +384,7 @@ async function callExternalAIProvider(provider, config, systemPrompt, userPayloa
       });
       if (res.ok) {
         const data = await res.json();
-        const txt = data.candidates?.[0]?.content?.parts?.[0]?.text || '{}';
-        return JSON.parse(txt);
+        return safeParseModelJson(data.candidates?.[0]?.content?.parts?.[0]?.text);
       }
     } else if (provider === 'deepseek' && process.env.DEEPSEEK_API_KEY) {
       const model = process.env.DEEPSEEK_MODEL || 'deepseek-chat';
@@ -274,7 +407,7 @@ async function callExternalAIProvider(provider, config, systemPrompt, userPayloa
       });
       if (res.ok) {
         const data = await res.json();
-        return JSON.parse(data.choices?.[0]?.message?.content || '{}');
+        return safeParseModelJson(data.choices?.[0]?.message?.content);
       }
     } else if (provider === 'claude' && process.env.ANTHROPIC_API_KEY) {
       const model = process.env.ANTHROPIC_MODEL || 'claude-3-5-sonnet-latest';
@@ -295,13 +428,11 @@ async function callExternalAIProvider(provider, config, systemPrompt, userPayloa
       });
       if (res.ok) {
         const data = await res.json();
-        const txt = data.content?.[0]?.text || '{}';
-        const match = txt.match(/\{[\s\S]*\}/);
-        if (match) return JSON.parse(match[0]);
+        return safeParseModelJson(data.content?.[0]?.text);
       }
     }
   } catch (err) {
-    console.warn(`[AI Provider Fallback] تعذر الاتصال بالمزود الخارجي (${provider})، تم التبديل لمحرك التقييم المدمج:`, err.message);
+    console.warn(`[AI Provider Fallback] تعذر الاتصال بالمزود (${provider})، تم التبديل لمحرك التقييم المدمج:`, err.message);
   } finally {
     clearTimeout(timer);
   }
@@ -327,7 +458,6 @@ async function evaluateSubmission({ job, candidate, answers, telemetry = {}, aiC
 
   const blindCode = `CAND-BLIND-${crypto.randomBytes(2).toString('hex').toUpperCase()}`;
 
-  // بناء ملخص نقاط القوة والفجوات محلياً بشكل تخصصي
   const mcqRight = gradedItems.filter((i) => i.question_type === 'mcq' && i.awarded_points >= i.max_points * 0.9).length;
   const numRight = gradedItems.filter((i) => i.question_type === 'numeric' && i.awarded_points >= i.max_points * 0.9).length;
   const textStrong = gradedItems.filter((i) => i.question_type === 'text' && i.awarded_points >= i.max_points * 0.7).length;
@@ -384,7 +514,7 @@ async function evaluateSubmission({ job, candidate, answers, telemetry = {}, aiC
     const sysPrompt = `${job.ai_prompt}\nأعد النتيجة بصيغة JSON فقط تحتوي على المفاتيح: blind_summary (نص عربي موجز)، strengths (مصفوفة نصوص عربية)، gaps (مصفوفة نصوص عربية)، recommendation (نص عربي). لا تذكر أي أسماء شخصية.`;
     const extResult = await callExternalAIProvider(requestedProvider, aiConfig, sysPrompt, anonymizedPayload);
     if (extResult && extResult.blind_summary) {
-      providerUsed = requestedProvider;
+      providerUsed = requestedProvider === 'ollama' ? `ollama:${aiConfig.model_name || process.env.OLLAMA_MODEL || 'local'}` : requestedProvider;
       blindSummary = extResult.blind_summary;
       if (Array.isArray(extResult.strengths) && extResult.strengths.length) {
         strengths.splice(0, strengths.length, ...extResult.strengths.slice(0, 4));
@@ -415,15 +545,41 @@ async function evaluateSubmission({ job, candidate, answers, telemetry = {}, aiC
 }
 
 /**
- * فحص حالة مفاتيح الذكاء الاصطناعي في متغيرات البيئة دون كشف أي قيمة سرية
+ * فحص حالة مزودي الذكاء الاصطناعي بما فيها Ollama المحلي
  */
 function getProvidersEnvStatus() {
   return {
-    'smart-rubric': { configured: true, mode: 'built-in', label: 'محرك التقييم الدلالي المدمج (Smart Rubric)' },
-    openai: { configured: Boolean(process.env.OPENAI_API_KEY), model: process.env.OPENAI_MODEL || 'gpt-4o-mini', label: 'OpenAI GPT-4o' },
-    gemini: { configured: Boolean(process.env.GEMINI_API_KEY), model: process.env.GEMINI_MODEL || 'gemini-2.0-flash', label: 'Google Gemini' },
-    claude: { configured: Boolean(process.env.ANTHROPIC_API_KEY), model: process.env.ANTHROPIC_MODEL || 'claude-3-5-sonnet-latest', label: 'Anthropic Claude' },
-    deepseek: { configured: Boolean(process.env.DEEPSEEK_API_KEY), model: process.env.DEEPSEEK_MODEL || 'deepseek-chat', label: 'DeepSeek AI' }
+    ollama: {
+      configured: true,
+      model: process.env.OLLAMA_MODEL || 'qwen2.5:7b',
+      base_url: resolveOllamaBaseUrl(),
+      label: 'Ollama Local LLM (موديلات محلية على خادمك)'
+    },
+    'smart-rubric': {
+      configured: true,
+      mode: 'built-in',
+      label: 'محرك التقييم الدلالي المدمج (Smart Rubric)'
+    },
+    openai: {
+      configured: Boolean(process.env.OPENAI_API_KEY),
+      model: process.env.OPENAI_MODEL || 'gpt-4o-mini',
+      label: 'OpenAI GPT-4o'
+    },
+    gemini: {
+      configured: Boolean(process.env.GEMINI_API_KEY),
+      model: process.env.GEMINI_MODEL || 'gemini-2.0-flash',
+      label: 'Google Gemini'
+    },
+    claude: {
+      configured: Boolean(process.env.ANTHROPIC_API_KEY),
+      model: process.env.ANTHROPIC_MODEL || 'claude-3-5-sonnet-latest',
+      label: 'Anthropic Claude'
+    },
+    deepseek: {
+      configured: Boolean(process.env.DEEPSEEK_API_KEY),
+      model: process.env.DEEPSEEK_MODEL || 'deepseek-chat',
+      label: 'DeepSeek AI'
+    }
   };
 }
 
@@ -431,5 +587,7 @@ module.exports = {
   evaluateSubmission,
   anonymizeText,
   computeCvMatchScore,
-  getProvidersEnvStatus
+  getProvidersEnvStatus,
+  listOllamaModels,
+  testOllamaModel
 };

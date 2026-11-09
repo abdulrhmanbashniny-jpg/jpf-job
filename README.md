@@ -92,92 +92,32 @@ smart-hr-platform/
 
 ---
 
-## 5. دليل الرفع إلى GitHub والتشغيل المباشر على خادم VPS عبر Docker
+## 5. دليل الترقية والإعداد على خادم الإنتاج (Ollama + النطاق الرسمي + الصلاحيات RBAC)
 
-### أولاً: رفع المشروع إلى مستودع GitHub (`abdulrhmanbashniny-jpg/jpf-job`)
-
+### أولاً: النشر أو الترقية بضغطة واحدة على الخادم (`Ubuntu 24.04 VPS`)
 ```bash
-git init
-git add .
-git commit -m "feat: initial production release of JPF Smart HR Platform"
-git branch -M main
-git remote add origin https://github.com/abdulrhmanbashniny-jpg/jpf-job.git
-git push -u origin main
+cd /opt/jpf-job && git pull origin main && bash deploy-vps.sh
 ```
+*سيقوم السكريبت بتحديث الحاويات دون المساس ببيانات قاعدة البيانات، وتفعيل جدول الصلاحيات (`staff_users`) تلقائياً، وطباعة بيانات دخول المدير العام (`admin`).*
 
-### ثانياً: التشغيل الفوري على خادم VPS (Ubuntu / Debian) باستخدام Docker Compose
-
-1. **الاتصال بالخادم واستنساخ المستودع:**
-   ```bash
-   ssh root@YOUR_VPS_IP
-   git clone https://github.com/abdulrhmanbashniny-jpg/jpf-job.git
-   cd jpf-job
-   ```
-
-2. **إعداد ملف متغيرات البيئة الآمن (`.env`):**
-   ```bash
-   cp .env.example .env
-   nano .env
-   ```
-   عدّل كلمة مرور قاعدة البيانات، وأضف مفتاح مزود الذكاء الاصطناعي إن رغبت (اختياري — حيث يعمل محرك `smart-rubric` المدمج بكفاءة كاملة حتى بدون مفاتيح خارجية):
-   ```env
-   POSTGRES_USER=smart_hr_user
-   POSTGRES_PASSWORD=ChangeThisStrongPassword_2026!
-   POSTGRES_DB=smart_hr_db
-   AI_DEFAULT_PROVIDER=smart-rubric
-   OPENAI_API_KEY=
-   GEMINI_API_KEY=
-   ```
-
-3. **بناء وتشغيل المنصة وقاعدة البيانات في الخلفية:**
-   ```bash
-   docker compose up -d --build
-   ```
-   *سيقوم Docker تلقائياً بتشغيل PostgreSQL 17، تنفيذ ملف `database/schema_and_seed.sql` بالكامل، وتشغيل خادم Node.js على المنفذ `3000`.*
-
-4. **التحقق من سلامة التشغيل (Health Check):**
-   ```bash
-   curl http://127.0.0.1:3000/api/health
-   ```
-
-### ثالثاً: التشغيل المحلي أو بدون Docker (Node.js + PostgreSQL مباشر)
-
+### ثانياً: ربط موديلات Ollama الخاصة بك على الخادم (مجاني ومحلي 100%)
 ```bash
-# 1. تثبيت الحزم
-npm install
-
-# 2. ضبط متغير الاتصال بقاعدة البيانات في ملف .env
-cp .env.example .env
-
-# 3. تهيئة الجداول والبيانات الافتراضية
-npm run db:init
-
-# 4. تشغيل الخادم الإنتاجي
-npm start
+sudo bash /opt/jpf-job/setup-ollama-bridge.sh qwen2.5:7b
 ```
+ثم ادخل إلى لوحة اللجنة (`Settings.dc.html`) ← اختر **Ollama Local LLM** ← اضغط **جلب الموديلات المثبتة** ← **حفظ**.
 
-### رابعاً: ربط النطاق وتفعيل HTTPS (Nginx + Certbot على VPS)
-
-```nginx
-server {
-    listen 80;
-    server_name hr.yourdomain.com;
-    client_max_body_size 12M;
-
-    location / {
-        proxy_pass http://127.0.0.1:3000;
-        proxy_http_version 1.1;
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto $scheme;
-    }
-}
-```
-ثم فعّل شهادة SSL المجانية بأمر واحد:
+### ثالثاً: ربط النطاق الرسمي (Custom Domain) مع شهادة HTTPS تلقائية
+وجّه سجل `A Record` لنطاقك إلى عنوان IP الخادم، ثم نفّذ أمراً واحداً فقط:
 ```bash
-sudo certbot --nginx -d hr.yourdomain.com
+sudo bash /opt/jpf-job/setup-domain.sh jobs.yourdomain.com admin@yourdomain.com
 ```
+*يقوم السكريبت تلقائياً بتثبيت Nginx، ضبط حجم رفع السير الذاتية (15MB) ومهلة استجابة Ollama (120s)، قفل منفذ 3000 على `127.0.0.1`، وإصدار شهادة SSL رسمية من Let's Encrypt.*
+
+### رابعاً: نظام الصلاحيات وحسابات اللجنة (`RBAC`)
+جميع شاشات اللجنة (`Dashboard`, `CandidateProfile`, `Ranking`, `Scheduler`, `Interviews`, `JobBuilder`, `Settings`, `Users`, `System`) ومجلد السير الذاتية (`/uploads/*`) محمية بالكامل على مستوى الخادم بجلسات `HttpOnly` مشفرة:
+* **`super_admin` (مدير النظام):** كامل الصلاحيات + إدارة حسابات الأعضاء (`Users.dc.html`) + إعدادات Ollama والأوزان.
+* **`committee_member` (عضو لجنة التوظيف):** استعراض ملفات المتقدمين وإدخال التقييم المعياري (1-5).
+* **`hr_coordinator` (منسق الموارد البشرية):** إدارة الوظائف والأسئلة، الجدولة الذكية، وطابور رسائل واتساب.
 
 ---
 

@@ -47,6 +47,26 @@ CREATE INDEX IF NOT EXISTS idx_audit_logs_created_at ON audit_logs (created_at D
 CREATE INDEX IF NOT EXISTS idx_audit_logs_entity ON audit_logs (entity_type, entity_id);
 
 -- ---------------------------------------------------------------------------------
+-- 2-ب. جدول حسابات أعضاء اللجنة والصلاحيات (staff_users — RBAC)
+-- ---------------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS staff_users (
+    id              SERIAL PRIMARY KEY,
+    username        VARCHAR(60) NOT NULL UNIQUE,
+    full_name       VARCHAR(150) NOT NULL,
+    job_title       VARCHAR(120) NOT NULL DEFAULT 'عضو لجنة التوظيف',
+    role            VARCHAR(40) NOT NULL DEFAULT 'committee_member' CHECK (role IN (
+                        'super_admin',
+                        'committee_member',
+                        'hr_coordinator'
+                    )),
+    password_hash   TEXT NOT NULL,
+    is_active       BOOLEAN NOT NULL DEFAULT TRUE,
+    last_login_at   TIMESTAMPTZ,
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+-- ---------------------------------------------------------------------------------
 -- 3. جدول الوظائف وبرومنتات الذكاء الاصطناعي وأسئلة الجدارة (jobs)
 -- ---------------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS jobs (

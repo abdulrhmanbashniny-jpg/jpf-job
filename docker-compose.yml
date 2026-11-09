@@ -24,8 +24,10 @@ services:
     depends_on:
       db:
         condition: service_healthy
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     ports:
-      - "${PORT:-3000}:3000"
+      - "${BIND_IP:-0.0.0.0}:${PORT:-3000}:3000"
     environment:
       NODE_ENV: production
       HOST: 0.0.0.0
@@ -33,12 +35,15 @@ services:
       DATABASE_URL: postgresql://${POSTGRES_USER:-smart_hr_user}:${POSTGRES_PASSWORD:-StrongSecretPass2026}@db:5432/${POSTGRES_DB:-smart_hr_db}
       AUTO_SEED_DB: "true"
       AI_DEFAULT_PROVIDER: ${AI_DEFAULT_PROVIDER:-smart-rubric}
+      OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://host.docker.internal:11434}
+      OLLAMA_MODEL: ${OLLAMA_MODEL:-qwen2.5:7b}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       GEMINI_API_KEY: ${GEMINI_API_KEY:-}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
       DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}
       MAX_UPLOAD_MB: ${MAX_UPLOAD_MB:-10}
       ADMIN_ACCESS_CODE: ${ADMIN_ACCESS_CODE:-RUWAA-HR-2026}
+      SESSION_SECRET: ${SESSION_SECRET:-}
     volumes:
       - uploads_data:/app/uploads
 

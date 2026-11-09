@@ -1,0 +1,234 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>حسابات اللجنة والصلاحيات | رُواء للتوظيف الذكي</title>
+  <link rel="stylesheet" href="css/design-system.css" />
+</head>
+<body>
+  <div class="admin-shell">
+    <div id="admin-sidebar-mount"></div>
+
+    <main class="admin-main">
+      <div class="admin-topbar">
+        <div>
+          <div class="page-eyebrow">الحوكمة وأمن الوصول — RBAC</div>
+          <h1 class="page-title">إدارة حسابات اللجنة والصلاحيات</h1>
+          <p class="page-subtitle">تحكم كامل بمن يملك صلاحية الدخول للوحة التحكم، تقييم المتقدمين، أو تعديل إعدادات النظام وموديلات Ollama.</p>
+        </div>
+        <span class="badge badge-olive">تشفير PBKDF2-SHA512 + HttpOnly Cookies</span>
+      </div>
+
+      <div class="grid-3" style="margin-bottom:22px;">
+        <div class="card" style="padding:18px;border-right:4px solid var(--terracotta);">
+          <strong style="font-size:14px;">مدير النظام (<span class="mono">super_admin</span>)</strong>
+          <p style="font-size:12.5px;color:var(--text-secondary);margin-top:6px;">كامل الصلاحيات: إدارة المستخدمين، ربط موديلات Ollama والذكاء الاصطناعي، تعديل أوزان المفاضلة، وسجل التدقيق.</p>
+        </div>
+        <div class="card" style="padding:18px;border-right:4px solid var(--olive);">
+          <strong style="font-size:14px;">عضو لجنة التوظيف (<span class="mono">committee_member</span>)</strong>
+          <p style="font-size:12.5px;color:var(--text-secondary);margin-top:6px;">استعراض ملفات المتقدمين والسير الذاتية، إدخال تقييم اللجنة المعياري (1-5)، ومتابعة الترتيب والمقابلات.</p>
+        </div>
+        <div class="card" style="padding:18px;border-right:4px solid var(--saffron);">
+          <strong style="font-size:14px;">منسق الموارد البشرية (<span class="mono">hr_coordinator</span>)</strong>
+          <p style="font-size:12.5px;color:var(--text-secondary);margin-top:6px;">إنشاء وتعديل الوظائف وبنك الأسئلة، تشغيل الجدولة التلقائية للمقابلات، وإرسال دعوات واتساب.</p>
+        </div>
+      </div>
+
+      <div class="grid-2" style="align-items:start;">
+        <section class="card">
+          <h2 style="font-size:18px;margin-bottom:14px;">+ إنشاء حساب جديد لعضو لجنة أو منسق</h2>
+          <form id="create-user-form">
+            <div class="grid-2">
+              <div class="form-group">
+                <label class="form-label">اسم الدخول (Username) *</label>
+                <input type="text" id="new-username" class="form-control mono" placeholder="eng.fahad" required />
+              </div>
+              <div class="form-group">
+                <label class="form-label">الدور والصلاحية *</label>
+                <select id="new-role" class="form-select">
+                  <option value="committee_member">عضو لجنة التوظيف</option>
+                  <option value="hr_coordinator">منسق الموارد البشرية</option>
+                  <option value="super_admin">مدير النظام والمنصة</option>
+                </select>
+              </div>
+            </div>
+
+            <div class="grid-2">
+              <div class="form-group">
+                <label class="form-label">الاسم الكامل (يظهر في التقييمات) *</label>
+                <input type="text" id="new-fullname" class="form-control" placeholder="م. فهد الحربي" required />
+              </div>
+              <div class="form-group">
+                <label class="form-label">المسمى الوظيفي</label>
+                <input type="text" id="new-jobtitle" class="form-control" placeholder="مدير الجودة والمختبرات" />
+              </div>
+            </div>
+
+            <div class="form-group">
+              <label class="form-label">كلمة المرور المبدئية (8 خانات فأكثر) *</label>
+              <input type="password" id="new-password" class="form-control mono" minlength="8" placeholder="••••••••" required />
+            </div>
+
+            <button type="submit" class="btn btn-terracotta" style="width:100%;">إنشاء وتفعيل الحساب فوراً ✓</button>
+          </form>
+
+          <hr style="border:none;border-top:1px solid var(--border-color);margin:24px 0;" />
+
+          <h3 style="font-size:16px;margin-bottom:12px;">🔑 تغيير كلمة مرور حسابك الحالي</h3>
+          <form id="change-own-pwd-form">
+            <div class="grid-2">
+              <div class="form-group">
+                <label class="form-label">كلمة المرور الحالية</label>
+                <input type="password" id="curr-pwd" class="form-control mono" required />
+              </div>
+              <div class="form-group">
+                <label class="form-label">كلمة المرور الجديدة</label>
+                <input type="password" id="next-pwd" class="form-control mono" minlength="8" required />
+              </div>
+            </div>
+            <button type="submit" class="btn btn-outline btn-sm">تحديث كلمة مروري ✓</button>
+          </form>
+        </section>
+
+        <section class="card">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;">
+            <h2 style="font-size:18px;">الحسابات المعتمدة في المنصة</h2>
+            <button class="btn btn-outline btn-sm" onclick="loadUsers()">تحديث ↻</button>
+          </div>
+          <div class="table-wrap">
+            <table class="data-table">
+              <thead>
+                <tr>
+                  <th>المستخدم</th>
+                  <th>الصلاحية</th>
+                  <th>الحالة</th>
+                  <th>آخر دخول</th>
+                  <th>إجراء</th>
+                </tr>
+              </thead>
+              <tbody id="users-tbody"></tbody>
+            </table>
+          </div>
+        </section>
+      </div>
+    </main>
+  </div>
+
+  <script src="js/common.js"></script>
+  <script>
+    SmartHR.renderAdminSidebar('users');
+
+    async function loadUsers() {
+      try {
+        const data = await SmartHR.apiFetch('/api/users');
+        document.getElementById('users-tbody').innerHTML = (data.users || []).map((u) => `
+          <tr>
+            <td>
+              <strong>${SmartHR.escapeHtml(u.full_name)}</strong>
+              <div class="mono" style="font-size:11px;color:var(--text-muted);">@${SmartHR.escapeHtml(u.username)} • ${SmartHR.escapeHtml(u.job_title)}</div>
+            </td>
+            <td>
+              <select class="form-select" style="padding:5px 8px;font-size:12px;" onchange="updateUserRole(${u.id}, this.value)">
+                <option value="super_admin" ${u.role === 'super_admin' ? 'selected' : ''}>مدير النظام</option>
+                <option value="committee_member" ${u.role === 'committee_member' ? 'selected' : ''}>عضو لجنة</option>
+                <option value="hr_coordinator" ${u.role === 'hr_coordinator' ? 'selected' : ''}>منسق HR</option>
+              </select>
+            </td>
+            <td>${u.is_active ? '<span class="badge badge-olive">نشط</span>' : '<span class="badge badge-terracotta">موقوف</span>'}</td>
+            <td class="mono" style="font-size:11.5px;">${u.last_login_at ? SmartHR.formatDate(u.last_login_at) : 'لم يسجل بعد'}</td>
+            <td>
+              <div style="display:flex;gap:6px;flex-wrap:wrap;">
+                <button class="btn btn-outline btn-sm" onclick="toggleUserActive(${u.id}, ${!u.is_active})">${u.is_active ? 'إيقاف' : 'تفعيل'}</button>
+                <button class="btn btn-outline btn-sm" onclick="resetUserPassword(${u.id}, '${SmartHR.escapeHtml(u.username)}')">كلمة مرور</button>
+              </div>
+            </td>
+          </tr>
+        `).join('');
+      } catch (err) {
+        SmartHR.showToast(err.message, 'error');
+      }
+    }
+
+    document.getElementById('create-user-form').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      try {
+        await SmartHR.apiFetch('/api/users', {
+          method: 'POST',
+          body: JSON.stringify({
+            username: document.getElementById('new-username').value.trim(),
+            role: document.getElementById('new-role').value,
+            full_name: document.getElementById('new-fullname').value.trim(),
+            job_title: document.getElementById('new-jobtitle').value.trim(),
+            password: document.getElementById('new-password').value
+          })
+        });
+        e.target.reset();
+        SmartHR.showToast('تم إنشاء الحساب وتفعيله بنجاح!', 'success');
+        loadUsers();
+      } catch (err) {
+        SmartHR.showToast(err.message, 'error');
+      }
+    });
+
+    document.getElementById('change-own-pwd-form').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      try {
+        await SmartHR.apiFetch('/api/auth/change-password', {
+          method: 'POST',
+          body: JSON.stringify({
+            current_password: document.getElementById('curr-pwd').value,
+            new_password: document.getElementById('next-pwd').value
+          })
+        });
+        e.target.reset();
+        SmartHR.showToast('تم تحديث كلمة مرورك بنجاح!', 'success');
+      } catch (err) {
+        SmartHR.showToast(err.message, 'error');
+      }
+    });
+
+    async function updateUserRole(id, role) {
+      try {
+        await SmartHR.apiFetch(`/api/users/${id}`, {
+          method: 'PATCH',
+          body: JSON.stringify({ role })
+        });
+        SmartHR.showToast('تم تحديث صلاحية الحساب', 'success');
+      } catch (err) {
+        SmartHR.showToast(err.message, 'error');
+        loadUsers();
+      }
+    }
+
+    async function toggleUserActive(id, isActive) {
+      try {
+        await SmartHR.apiFetch(`/api/users/${id}`, {
+          method: 'PATCH',
+          body: JSON.stringify({ is_active: isActive })
+        });
+        SmartHR.showToast(isActive ? 'تم تفعيل الحساب' : 'تم إيقاف الحساب', 'success');
+        loadUsers();
+      } catch (err) {
+        SmartHR.showToast(err.message, 'error');
+      }
+    }
+
+    async function resetUserPassword(id, username) {
+      const newPwd = window.prompt(`أدخل كلمة المرور الجديدة للمستخدم (@${username}) — 8 خانات على الأقل:`);
+      if (!newPwd) return;
+      try {
+        await SmartHR.apiFetch(`/api/users/${id}`, {
+          method: 'PATCH',
+          body: JSON.stringify({ new_password: newPwd })
+        });
+        SmartHR.showToast(`تم تعيين كلمة مرور جديدة لـ @${username}`, 'success');
+      } catch (err) {
+        SmartHR.showToast(err.message, 'error');
+      }
+    }
+
+    loadUsers();
+  </script>
+</body>
+</html>

@@ -1,6 +1,6 @@
 /* =========================================================================
-   منصة التوظيف الذكية — الدوال المشتركة ومكونات التنقل الموحدة
-   أمان المعلومات: لا يتم تخزين أي مفاتيح أو بيانات حساسة في المتصفح مطلقاً
+   منصة التوظيف الذكية v2.0 — الدوال المشتركة، الحوكمة، ونظام الصلاحيات (RBAC)
+   أمان المعلومات: لا يتم تخزين أي مفاتيح أو جلسات في المتصفح (HttpOnly Cookies)
    ========================================================================= */
 
 const SmartHR = (() => {
@@ -95,13 +95,30 @@ const SmartHR = (() => {
   }
 
   async function apiFetch(url, options = {}) {
-    const res = await fetch(url, options);
+    const headers = options.body instanceof FormData
+      ? { ...(options.headers || {}) }
+      : { 'Content-Type': 'application/json', ...(options.headers || {}) };
+    const res = await fetch(url, { ...options, headers });
     const contentType = res.headers.get('content-type') || '';
     const data = contentType.includes('application/json') ? await res.json() : { error: await res.text() };
+
+    if (res.status === 401 && document.querySelector('.admin-shell')) {
+      const next = encodeURIComponent(window.location.pathname + window.location.search);
+      window.location.replace(`Login.dc.html?next=${next}`);
+      throw new Error('انتهت جلسة العمل، يرجى تسجيل الدخول مجدداً.');
+    }
+
     if (!res.ok) {
       throw new Error(data.error || `خطأ في الاتصال بالخادم (${res.status})`);
     }
     return data;
+  }
+
+  async function logout() {
+    try {
+      await fetch('/api/auth/logout', { method: 'POST' });
+    } catch (_e) {}
+    window.location.replace('Login.dc.html');
   }
 
   function renderPortalHeader(activeKey = 'home') {
@@ -121,7 +138,7 @@ const SmartHR = (() => {
             <a href="index.html" class="${activeKey === 'home' ? 'active' : ''}">الوظائف المتاحة</a>
             <a href="index.html#how-it-works" class="${activeKey === 'steps' ? 'active' : ''}">رحلة التقديم</a>
             <a href="Job.dc.html?code=SL-204" class="${activeKey === 'job' ? 'active' : ''}">تفاصيل الوظائف</a>
-            <a href="Dashboard.dc.html" class="committee-switch">لوحة لجنة التوظيف ←</a>
+            <a href="Login.dc.html" class="committee-switch" title="دخول مخصص لأعضاء اللجنة المصرح لهم">🔒 دخول اللجنة</a>
           </nav>
         </div>
       </header>
@@ -135,15 +152,13 @@ const SmartHR = (() => {
       <footer class="portal-footer">
         <div class="container-1440" style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:18px;">
           <div>
-            <strong style="color:#FFF;font-family:var(--font-heading);">منصة رُواء للتوظيف الذكي (Smart HR Platform)</strong>
-            <p style="font-size:13px;margin-top:4px;">فرز عادل بتقنية الفحص الأعمى (Blind AI Screening) + تقييم لجنة التوظيف الموزون</p>
+            <strong style="color:#FFF;font-family:var(--font-heading);">منصة رُواء للتوظيف الذكي (Smart HR Platform v2.0)</strong>
+            <p style="font-size:13px;margin-top:4px;">فرز عادل بتقنية الفحص الأعمى (Blind AI Screening + Ollama) + تقييم لجنة التوظيف الموزون</p>
           </div>
           <div style="display:flex;gap:18px;font-size:13px;align-items:center;">
             <a href="index.html" style="color:#E0A21B;">بوابة المتقدمين</a>
             <span>|</span>
-            <a href="Dashboard.dc.html" style="color:#FFF;">بوابة اللجنة</a>
-            <span>|</span>
-            <a href="System.dc.html" style="color:#CFD3DA;">المعمارية والحوكمة</a>
+            <a href="Login.dc.html" style="color:#FFF;">🔒 بوابة اللجنة المحمية</a>
           </div>
         </div>
       </footer>
@@ -151,59 +166,90 @@ const SmartHR = (() => {
   }
 
   function renderAdminSidebar(activePage = 'dashboard') {
-    const mount = document.getElementById('admin-sidebar-mount');
-    if (!mount) return;
+    let sidebarEl = document.getElementById('admin-sidebar-mount');
+    if (!sidebarEl) return;
 
     const links = [
-      { key: 'dashboard', href: 'Dashboard.dc.html', icon: '📊', label: 'نظرة عامة (Dashboard)', section: 'العمليات والفرز' },
-      { key: 'jobbuilder', href: 'JobBuilder.dc.html', icon: '🎨', label: 'إعداد الوظائف وبرومنت AI' },
-      { key: 'profile', href: 'CandidateProfile.dc.html', icon: '👤', label: 'ملف المرشح وتقييم اللجنة' },
-      { key: 'ranking', href: 'Ranking.dc.html', icon: '🏆', label: 'الترتيب الموزون (40/60)' },
-      { key: 'scheduler', href: 'Scheduler.dc.html', icon: '📅', label: 'جدولة المقابلات الذكية', section: 'المقابلات والتواصل' },
-      { key: 'interviews', href: 'Interviews.dc.html', icon: '💬', label: 'طابور رسائل واتساب الهجين' },
-      { key: 'aiengine', href: 'AIEngine.dc.html', icon: '🧠', label: 'محرك التحليل والفحص الأعمى', section: 'الحوكمة والتقنية' },
-      { key: 'settings', href: 'Settings.dc.html', icon: '⚙️', label: 'الإعدادات ومزودو الذكاء' },
-      { key: 'system', href: 'System.dc.html', icon: '🗄️', label: 'معمارية النظام وقاعدة البيانات' }
+      { key: 'dashboard', href: 'Dashboard.dc.html', icon: '📊', label: 'نظرة عامة (Dashboard)', section: 'العمليات والفرز', roles: ['super_admin', 'committee_member', 'hr_coordinator'] },
+      { key: 'jobbuilder', href: 'JobBuilder.dc.html', icon: '🎨', label: 'إعداد الوظائف وبرومنت AI', roles: ['super_admin', 'hr_coordinator'] },
+      { key: 'profile', href: 'CandidateProfile.dc.html', icon: '👤', label: 'ملف المرشح وتقييم اللجنة', roles: ['super_admin', 'committee_member', 'hr_coordinator'] },
+      { key: 'ranking', href: 'Ranking.dc.html', icon: '🏆', label: 'الترتيب الموزون (40/60)', roles: ['super_admin', 'committee_member', 'hr_coordinator'] },
+      { key: 'scheduler', href: 'Scheduler.dc.html', icon: '📅', label: 'جدولة المقابلات الذكية', section: 'المقابلات والتواصل', roles: ['super_admin', 'hr_coordinator', 'committee_member'] },
+      { key: 'interviews', href: 'Interviews.dc.html', icon: '💬', label: 'طابور رسائل واتساب الهجين', roles: ['super_admin', 'hr_coordinator', 'committee_member'] },
+      { key: 'aiengine', href: 'AIEngine.dc.html', icon: '🧠', label: 'محرك التحليل والفحص الأعمى', section: 'الحوكمة والتقنية', roles: ['super_admin', 'committee_member', 'hr_coordinator'] },
+      { key: 'settings', href: 'Settings.dc.html', icon: '⚙️', label: 'الإعدادات وموديلات Ollama', roles: ['super_admin'] },
+      { key: 'users', href: 'Users.dc.html', icon: '🛡️', label: 'حسابات اللجنة والصلاحيات', roles: ['super_admin'] },
+      { key: 'system', href: 'System.dc.html', icon: '🗄️', label: 'معمارية النظام وقاعدة البيانات', roles: ['super_admin', 'committee_member', 'hr_coordinator'] }
     ];
 
-    let menuHtml = '';
-    for (const item of links) {
-      if (item.section) {
-        menuHtml += `<div class="sidebar-section-label">${item.section}</div>`;
-      }
-      menuHtml += `
-        <a href="${item.href}" class="sidebar-link ${activePage === item.key ? 'active' : ''}">
-          <span class="sidebar-link-main">
-            <span class="sidebar-icon">${item.icon}</span>
-            <span>${item.label}</span>
-          </span>
-        </a>
-      `;
-    }
+    const aside = document.createElement('aside');
+    aside.className = 'admin-sidebar';
+    aside.id = 'admin-sidebar-active';
+    sidebarEl.replaceWith(aside);
 
-    mount.outerHTML = `
-      <aside class="admin-sidebar">
+    const draw = (role = 'committee_member', user = null) => {
+      let menuHtml = '';
+      for (const item of links) {
+        if (!item.roles.includes(role)) continue;
+        if (item.section) {
+          menuHtml += `<div class="sidebar-section-label">${item.section}</div>`;
+        }
+        menuHtml += `
+          <a href="${item.href}" class="sidebar-link ${activePage === item.key ? 'active' : ''}">
+            <span class="sidebar-link-main">
+              <span class="sidebar-icon">${item.icon}</span>
+              <span>${item.label}</span>
+            </span>
+          </a>
+        `;
+      }
+
+      aside.innerHTML = `
         <a href="Dashboard.dc.html" class="sidebar-brand">
           <div class="brand-swatch">ر</div>
           <div>
             <div style="font-family:var(--font-heading);font-weight:700;font-size:15px;color:#FFF;">لجنة التوظيف المركزية</div>
-            <div class="mono" style="font-size:11px;color:#E0A21B;">smart_hr_db • PostgreSQL</div>
+            <div class="mono" style="font-size:11px;color:#E0A21B;">RBAC + Ollama v2.0</div>
           </div>
         </a>
+
+        <div style="margin:0 14px 10px;padding:10px 12px;background:rgba(255,255,255,0.06);border-radius:10px;border-right:3px solid #E0A21B;">
+          <div style="font-size:13px;font-weight:700;color:#FFF;">${escapeHtml(user ? user.full_name : 'جاري التحقق...')}</div>
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-top:4px;">
+            <span class="mono" style="font-size:11px;color:#B8BCC4;">${escapeHtml(user ? '@' + user.username : '')}</span>
+            <span style="font-size:10.5px;background:rgba(200,85,61,0.35);color:#FFD6CC;padding:2px 8px;border-radius:99px;">${escapeHtml(user ? user.role_label : '')}</span>
+          </div>
+        </div>
+
         <nav class="sidebar-menu" aria-label="قائمة لوحة التحكم">
           ${menuHtml}
         </nav>
-        <div class="sidebar-footer">
-          <div style="background:rgba(255,255,255,0.06);padding:12px;border-radius:10px;font-size:12px;color:#B8BCC4;">
-            <div style="color:#FFF;font-weight:600;margin-bottom:3px;">🔒 وضع الحوكمة الآمن</div>
-            المفاتيح السرية مُدارة حصراً في الخادم عبر <span class="mono" style="color:#E0A21B;">.env</span>
-          </div>
+
+        <div class="sidebar-footer" style="display:flex;flex-direction:column;gap:8px;">
           <a href="index.html" class="btn btn-outline btn-sm" style="background:transparent;color:#FFF;border-color:rgba(255,255,255,0.22);width:100%;">
             ↗ معاينة بوابة المتقدمين
           </a>
+          <button type="button" onclick="SmartHR.logout()" class="btn btn-terracotta btn-sm" style="width:100%;">
+            تسجيل الخروج الآمن 🚪
+          </button>
         </div>
-      </aside>
-    `;
+      `;
+    };
+
+    draw();
+
+    fetch('/api/auth/me')
+      .then((r) => (r.ok ? r.json() : Promise.reject()))
+      .then((res) => {
+        if (res && res.user) {
+          window.__CURRENT_USER = res.user;
+          draw(res.user.role, res.user);
+        }
+      })
+      .catch(() => {
+        const next = encodeURIComponent(window.location.pathname + window.location.search);
+        window.location.replace(`Login.dc.html?next=${next}`);
+      });
   }
 
   return {
@@ -215,6 +261,7 @@ const SmartHR = (() => {
     formatTime,
     showToast,
     apiFetch,
+    logout,
     renderPortalHeader,
     renderPortalFooter,
     renderAdminSidebar

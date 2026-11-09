@@ -3,13 +3,13 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>الإعدادات والتكاملات | رُواء للتوظيف الذكي</title>
+  <title>إعدادات الذكاء الاصطناعي وموديلات Ollama | رُواء للتوظيف الذكي</title>
   <link rel="stylesheet" href="css/design-system.css" />
   <style>
     .provider-card {
       border: 1.5px solid var(--border-color);
       border-radius: 14px;
-      padding: 16px;
+      padding: 14px 16px;
       background: #FFFFFF;
       display: flex;
       justify-content: space-between;
@@ -20,6 +20,13 @@
       border-color: var(--terracotta);
       background: var(--terracotta-soft);
     }
+    .ollama-box {
+      background: #FBF9F5;
+      border: 1.5px dashed var(--olive);
+      border-radius: 14px;
+      padding: 16px;
+      margin-bottom: 16px;
+    }
   </style>
 </head>
 <body>
@@ -29,29 +36,31 @@
     <main class="admin-main">
       <div class="admin-topbar">
         <div>
-          <div class="page-eyebrow">التكاملات والحوكمة — أمان بيئة الإنتاج</div>
-          <h1 class="page-title">إعدادات مزودي الذكاء الاصطناعي وقوالب النظام</h1>
-          <p class="page-subtitle">إدارة محركات التحليل (OpenAI, Gemini, Claude, DeepSeek)، قوالب واتساب الهجينة، ومراجعة سجل التدقيق (Audit Logs).</p>
+          <div class="page-eyebrow">التكاملات والحوكمة — Ollama Local LLM + Cloud AI</div>
+          <h1 class="page-title">إعدادات الذكاء الاصطناعي وموديلات Ollama المحلية</h1>
+          <p class="page-subtitle">اربط موديلات Ollama الخاصة على خادمك مباشرةً بدون رسوم اشتراك، أو استخدم المزودات السحابية مع سجل تدقيق كامل.</p>
         </div>
-        <a href="System.dc.html" class="btn btn-outline">🗄️ فحص معمارية النظام وقاعدة البيانات</a>
+        <div style="display:flex;gap:10px;">
+          <a href="Users.dc.html" class="btn btn-outline">🛡️ حسابات اللجنة والصلاحيات</a>
+          <a href="System.dc.html" class="btn btn-outline">🗄️ معمارية النظام</a>
+        </div>
       </div>
 
       <div class="grid-2" style="margin-bottom:24px;align-items:start;">
-        <!-- إعدادات مزودي الذكاء الاصطناعي -->
+        <!-- إعدادات مزودي الذكاء الاصطناعي و Ollama -->
         <section class="card">
-          <h2 style="font-size:19px;margin-bottom:8px;">🤖 تكامل مزودي الذكاء الاصطناعي</h2>
+          <h2 style="font-size:19px;margin-bottom:8px;">🦙 تكامل موديلات Ollama والذكاء الاصطناعي</h2>
           <div class="card-subtle" style="margin-bottom:16px;font-size:12px;border-right:4px solid var(--olive);">
-            🔒 <strong>حماية المفاتيح السرية:</strong> التزاماً بمعايير أمن الإنتاج، لا يتم إدخال أو تخزين أي مفتاح API في المتصفح مطلقاً. تُقرأ المفاتيح حصراً من ملف <span class="mono">.env</span> في الخادم (<span class="mono">OPENAI_API_KEY</span>, <span class="mono">GEMINI_API_KEY</span>, إلخ).
+            🔒 <strong>خصوصية 100% مع Ollama:</strong> عند اختيار <strong>Ollama Local LLM</strong> تتم معالجة إجابات المتقدمين محلياً داخل خادمك الخاص دون مغادرة أي بيانات للخارج.
           </div>
-
-          <div id="providers-status-list" style="margin-bottom:16px;"></div>
 
           <form id="ai-settings-form">
             <div class="grid-2">
               <div class="form-group">
-                <label class="form-label">المزود النشط للتقييم</label>
-                <select id="st-provider" class="form-select">
-                  <option value="smart-rubric">Smart Rubric Engine (مدمج بدون مفتاح خارجي)</option>
+                <label class="form-label">المزود النشط للتقييم *</label>
+                <select id="st-provider" class="form-select" onchange="toggleOllamaPanel()">
+                  <option value="ollama">🦙 Ollama Local LLM (موديلاتك الخاصة على الخادم)</option>
+                  <option value="smart-rubric">Smart Rubric Engine (مدمج فوري بدون GPU)</option>
                   <option value="openai">OpenAI (GPT-4o / GPT-4o-mini)</option>
                   <option value="gemini">Google Gemini (gemini-2.0-flash)</option>
                   <option value="claude">Anthropic Claude (Sonnet)</option>
@@ -59,10 +68,39 @@
                 </select>
               </div>
               <div class="form-group">
-                <label class="form-label">اسم النموذج المفضل (Model)</label>
-                <input type="text" id="st-model" class="form-control mono" value="gpt-4o-mini" />
+                <label class="form-label">اسم الموديل النشط (Model Name) *</label>
+                <input type="text" id="st-model" class="form-control mono" placeholder="qwen2.5:7b" value="qwen2.5:7b" />
               </div>
             </div>
+
+            <!-- لوحة التحكم الخاصة بموديلات Ollama -->
+            <div id="ollama-panel" class="ollama-box">
+              <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;flex-wrap:wrap;gap:8px;">
+                <strong style="font-size:14px;color:var(--olive);">⚡ اتصال خادم Ollama المحلي</strong>
+                <div style="display:flex;gap:8px;">
+                  <button type="button" class="btn btn-outline btn-sm" onclick="discoverOllamaModels()">🔄 جلب الموديلات المثبتة</button>
+                  <button type="button" class="btn btn-olive btn-sm" onclick="runOllamaTest()">اختبار الموديل بالعربية ▶</button>
+                </div>
+              </div>
+
+              <div class="grid-2">
+                <div class="form-group" style="margin-bottom:8px;">
+                  <label class="form-label">عنوان Ollama (من داخل Docker)</label>
+                  <input type="text" id="st-ollama-url" class="form-control mono" value="http://host.docker.internal:11434" />
+                </div>
+                <div class="form-group" style="margin-bottom:8px;">
+                  <label class="form-label">اختيار سريع من موديلاتك المكتشفة</label>
+                  <select id="ollama-discovered-select" class="form-select mono" onchange="if(this.value) document.getElementById('st-model').value = this.value;">
+                    <option value="">اضغط (جلب الموديلات) لعرضها...</option>
+                  </select>
+                </div>
+              </div>
+              <div id="ollama-status-msg" style="font-size:12px;color:var(--text-secondary);margin-top:4px;">
+                نصيحة: تدعم المنصة جميع موديلات Ollama مثل <span class="mono">qwen2.5</span>, <span class="mono">llama3.1</span>, <span class="mono">gemma2</span>, <span class="mono">deepseek-r1</span>, و <span class="mono">aya</span>.
+              </div>
+            </div>
+
+            <div id="providers-status-list" style="margin-bottom:16px;"></div>
 
             <div class="grid-3">
               <div class="form-group">
@@ -81,10 +119,10 @@
 
             <label style="display:flex;align-items:center;gap:10px;font-size:13px;font-weight:700;margin-bottom:16px;cursor:pointer;">
               <input type="checkbox" id="st-blind" checked style="width:18px;height:18px;accent-color:var(--olive);" />
-              <span>تفعيل إخفاء الهوية الإلزامي (Blind Screening & PII Anonymization)</span>
+              <span>تفعيل إخفاء الهوية الإلزامي قبل إرسال النص للموديل (Blind Screening)</span>
             </label>
 
-            <button type="submit" class="btn btn-terracotta" style="width:100%;">حفظ إعدادات محرك الذكاء الاصطناعي ✓</button>
+            <button type="submit" class="btn btn-terracotta" style="width:100%;">حفظ واعتماد إعدادات الذكاء الاصطناعي ✓</button>
           </form>
         </section>
 
@@ -143,6 +181,58 @@
   <script>
     SmartHR.renderAdminSidebar('settings');
 
+    function toggleOllamaPanel() {
+      const prov = document.getElementById('st-provider').value;
+      document.getElementById('ollama-panel').style.display = prov === 'ollama' ? 'block' : 'none';
+    }
+
+    async function discoverOllamaModels() {
+      const statusEl = document.getElementById('ollama-status-msg');
+      const baseUrl = document.getElementById('st-ollama-url').value.trim();
+      statusEl.innerHTML = '⏳ جاري الاتصال بخادم Ollama واستكشاف الموديلات...';
+
+      try {
+        const res = await SmartHR.apiFetch(`/api/ollama/models?base_url=${encodeURIComponent(baseUrl)}`);
+        const sel = document.getElementById('ollama-discovered-select');
+        if (!res.reachable) {
+          statusEl.innerHTML = `<span style="color:var(--terracotta);font-weight:700;">⚠️ تعذر الوصول إلى Ollama على (${SmartHR.escapeHtml(res.base_url)}). ${SmartHR.escapeHtml(res.hint || '')}</span>`;
+          return;
+        }
+        document.getElementById('st-ollama-url').value = res.base_url;
+        if (!res.models.length) {
+          sel.innerHTML = '<option value="">متصل، ولكن لا توجد موديلات محملة بعد (شغّل ollama pull)</option>';
+          statusEl.innerHTML = `<span style="color:var(--saffron);font-weight:700;">✓ الخادم متصل على ${SmartHR.escapeHtml(res.base_url)} — قم بتحميل موديل عبر ollama pull qwen2.5:7b</span>`;
+          return;
+        }
+        sel.innerHTML = res.models.map((m) =>
+          `<option value="${SmartHR.escapeHtml(m.name)}">${SmartHR.escapeHtml(m.name)} (${m.size_gb ? m.size_gb + ' GB' : m.parameter_size})</option>`
+        ).join('');
+        document.getElementById('st-model').value = res.models[0].name;
+        statusEl.innerHTML = `<span style="color:var(--olive);font-weight:700;">✓ متصل بنجاح! تم العثور على (${res.models.length}) موديل جاهز على خادمك.</span>`;
+        SmartHR.showToast(`تم اكتشاف ${res.models.length} موديل من Ollama`, 'success');
+      } catch (err) {
+        statusEl.innerHTML = `<span style="color:var(--terracotta);">${SmartHR.escapeHtml(err.message)}</span>`;
+      }
+    }
+
+    async function runOllamaTest() {
+      const statusEl = document.getElementById('ollama-status-msg');
+      const baseUrl = document.getElementById('st-ollama-url').value.trim();
+      const model = document.getElementById('st-model').value.trim();
+      statusEl.innerHTML = `⏳ جاري اختبار استجابة الموديل (${SmartHR.escapeHtml(model)}) بالعربية...`;
+      try {
+        const res = await SmartHR.apiFetch('/api/ollama/test', {
+          method: 'POST',
+          body: JSON.stringify({ base_url: baseUrl, model })
+        });
+        statusEl.innerHTML = `<span style="color:var(--olive);font-weight:700;">✓ الموديل (${SmartHR.escapeHtml(res.model)}) يعمل بكفاءة! زمن الاستجابة: ${res.latency_ms}ms — الرد: ${SmartHR.escapeHtml(JSON.stringify(res.reply))}</span>`;
+        SmartHR.showToast('نجح اتصال واختبار موديل Ollama!', 'success');
+      } catch (err) {
+        statusEl.innerHTML = `<span style="color:var(--terracotta);font-weight:700;">✗ ${SmartHR.escapeHtml(err.message)}</span>`;
+        SmartHR.showToast(err.message, 'error');
+      }
+    }
+
     async function loadSettingsAndLogs() {
       const [stRes, logsRes] = await Promise.all([
         SmartHR.apiFetch('/api/settings'),
@@ -154,11 +244,13 @@
       const providers = stRes.env_providers || {};
 
       document.getElementById('st-provider').value = aiCfg.active_provider || 'smart-rubric';
-      document.getElementById('st-model').value = aiCfg.model_name || 'gpt-4o-mini';
+      document.getElementById('st-model').value = aiCfg.model_name || 'qwen2.5:7b';
+      document.getElementById('st-ollama-url').value = aiCfg.ollama_base_url || providers.ollama?.base_url || 'http://host.docker.internal:11434';
       document.getElementById('st-cv-w').value = aiCfg.cv_weight_in_ai ?? 30;
       document.getElementById('st-ass-w').value = aiCfg.assessment_weight_in_ai ?? 70;
       document.getElementById('st-pen-sw').value = aiCfg.integrity_penalty_per_switch ?? 4;
       document.getElementById('st-blind').checked = aiCfg.blind_screening !== false;
+      toggleOllamaPanel();
 
       document.getElementById('providers-status-list').innerHTML = Object.entries(providers).map(([key, info]) => `
         <div class="provider-card ${aiCfg.active_provider === key ? 'selected' : ''}">
@@ -168,8 +260,8 @@
           </div>
           ${
             info.configured
-              ? '<span class="badge badge-olive">✓ مفعّل وجاهز في الخادم</span>'
-              : '<span class="badge badge-saffron">يستخدم Fallback تلقائي (أضف المفتاح في .env)</span>'
+              ? '<span class="badge badge-olive">✓ مفعّل وجاهز</span>'
+              : '<span class="badge badge-saffron">يحتاج مفتاح في .env</span>'
           }
         </div>
       `).join('');
@@ -197,12 +289,12 @@
         const assW = Number(document.getElementById('st-ass-w').value);
         await SmartHR.apiFetch('/api/settings/ai_engine_config', {
           method: 'PUT',
-          headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             category: 'ai_provider',
             setting_value: {
               active_provider: document.getElementById('st-provider').value,
               model_name: document.getElementById('st-model').value.trim(),
+              ollama_base_url: document.getElementById('st-ollama-url').value.trim(),
               temperature: 0.2,
               blind_screening: document.getElementById('st-blind').checked,
               anonymize_pii: true,
@@ -213,7 +305,7 @@
             }
           })
         });
-        SmartHR.showToast('تم حفظ إعدادات محرك الذكاء الاصطناعي بنجاح!', 'success');
+        SmartHR.showToast('تم حفظ واعتماد إعدادات الذكاء الاصطناعي بنجاح!', 'success');
         loadSettingsAndLogs();
       } catch (err) {
         SmartHR.showToast(err.message, 'error');
@@ -225,7 +317,6 @@
       try {
         await SmartHR.apiFetch('/api/settings/whatsapp_templates', {
           method: 'PUT',
-          headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             category: 'whatsapp_templates',
             setting_value: {

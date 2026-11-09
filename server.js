@@ -8,14 +8,29 @@ const rateLimit = require('express-rate-limit');
 const multer = require('multer');
 
 const { pool, query, ensureDatabaseInitialized, logAudit } = require('./database/db');
-const { evaluateSubmission, anonymizeText, getProvidersEnvStatus } = require('./services/aiEvaluator');
+const {
+  evaluateSubmission,
+  anonymizeText,
+  getProvidersEnvStatus,
+  listOllamaModels,
+  testOllamaModel
+} = require('./services/aiEvaluator');
+const {
+  ROLE_LABELS,
+  hashPassword,
+  verifyPassword,
+  createSessionToken,
+  getSessionFromRequest,
+  setSessionCookie,
+  clearSessionCookie,
+  requireAuth
+} = require('./services/auth');
 
 const app = express();
 const PORT = parseInt(process.env.PORT || '3000', 10);
 const HOST = process.env.HOST || '0.0.0.0';
 const MAX_UPLOAD_MB = parseInt(process.env.MAX_UPLOAD_MB || '10', 10);
 
-// إعداد مجلد المرفقات الآمن
 const uploadsDir = path.join(__dirname, 'uploads');
 if (!fs.existsSync(uploadsDir)) {
   fs.mkdirSync(uploadsDir, { recursive: true });
@@ -26,24 +41,29 @@ app.use(compression());
 app.use(express.json({ limit: '2mb' }));
 app.use(express.urlencoded({ extended: true }));
 
-// ترويسات أمان قياسية دون حظر المعاينة المضمنة
 app.use((req, res, next) => {
   res.setHeader('X-Content-Type-Options', 'nosniff');
   res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
   next();
 });
 
-// تحديد معدل الطلبات لحماية الخادم في الإنتاج
 const apiLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
-  max: 500,
+  max: 600,
   standardHeaders: true,
   legacyHeaders: false,
   message: { error: 'تم تجاوز الحد المسموح للطلبات، يرجى المحاولة بعد قليل.' }
 });
 app.use('/api/', apiLimiter);
 
-// إعداد رفع الملفات (السير الذاتية ومرفقات الاختبار)
+const loginLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 20,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'محاولات دخول متكررة، يرجى الانتظار 15 دقيقة قبل المحاولة مجدداً.' }
+});
+
 const allowedExtensions = new Set(['.pdf', '.docx', '.doc', '.png', '.jpg', '.jpeg']);
 const storage = multer.diskStorage({
   destination: (_req, _file, cb) => cb(null, uploadsDir),
@@ -66,14 +86,48 @@ const upload = multer({
   }
 });
 
-// تقديم ملفات المرفقات وملفات الواجهة الثابتة
-app.use('/uploads', express.static(uploadsDir));
+// ---------------------------------------------------------------------------------
+// بوابة الحماية الخلفية لصفحات اللجنة والمرفقات (قبل تقديم الملفات الثابتة!)
+// ---------------------------------------------------------------------------------
+const PROTECTED_PAGES = new Set([
+  '/Dashboard.dc.html',
+  '/JobBuilder.dc.html',
+  '/CandidateProfile.dc.html',
+  '/Ranking.dc.html',
+  '/Scheduler.dc.html',
+  '/Interviews.dc.html',
+  '/AIEngine.dc.html',
+  '/Settings.dc.html',
+  '/System.dc.html',
+  '/Users.dc.html'
+]);
+
+app.use((req, res, next) => {
+  if (PROTECTED_PAGES.has(req.path)) {
+    const session = getSessionFromRequest(req);
+    if (!session) {
+      const nextTarget = encodeURIComponent(req.originalUrl || req.path);
+      return res.redirect(`/Login.dc.html?next=${nextTarget}`);
+    }
+    res.setHeader('Cache-Control', 'no-store');
+  }
+  next();
+});
+
+// حماية مجلد السير الذاتية والمرفقات ليقتصر على أعضاء اللجنة المسجلين فقط
+app.use('/uploads', (req, res, next) => {
+  const session = getSessionFromRequest(req);
+  if (!session) {
+    return res.status(401).send('غير مصرح بالوصول إلى ملفات السير الذاتية إلا لأعضاء لجنة التوظيف.');
+  }
+  next();
+}, express.static(uploadsDir));
+
 app.use(express.static(path.join(__dirname, 'public')));
 
 // ---------------------------------------------------------------------------------
 // دوال مساعدة
 // ---------------------------------------------------------------------------------
-
 function normalizePhoneForWa(rawPhone) {
   let digits = String(rawPhone || '').replace(/\D/g, '');
   if (digits.startsWith('00')) digits = digits.slice(2);
@@ -126,7 +180,232 @@ function minutesToTime(totalMin) {
 }
 
 // ---------------------------------------------------------------------------------
-// 1. فحص جاهزية الخادم ومعمارية النظام (Health & Architecture)
+// 0. مسارات المصادقة وإدارة الصلاحيات (Authentication & RBAC Users)
+// ---------------------------------------------------------------------------------
+
+app.post('/api/auth/login', loginLimiter, async (req, res) => {
+  try {
+    const { username, password } = req.body || {};
+    if (!username || !password) {
+      return res.status(400).json({ error: 'يرجى إدخال اسم المستخدم وكلمة المرور.' });
+    }
+
+    const { rows } = await query(
+      'SELECT * FROM staff_users WHERE LOWER(username) = LOWER($1) LIMIT 1',
+      [String(username).trim()]
+    );
+
+    if (!rows.length || !verifyPassword(password, rows[0].password_hash)) {
+      await logAudit({
+        actor: String(username).trim(),
+        actorRole: 'anonymous',
+        action: 'AUTH_LOGIN_FAILED',
+        entityType: 'staff_users',
+        entityId: String(username).trim(),
+        ipAddress: req.ip
+      });
+      return res.status(401).json({ error: 'اسم المستخدم أو كلمة المرور غير صحيحة.' });
+    }
+
+    const user = rows[0];
+    if (!user.is_active) {
+      return res.status(403).json({ error: 'هذا الحساب موقوف حالياً، يرجى مراجعة مدير النظام.' });
+    }
+
+    await query('UPDATE staff_users SET last_login_at = NOW() WHERE id = $1', [user.id]);
+    const token = createSessionToken(user);
+    setSessionCookie(res, token, req);
+
+    await logAudit({
+      actor: user.full_name,
+      actorRole: user.role,
+      action: 'AUTH_LOGIN_SUCCESS',
+      entityType: 'staff_users',
+      entityId: user.username,
+      metadata: { role: user.role },
+      ipAddress: req.ip
+    });
+
+    res.json({
+      message: `مرحباً بك ${user.full_name}`,
+      user: {
+        id: user.id,
+        username: user.username,
+        full_name: user.full_name,
+        job_title: user.job_title,
+        role: user.role,
+        role_label: ROLE_LABELS[user.role] || user.role
+      }
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/auth/logout', (req, res) => {
+  clearSessionCookie(res);
+  res.json({ message: 'تم تسجيل الخروج بنجاح.' });
+});
+
+app.get('/api/auth/me', (req, res) => {
+  const session = getSessionFromRequest(req);
+  if (!session) {
+    return res.status(401).json({ authenticated: false });
+  }
+  res.json({
+    authenticated: true,
+    user: {
+      id: session.uid,
+      username: session.username,
+      full_name: session.full_name,
+      job_title: session.job_title,
+      role: session.role,
+      role_label: ROLE_LABELS[session.role] || session.role
+    }
+  });
+});
+
+app.post('/api/auth/change-password', requireAuth(), async (req, res) => {
+  try {
+    const { current_password, new_password } = req.body || {};
+    if (!current_password || !new_password || String(new_password).length < 8) {
+      return res.status(400).json({ error: 'كلمة المرور الجديدة يجب ألا تقل عن 8 خانات.' });
+    }
+
+    const { rows } = await query('SELECT * FROM staff_users WHERE id = $1', [req.user.uid]);
+    if (!rows.length || !verifyPassword(current_password, rows[0].password_hash)) {
+      return res.status(401).json({ error: 'كلمة المرور الحالية غير صحيحة.' });
+    }
+
+    const newHash = hashPassword(new_password);
+    await query('UPDATE staff_users SET password_hash = $1, updated_at = NOW() WHERE id = $2', [newHash, req.user.uid]);
+
+    await logAudit({
+      actor: req.user.full_name,
+      actorRole: req.user.role,
+      action: 'PASSWORD_CHANGED',
+      entityType: 'staff_users',
+      entityId: req.user.username,
+      ipAddress: req.ip
+    });
+
+    res.json({ message: 'تم تحديث كلمة المرور بنجاح.' });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get('/api/users', requireAuth(['super_admin']), async (_req, res) => {
+  try {
+    const { rows } = await query(
+      `SELECT id, username, full_name, job_title, role, is_active, last_login_at, created_at
+       FROM staff_users
+       ORDER BY id ASC`
+    );
+    res.json({
+      users: rows.map((u) => ({ ...u, role_label: ROLE_LABELS[u.role] || u.role }))
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/users', requireAuth(['super_admin']), async (req, res) => {
+  try {
+    const { username, full_name, job_title, role = 'committee_member', password } = req.body || {};
+    if (!username || !full_name || !password || String(password).length < 8) {
+      return res.status(400).json({ error: 'يرجى إدخال اسم المستخدم والاسم الكامل وكلمة مرور لا تقل عن 8 خانات.' });
+    }
+    if (!['super_admin', 'committee_member', 'hr_coordinator'].includes(role)) {
+      return res.status(400).json({ error: 'نوع الصلاحية غير صالح.' });
+    }
+
+    const cleanUser = String(username).trim().toLowerCase();
+    const pwdHash = hashPassword(password);
+
+    const { rows } = await query(
+      `INSERT INTO staff_users (username, full_name, job_title, role, password_hash, is_active)
+       VALUES ($1,$2,$3,$4,$5,TRUE)
+       RETURNING id, username, full_name, job_title, role, is_active, created_at`,
+      [cleanUser, String(full_name).trim(), job_title || ROLE_LABELS[role], role, pwdHash]
+    );
+
+    await logAudit({
+      actor: req.user.full_name,
+      actorRole: req.user.role,
+      action: 'STAFF_USER_CREATED',
+      entityType: 'staff_users',
+      entityId: cleanUser,
+      metadata: { role, full_name },
+      ipAddress: req.ip
+    });
+
+    res.status(201).json({ user: rows[0] });
+  } catch (err) {
+    if (err.code === '23505') {
+      return res.status(409).json({ error: 'اسم المستخدم مسجل مسبقاً.' });
+    }
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.patch('/api/users/:id', requireAuth(['super_admin']), async (req, res) => {
+  try {
+    const targetId = parseInt(req.params.id, 10);
+    const { role, is_active, new_password, full_name, job_title } = req.body || {};
+
+    if (targetId === req.user.uid && is_active === false) {
+      return res.status(400).json({ error: 'لا يمكنك إيقاف حسابك الشخصي الحالي.' });
+    }
+
+    let pwdHash = null;
+    if (new_password) {
+      if (String(new_password).length < 8) {
+        return res.status(400).json({ error: 'كلمة المرور الجديدة يجب ألا تقل عن 8 خانات.' });
+      }
+      pwdHash = hashPassword(new_password);
+    }
+
+    const { rows } = await query(
+      `UPDATE staff_users SET
+        role = COALESCE($1, role),
+        is_active = COALESCE($2, is_active),
+        password_hash = COALESCE($3, password_hash),
+        full_name = COALESCE($4, full_name),
+        job_title = COALESCE($5, job_title),
+        updated_at = NOW()
+       WHERE id = $6
+       RETURNING id, username, full_name, job_title, role, is_active`,
+      [
+        role || null,
+        typeof is_active === 'boolean' ? is_active : null,
+        pwdHash,
+        full_name || null,
+        job_title || null,
+        targetId
+      ]
+    );
+
+    if (!rows.length) return res.status(404).json({ error: 'المستخدم غير موجود.' });
+
+    await logAudit({
+      actor: req.user.full_name,
+      actorRole: req.user.role,
+      action: 'STAFF_USER_UPDATED',
+      entityType: 'staff_users',
+      entityId: rows[0].username,
+      metadata: { role: rows[0].role, is_active: rows[0].is_active, password_reset: Boolean(pwdHash) },
+      ipAddress: req.ip
+    });
+
+    res.json({ user: rows[0] });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ---------------------------------------------------------------------------------
+// 1. فحص جاهزية الخادم ومعمارية النظام (Health & Architecture & Ollama)
 // ---------------------------------------------------------------------------------
 
 app.get('/api/health', async (_req, res) => {
@@ -134,11 +413,9 @@ app.get('/api/health', async (_req, res) => {
   try {
     const dbRes = await query(`
       SELECT
-        version() AS pg_version,
         current_database() AS db_name,
         (SELECT COUNT(*)::int FROM information_schema.tables WHERE table_schema = 'public') AS tables_count,
-        (SELECT COUNT(*)::int FROM jobs WHERE is_active = TRUE) AS active_jobs,
-        (SELECT COUNT(*)::int FROM applications) AS total_applications
+        (SELECT COUNT(*)::int FROM jobs WHERE is_active = TRUE) AS active_jobs
     `);
     res.json({
       status: 'ok',
@@ -146,8 +423,8 @@ app.get('/api/health', async (_req, res) => {
       latency_ms: Date.now() - start,
       node_version: process.version,
       database: dbRes.rows[0],
-      ai_providers: getProvidersEnvStatus(),
       security: {
+        rbac_enabled: true,
         browser_secrets_stored: false,
         env_managed: true
       }
@@ -157,7 +434,7 @@ app.get('/api/health', async (_req, res) => {
   }
 });
 
-app.get('/api/system/architecture', async (_req, res) => {
+app.get('/api/system/architecture', requireAuth(), async (_req, res) => {
   try {
     const tablesRes = await query(`
       SELECT
@@ -208,6 +485,28 @@ app.get('/api/system/architecture', async (_req, res) => {
   }
 });
 
+// مسارات استكشاف وفحص موديلات Ollama المحلية
+app.get('/api/ollama/models', requireAuth(['super_admin']), async (req, res) => {
+  try {
+    const customUrl = req.query.base_url || undefined;
+    const info = await listOllamaModels(customUrl);
+    res.json(info);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/ollama/test', requireAuth(['super_admin']), async (req, res) => {
+  try {
+    const { base_url, model } = req.body || {};
+    if (!model) return res.status(400).json({ error: 'يرجى تحديد اسم موديل Ollama أولاً.' });
+    const result = await testOllamaModel({ baseUrl: base_url, model });
+    res.json(result);
+  } catch (err) {
+    res.status(502).json({ error: `تعذر الاتصال بموديل Ollama: ${err.message}` });
+  }
+});
+
 // ---------------------------------------------------------------------------------
 // 2. مسارات الوظائف وبنك الأسئلة (Jobs & JobBuilder)
 // ---------------------------------------------------------------------------------
@@ -215,10 +514,13 @@ app.get('/api/system/architecture', async (_req, res) => {
 app.get('/api/jobs', async (req, res) => {
   try {
     const { department, search, include_inactive, mode } = req.query;
+    const session = getSessionFromRequest(req);
+    const isCommittee = Boolean(session) && mode === 'committee';
+
     const params = [];
     const where = [];
 
-    if (include_inactive !== '1') {
+    if (!(Boolean(session) && include_inactive === '1')) {
       where.push('j.is_active = TRUE');
     }
     if (department && department !== 'الكل') {
@@ -246,9 +548,10 @@ app.get('/api/jobs', async (req, res) => {
     const { rows } = await query(sql, params);
     const formatted = rows.map((job) => ({
       ...job,
+      ai_prompt: isCommittee ? job.ai_prompt : undefined,
       passing_score: Number(job.passing_score),
       questions_count: Array.isArray(job.questions) ? job.questions.length : 10,
-      questions: mode === 'committee' ? job.questions : sanitizeQuestionsForCandidate(job.questions)
+      questions: isCommittee ? job.questions : sanitizeQuestionsForCandidate(job.questions)
     }));
 
     res.json({ jobs: formatted });
@@ -260,6 +563,9 @@ app.get('/api/jobs', async (req, res) => {
 app.get('/api/jobs/:idOrCode', async (req, res) => {
   try {
     const { idOrCode } = req.params;
+    const session = getSessionFromRequest(req);
+    const isCommittee = Boolean(session) && req.query.mode === 'committee';
+
     const isNumericId = /^\d+$/.test(idOrCode);
     const { rows } = await query(
       `SELECT j.*, COUNT(a.id)::int AS applicants_count
@@ -275,10 +581,10 @@ app.get('/api/jobs/:idOrCode', async (req, res) => {
     }
 
     const job = rows[0];
-    const isCommittee = req.query.mode === 'committee';
     res.json({
       job: {
         ...job,
+        ai_prompt: isCommittee ? job.ai_prompt : undefined,
         passing_score: Number(job.passing_score),
         questions: isCommittee ? job.questions : sanitizeQuestionsForCandidate(job.questions)
       }
@@ -288,8 +594,7 @@ app.get('/api/jobs/:idOrCode', async (req, res) => {
   }
 });
 
-// توليد 10 أسئلة تخصصية تلقائياً في صفحة JobBuilder
-app.post('/api/jobs/generate-questions', async (req, res) => {
+app.post('/api/jobs/generate-questions', requireAuth(['super_admin', 'hr_coordinator']), async (req, res) => {
   const { title = 'أخصائي مبيعات مشاريع', department = 'المبيعات', code = 'JB-100' } = req.body || {};
   const generated = [
     {
@@ -401,7 +706,7 @@ app.post('/api/jobs/generate-questions', async (req, res) => {
   res.json({ questions: generated, ai_prompt: generatedPrompt });
 });
 
-app.post('/api/jobs', async (req, res) => {
+app.post('/api/jobs', requireAuth(['super_admin', 'hr_coordinator']), async (req, res) => {
   try {
     const {
       code, title, department, location, employment_type, experience_level, salary_range,
@@ -450,8 +755,8 @@ app.post('/api/jobs', async (req, res) => {
     );
 
     await logAudit({
-      actor: 'لجنة التوظيف',
-      actorRole: 'committee',
+      actor: req.user.full_name,
+      actorRole: req.user.role,
       action: 'JOB_CREATED',
       entityType: 'job',
       entityId: rows[0].code,
@@ -468,7 +773,7 @@ app.post('/api/jobs', async (req, res) => {
   }
 });
 
-app.put('/api/jobs/:id', async (req, res) => {
+app.put('/api/jobs/:id', requireAuth(['super_admin', 'hr_coordinator']), async (req, res) => {
   try {
     const jobId = parseInt(req.params.id, 10);
     const {
@@ -522,8 +827,8 @@ app.put('/api/jobs/:id', async (req, res) => {
     if (!rows.length) return res.status(404).json({ error: 'الوظيفة غير موجودة.' });
 
     await logAudit({
-      actor: 'لجنة التوظيف',
-      actorRole: 'committee',
+      actor: req.user.full_name,
+      actorRole: req.user.role,
       action: 'JOB_UPDATED',
       entityType: 'job',
       entityId: rows[0].code,
@@ -538,7 +843,7 @@ app.put('/api/jobs/:id', async (req, res) => {
 });
 
 // ---------------------------------------------------------------------------------
-// 3. التقديم ورفع السيرة الذاتية (POST /api/applications)
+// 3. التقديم ورفع السيرة الذاتية (POST /api/applications — بوابة المتقدمين العامة)
 // ---------------------------------------------------------------------------------
 
 app.post('/api/applications', upload.single('cv_file'), async (req, res) => {
@@ -586,7 +891,6 @@ app.post('/api/applications', upload.single('cv_file'), async (req, res) => {
 
     await client.query('BEGIN');
 
-    // البحث عن سجل المرشح بالبريد أو الجوال لمنع تكرار السجلات
     const existingCand = await client.query(
       'SELECT * FROM candidates WHERE LOWER(email) = $1 OR phone = $2 LIMIT 1',
       [cleanEmail, cleanPhone]
@@ -596,7 +900,6 @@ app.post('/api/applications', upload.single('cv_file'), async (req, res) => {
     if (existingCand.rows.length > 0) {
       candidateId = existingCand.rows[0].id;
 
-      // التحقق مما إذا كان قد تقدم مسبقاً لنفس الوظيفة
       const dupApp = await client.query(
         'SELECT reference_no, status FROM applications WHERE job_id = $1 AND candidate_id = $2',
         [job.id, candidateId]
@@ -616,7 +919,6 @@ app.post('/api/applications', upload.single('cv_file'), async (req, res) => {
         });
       }
 
-      // تحديث بيانات المرشح لأحدث سيرة ذاتية
       await client.query(
         `UPDATE candidates SET
           full_name = $1,
@@ -664,7 +966,6 @@ app.post('/api/applications', upload.single('cv_file'), async (req, res) => {
       candidateId = insCand.rows[0].id;
     }
 
-    // توليد رقم طلب مرجعي فريد
     const seqRes = await client.query('SELECT COALESCE(MAX(id), 0) + 1001 AS next_num FROM applications');
     const refNo = `APP-2026-${seqRes.rows[0].next_num}`;
 
@@ -702,10 +1003,10 @@ app.post('/api/applications', upload.single('cv_file'), async (req, res) => {
 });
 
 // ---------------------------------------------------------------------------------
-// 4. جلب بيانات الطلبات (Applications List & Profile)
+// 4. جلب بيانات الطلبات (محمي للجنة، ومقيد بالرقم المرجعي للمتقدم فقط)
 // ---------------------------------------------------------------------------------
 
-app.get('/api/applications', async (req, res) => {
+app.get('/api/applications', requireAuth(), async (req, res) => {
   try {
     const { job_id, status, search } = req.query;
     const params = [];
@@ -750,7 +1051,14 @@ app.get('/api/applications', async (req, res) => {
 app.get('/api/applications/:idOrRef', async (req, res) => {
   try {
     const { idOrRef } = req.params;
+    const session = getSessionFromRequest(req);
     const isNum = /^\d+$/.test(idOrRef);
+
+    // منع المتصفح غير المسجل من استعراض الطلبات بالأرقام التسلسلية (Enumeration Protection)
+    if (isNum && !session) {
+      return res.status(401).json({ error: 'يلزم تسجيل الدخول بحساب اللجنة لاستعراض ملف المرشح.' });
+    }
+
     const appRes = await query(
       `SELECT
         a.*,
@@ -770,7 +1078,36 @@ app.get('/api/applications/:idOrRef', async (req, res) => {
     }
 
     const application = appRes.rows[0];
-    const isCommittee = req.query.mode === 'committee';
+    const isCommittee = Boolean(session) && req.query.mode === 'committee';
+
+    if (!session) {
+      // استجابة محدودة وآمنة للمتقدم فقط عبر رقمه المرجعي
+      const interviewRes = await query(
+        'SELECT scheduled_date, start_time, meeting_url, booking_status FROM interviews WHERE application_id = $1',
+        [application.id]
+      );
+      return res.json({
+        application: {
+          id: application.id,
+          reference_no: application.reference_no,
+          job_id: application.job_id,
+          status: application.status,
+          full_name: application.full_name,
+          job_code: application.job_code,
+          job_title: application.job_title,
+          passing_score: application.passing_score,
+          duration_minutes: application.duration_minutes,
+          assessment_score: application.assessment_score,
+          cv_match_score: application.cv_match_score,
+          ai_overall_score: application.ai_overall_score,
+          integrity_score: application.integrity_score,
+          assessed_at: application.assessed_at,
+          ai_report: application.ai_report,
+          job_questions: sanitizeQuestionsForCandidate(application.job_questions)
+        },
+        interview: interviewRes.rows[0] || null
+      });
+    }
 
     const [answersRes, evalsRes, interviewRes] = await Promise.all([
       query('SELECT * FROM assessment_answers WHERE application_id = $1 ORDER BY question_index ASC', [application.id]),
@@ -794,10 +1131,10 @@ app.get('/api/applications/:idOrRef', async (req, res) => {
   }
 });
 
-app.patch('/api/applications/:id/status', async (req, res) => {
+app.patch('/api/applications/:id/status', requireAuth(), async (req, res) => {
   try {
     const appId = parseInt(req.params.id, 10);
-    const { status, actor = 'لجنة التوظيف' } = req.body;
+    const { status } = req.body;
     const { rows } = await query(
       `UPDATE applications SET status = $1, updated_at = NOW() WHERE id = $2 RETURNING *`,
       [status, appId]
@@ -805,8 +1142,8 @@ app.patch('/api/applications/:id/status', async (req, res) => {
     if (!rows.length) return res.status(404).json({ error: 'الطلب غير موجود.' });
 
     await logAudit({
-      actor,
-      actorRole: 'committee',
+      actor: req.user.full_name,
+      actorRole: req.user.role,
       action: 'APPLICATION_STATUS_CHANGED',
       entityType: 'application',
       entityId: rows[0].reference_no,
@@ -821,7 +1158,7 @@ app.patch('/api/applications/:id/status', async (req, res) => {
 });
 
 // ---------------------------------------------------------------------------------
-// 5. اختبار الجدارة التفاعلي وتقييم الذكاء الاصطناعي (POST /api/assessments/submit)
+// 5. اختبار الجدارة التفاعلي وتقييم الذكاء الاصطناعي (للمتقدم)
 // ---------------------------------------------------------------------------------
 
 app.post('/api/assessments/upload-attachment', upload.single('attachment_file'), (req, res) => {
@@ -945,13 +1282,14 @@ app.post('/api/assessments/submit', async (req, res) => {
     await client.query('COMMIT');
 
     await logAudit({
-      actor: 'محرك التحليل الذكي',
+      actor: `محرك التحليل (${evaluation.aiReport.provider_used})`,
       actorRole: 'ai_engine',
       action: 'ASSESSMENT_SUBMITTED_AND_GRADED',
       entityType: 'application',
       entityId: appRow.reference_no,
       metadata: {
         job_code: job.code,
+        provider: evaluation.aiReport.provider_used,
         assessment_score: evaluation.assessmentScore,
         ai_overall_score: evaluation.aiOverallScore,
         integrity_score: evaluation.integrityScore,
@@ -981,10 +1319,10 @@ app.post('/api/assessments/submit', async (req, res) => {
 });
 
 // ---------------------------------------------------------------------------------
-// 6. إحصائيات لوحة التحكم المركزية (GET /api/stats)
+// 6. إحصائيات لوحة التحكم المركزية (محمية لأعضاء اللجنة)
 // ---------------------------------------------------------------------------------
 
-app.get('/api/stats', async (_req, res) => {
+app.get('/api/stats', requireAuth(), async (_req, res) => {
   try {
     const kpiRes = await query(`
       SELECT
@@ -1049,10 +1387,7 @@ app.get('/api/stats', async (_req, res) => {
       : 0;
 
     res.json({
-      kpis: {
-        ...kpi,
-        pass_rate: passRate
-      },
+      kpis: { ...kpi, pass_rate: passRate },
       funnel: [
         { stage: 'إجمالي المتقدمين', count: kpi.total_applications, color: '#17191C' },
         { stage: 'مجتازو اختبار الجدارة (≥60%)', count: kpi.passed_count, color: '#E0A21B' },
@@ -1069,10 +1404,10 @@ app.get('/api/stats', async (_req, res) => {
 });
 
 // ---------------------------------------------------------------------------------
-// 7. تقييم لجنة التوظيف والترتيب الموزون (Evaluations & Ranking)
+// 7. تقييم لجنة التوظيف والترتيب الموزون (محمي بالصلاحيات)
 // ---------------------------------------------------------------------------------
 
-app.post('/api/evaluations', async (req, res) => {
+app.post('/api/evaluations', requireAuth(['super_admin', 'committee_member']), async (req, res) => {
   try {
     const {
       application_id,
@@ -1087,9 +1422,12 @@ app.post('/api/evaluations', async (req, res) => {
       notes
     } = req.body;
 
-    if (!application_id || !evaluator_name) {
-      return res.status(400).json({ error: 'بيانات الطلب أو اسم المقيّم مفقودة.' });
+    if (!application_id) {
+      return res.status(400).json({ error: 'معرّف الطلب مفقود.' });
     }
+
+    const finalEvaluatorName = String(evaluator_name || req.user.full_name).trim();
+    const finalEvaluatorRole = String(evaluator_role || req.user.job_title || 'عضو لجنة التوظيف').trim();
 
     const scores = [
       Number(technical_competence),
@@ -1122,8 +1460,8 @@ app.post('/api/evaluations', async (req, res) => {
       RETURNING *`,
       [
         parseInt(application_id, 10),
-        String(evaluator_name).trim(),
-        evaluator_role || 'عضو لجنة التوظيف',
+        finalEvaluatorName,
+        finalEvaluatorRole,
         scores[0],
         scores[1],
         scores[2],
@@ -1134,7 +1472,6 @@ app.post('/api/evaluations', async (req, res) => {
       ]
     );
 
-    // تحديث حالة الطلب إذا كانت passed_assessment إلى under_review
     await query(
       `UPDATE applications
        SET status = CASE WHEN status = 'passed_assessment' THEN 'under_review' ELSE status END
@@ -1148,8 +1485,8 @@ app.post('/api/evaluations', async (req, res) => {
     );
 
     await logAudit({
-      actor: String(evaluator_name).trim(),
-      actorRole: evaluator_role || 'committee',
+      actor: req.user.full_name,
+      actorRole: req.user.role,
       action: 'COMMITTEE_EVALUATION_SAVED',
       entityType: 'application',
       entityId: updatedApp.rows[0]?.reference_no,
@@ -1170,7 +1507,7 @@ app.post('/api/evaluations', async (req, res) => {
   }
 });
 
-app.get('/api/ranking', async (req, res) => {
+app.get('/api/ranking', requireAuth(), async (req, res) => {
   try {
     const { job_id } = req.query;
     const weightsRes = await query("SELECT setting_value FROM system_settings WHERE setting_key = 'ranking_weights'");
@@ -1224,24 +1561,23 @@ app.get('/api/ranking', async (req, res) => {
   }
 });
 
-app.put('/api/ranking/weights', async (req, res) => {
+app.put('/api/ranking/weights', requireAuth(['super_admin']), async (req, res) => {
   try {
     const aiWeight = Math.max(0, Math.min(100, Number(req.body.ai_weight ?? 40)));
     const committeeWeight = Number((100 - aiWeight).toFixed(2));
 
     await query(
       `UPDATE system_settings
-       SET setting_value = $1::jsonb, updated_by = 'لجنة التوظيف', updated_at = NOW()
+       SET setting_value = $1::jsonb, updated_by = $2, updated_at = NOW()
        WHERE setting_key = 'ranking_weights'`,
-      [JSON.stringify({ ai_weight: aiWeight, committee_weight: committeeWeight, passing_threshold: 60 })]
+      [JSON.stringify({ ai_weight: aiWeight, committee_weight: committeeWeight, passing_threshold: 60 }), req.user.full_name]
     );
 
-    // إعادة حساب جميع الدرجات الموزونة في قاعدة البيانات فوراً
     await query('SELECT fn_sync_application_weighted_score(id) FROM applications');
 
     await logAudit({
-      actor: 'رئيس لجنة التوظيف',
-      actorRole: 'committee_lead',
+      actor: req.user.full_name,
+      actorRole: req.user.role,
       action: 'RANKING_WEIGHTS_UPDATED',
       entityType: 'system_settings',
       entityId: 'ranking_weights',
@@ -1256,10 +1592,10 @@ app.put('/api/ranking/weights', async (req, res) => {
 });
 
 // ---------------------------------------------------------------------------------
-// 8. جدولة المقابلات الذكية واستثناء صلاة الظهر (Scheduler & Google Meet)
+// 8. جدولة المقابلات الذكية واستثناء صلاة الظهر (محمي بالصلاحيات)
 // ---------------------------------------------------------------------------------
 
-app.get('/api/interviews', async (req, res) => {
+app.get('/api/interviews', requireAuth(), async (req, res) => {
   try {
     const { date } = req.query;
     const params = [];
@@ -1309,7 +1645,7 @@ app.get('/api/interviews', async (req, res) => {
   }
 });
 
-app.post('/api/interviews/auto-schedule', async (req, res) => {
+app.post('/api/interviews/auto-schedule', requireAuth(['super_admin', 'hr_coordinator']), async (req, res) => {
   const client = await pool.connect();
   try {
     const {
@@ -1329,7 +1665,6 @@ app.post('/api/interviews/auto-schedule', async (req, res) => {
     const duration = Math.max(15, parseInt(slot_duration_minutes, 10) || 30);
     const buffer = Math.max(0, parseInt(buffer_minutes, 10) || 10);
 
-    // جلب المرشحين المؤهلين غير المجدولين (أو المحددين من المستخدم)
     let candidatesQuery = `
       SELECT a.id AS application_id, a.reference_no, c.full_name, c.phone, j.code AS job_code, j.title AS job_title
       FROM applications a
@@ -1356,7 +1691,6 @@ app.post('/api/interviews/auto-schedule', async (req, res) => {
       return res.status(400).json({ error: 'لا يوجد مرشحون مؤهلون غير مجدولين حالياً لتوزيع المواعيد عليهم.' });
     }
 
-    // جلب المواعيد المحجوزة مسبقاً في نفس التاريخ لمنع التعارض
     const bookedRes = await client.query(
       'SELECT start_time, end_time FROM interviews WHERE scheduled_date = $1',
       [scheduleDate]
@@ -1371,7 +1705,6 @@ app.post('/api/interviews/auto-schedule', async (req, res) => {
     const prayerStart = timeToMinutes(dhuhr_start);
     const prayerEnd = timeToMinutes(dhuhr_end);
 
-    // جلب قالب واتساب من الإعدادات
     const tplRes = await client.query("SELECT setting_value FROM system_settings WHERE setting_key = 'whatsapp_templates'");
     const inviteTemplate = tplRes.rows[0]?.setting_value?.interview_invite ||
       'السلام عليكم أ. {{name}}، يسعدنا دعوتك لمقابلة وظيفة ({{job_title}} - {{job_code}}) بتاريخ {{date}} الساعة {{time}} عبر Google Meet: {{meet_url}}';
@@ -1387,13 +1720,11 @@ app.post('/api/interviews/auto-schedule', async (req, res) => {
         const slotStart = cursor;
         const slotEnd = cursor + duration;
 
-        // تخطي استراحة صلاة الظهر تلقائياً
         if (exclude_dhuhr && slotStart < prayerEnd && slotEnd > prayerStart) {
           cursor = prayerEnd;
           continue;
         }
 
-        // تخطي المواعيد المحجوزة مسبقاً
         const conflict = bookedRanges.some(([bStart, bEnd]) => slotStart < bEnd && slotEnd > bStart);
         if (conflict) {
           cursor += 15;
@@ -1463,7 +1794,6 @@ app.post('/api/interviews/auto-schedule', async (req, res) => {
       if (!slotFound) break;
     }
 
-    // حفظ تفضيلات الجدولة في الإعدادات
     await client.query(
       `UPDATE system_settings SET setting_value = $1::jsonb, updated_at = NOW() WHERE setting_key = 'scheduler_config'`,
       [JSON.stringify({
@@ -1481,8 +1811,8 @@ app.post('/api/interviews/auto-schedule', async (req, res) => {
     await client.query('COMMIT');
 
     await logAudit({
-      actor: 'منسق المقابلات',
-      actorRole: 'committee',
+      actor: req.user.full_name,
+      actorRole: req.user.role,
       action: 'AUTO_SCHEDULE_EXECUTED',
       entityType: 'interviews',
       entityId: scheduleDate,
@@ -1502,7 +1832,7 @@ app.post('/api/interviews/auto-schedule', async (req, res) => {
   }
 });
 
-app.patch('/api/interviews/:id', async (req, res) => {
+app.patch('/api/interviews/:id', requireAuth(['super_admin', 'hr_coordinator', 'committee_member']), async (req, res) => {
   try {
     const id = parseInt(req.params.id, 10);
     const { booking_status, notes, scheduled_date, start_time, end_time } = req.body;
@@ -1531,10 +1861,10 @@ app.patch('/api/interviews/:id', async (req, res) => {
 });
 
 // ---------------------------------------------------------------------------------
-// 9. طابور رسائل واتساب الهجين (Hybrid wa.me Queue)
+// 9. طابور رسائل واتساب الهجين (محمي بالصلاحيات)
 // ---------------------------------------------------------------------------------
 
-app.get('/api/wa-messages', async (req, res) => {
+app.get('/api/wa-messages', requireAuth(), async (req, res) => {
   try {
     const { status } = req.query;
     const params = [];
@@ -1567,7 +1897,7 @@ app.get('/api/wa-messages', async (req, res) => {
   }
 });
 
-app.post('/api/wa-messages', async (req, res) => {
+app.post('/api/wa-messages', requireAuth(['super_admin', 'hr_coordinator']), async (req, res) => {
   try {
     const { application_id, recipient_name, recipient_phone, message_body, template_key = 'custom' } = req.body;
     if (!recipient_name || !recipient_phone || !message_body) {
@@ -1588,10 +1918,11 @@ app.post('/api/wa-messages', async (req, res) => {
   }
 });
 
-app.patch('/api/wa-messages/:id', async (req, res) => {
+app.patch('/api/wa-messages/:id', requireAuth(['super_admin', 'hr_coordinator', 'committee_member']), async (req, res) => {
   try {
     const id = parseInt(req.params.id, 10);
-    const { queue_status, message_body, sent_by = 'منسق الاستقطاب' } = req.body;
+    const { queue_status, message_body } = req.body;
+    const sentBy = req.user.full_name;
 
     const existing = await query('SELECT * FROM wa_messages WHERE id = $1', [id]);
     if (!existing.rows.length) return res.status(404).json({ error: 'الرسالة غير موجودة في الطابور.' });
@@ -1610,7 +1941,7 @@ app.patch('/api/wa-messages/:id', async (req, res) => {
         sent_at = CASE WHEN $3 = 'sent' AND sent_at IS NULL THEN NOW() ELSE sent_at END
       WHERE id = $5
       RETURNING *`,
-      [updatedBody, updatedLink, updatedStatus, sent_by, id]
+      [updatedBody, updatedLink, updatedStatus, sentBy, id]
     );
 
     if (current.interview_id && (updatedStatus === 'sent' || updatedStatus === 'confirmed')) {
@@ -1621,8 +1952,8 @@ app.patch('/api/wa-messages/:id', async (req, res) => {
     }
 
     await logAudit({
-      actor: sent_by,
-      actorRole: 'committee',
+      actor: sentBy,
+      actorRole: req.user.role,
       action: 'WA_MESSAGE_UPDATED',
       entityType: 'wa_message',
       entityId: id,
@@ -1637,10 +1968,10 @@ app.patch('/api/wa-messages/:id', async (req, res) => {
 });
 
 // ---------------------------------------------------------------------------------
-// 10. محاكي الفحص الأعمى والإعدادات وسجل التدقيق (AIEngine & Settings)
+// 10. محاكي الفحص الأعمى والإعدادات وسجل التدقيق (محمي بالصلاحيات)
 // ---------------------------------------------------------------------------------
 
-app.post('/api/ai/simulate', async (req, res) => {
+app.post('/api/ai/simulate', requireAuth(), async (req, res) => {
   try {
     const { sample_cv_text = '', candidate_name = '', job_id } = req.body;
     const anonymized = anonymizeText(sample_cv_text, { full_name: candidate_name });
@@ -1659,6 +1990,9 @@ app.post('/api/ai/simulate', async (req, res) => {
       if (jRes.rows.length) job = jRes.rows[0];
     }
 
+    const settingsRes = await query("SELECT setting_value FROM system_settings WHERE setting_key = 'ai_engine_config'");
+    const aiConfig = settingsRes.rows[0]?.setting_value || {};
+
     const evalPreview = await evaluateSubmission({
       job: { ...job, questions: (job.questions || []).slice(0, 3) },
       candidate: {
@@ -1673,7 +2007,8 @@ app.post('/api/ai/simulate', async (req, res) => {
         { question_index: 2, answer_value: '400' },
         { question_index: 3, answer_value: '1' }
       ],
-      telemetry: { tab_switches: 0, paste_attempts: 0 }
+      telemetry: { tab_switches: 0, paste_attempts: 0 },
+      aiConfig
     });
 
     res.json({
@@ -1689,7 +2024,7 @@ app.post('/api/ai/simulate', async (req, res) => {
   }
 });
 
-app.get('/api/settings', async (_req, res) => {
+app.get('/api/settings', requireAuth(['super_admin']), async (_req, res) => {
   try {
     const { rows } = await query('SELECT * FROM system_settings ORDER BY setting_key ASC');
     const settingsMap = {};
@@ -1706,16 +2041,15 @@ app.get('/api/settings', async (_req, res) => {
   }
 });
 
-app.put('/api/settings/:key', async (req, res) => {
+app.put('/api/settings/:key', requireAuth(['super_admin']), async (req, res) => {
   try {
     const { key } = req.params;
-    const { setting_value, category = 'ai_provider', description = '', updated_by = 'مدير النظام' } = req.body;
+    const { setting_value, category = 'ai_provider', description = '' } = req.body;
 
     if (!setting_value || typeof setting_value !== 'object') {
       return res.status(400).json({ error: 'قيمة الإعداد يجب أن تكون كائن JSON صالحاً.' });
     }
 
-    // ضمان عدم حفظ أي مفاتيح API سرية قادمة من المتصفح في قاعدة البيانات
     const sanitizedValue = { ...setting_value };
     delete sanitizedValue.api_key;
     delete sanitizedValue.secret_key;
@@ -1730,7 +2064,7 @@ app.put('/api/settings/:key', async (req, res) => {
          updated_by = EXCLUDED.updated_by,
          updated_at = NOW()
        RETURNING *`,
-      [key, JSON.stringify(sanitizedValue), category, description, updated_by]
+      [key, JSON.stringify(sanitizedValue), category, description, req.user.full_name]
     );
 
     if (key === 'ranking_weights') {
@@ -1738,8 +2072,8 @@ app.put('/api/settings/:key', async (req, res) => {
     }
 
     await logAudit({
-      actor: updated_by,
-      actorRole: 'admin',
+      actor: req.user.full_name,
+      actorRole: req.user.role,
       action: 'SYSTEM_SETTING_UPDATED',
       entityType: 'system_settings',
       entityId: key,
@@ -1753,7 +2087,7 @@ app.put('/api/settings/:key', async (req, res) => {
   }
 });
 
-app.get('/api/audit-logs', async (req, res) => {
+app.get('/api/audit-logs', requireAuth(['super_admin']), async (req, res) => {
   try {
     const limit = Math.min(100, parseInt(req.query.limit || '30', 10));
     const { rows } = await query('SELECT * FROM audit_logs ORDER BY created_at DESC LIMIT $1', [limit]);
@@ -1763,7 +2097,6 @@ app.get('/api/audit-logs', async (req, res) => {
   }
 });
 
-// معالج أخطاء رفع الملفات والأخطاء العامة
 app.use((err, _req, res, _next) => {
   if (err instanceof multer.MulterError) {
     if (err.code === 'LIMIT_FILE_SIZE') {
@@ -1777,13 +2110,12 @@ app.use((err, _req, res, _next) => {
   res.status(500).json({ error: 'خطأ داخلي في الخادم.' });
 });
 
-// بدء تشغيل الخادم بعد التحقق من قاعدة البيانات
 ensureDatabaseInitialized()
   .then(() => {
     app.listen(PORT, HOST, () => {
       console.log(`=============================================================`);
       console.log(`🚀 منصة التوظيف الذكية تعمل الآن على http://${HOST}:${PORT}`);
-      console.log(`🗄️  قاعدة البيانات PostgreSQL متصلة وجاهزة (smart_hr_db)`);
+      console.log(`🔒 نظام الصلاحيات (RBAC) وتكامل Ollama مفعّلان بالكامل`);
       console.log(`=============================================================`);
     });
   })
