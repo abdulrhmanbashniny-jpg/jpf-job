@@ -119,13 +119,14 @@ async function testOllamaModel({ baseUrl, model }) {
       body: JSON.stringify({
         model,
         stream: false,
+        think: false,
         format: 'json',
         keep_alive: '30m',
-        options: { temperature: 0.1, num_ctx: 2048, num_predict: 120 },
+        options: { temperature: 0.1, num_ctx: 2048, num_predict: 200 },
         messages: [
           {
             role: 'user',
-            content: 'أجب بصيغة JSON فقط تحتوي على المفتاح status وقيمته "جاهز للعمل بالعربية" والمفتاح engine وقيمته اسم الموديل.'
+            content: 'أجب بصيغة JSON فقط تحتوي على المفتاح status وقيمته "جاهز للعمل بالعربية" والمفتاح engine وقيمته اسم الموديل. /no_think'
           }
         ]
       }),
@@ -338,15 +339,16 @@ async function callExternalAIProvider(provider, config, systemPrompt, userPayloa
         body: JSON.stringify({
           model,
           stream: false,
+          think: false,
           format: 'json',
           keep_alive: '30m',
           options: {
             temperature: Number(config.temperature ?? 0.2),
             num_ctx: 2048,
-            num_predict: 450
+            num_predict: 500
           },
           messages: [
-            { role: 'system', content: systemPrompt },
+            { role: 'system', content: `${systemPrompt} /no_think` },
             { role: 'user', content: JSON.stringify(userPayload) }
           ]
         }),
