@@ -107,11 +107,11 @@
 
               <div style="display:flex;gap:8px;flex-wrap:wrap;">
                 ${currentApp.cv_stored_path ? `<a href="${SmartHR.escapeHtml(currentApp.cv_stored_path)}" target="_blank" rel="noopener" class="btn btn-outline btn-sm">📄 معاينة السيرة الذاتية ↗</a>` : ''}
-                ${(!window.__CURRENT_USER || ['super_admin', 'hr_coordinator'].includes(window.__CURRENT_USER.role))
-                  ? `<button class="btn btn-outline btn-sm" onclick="prepareCandidateRecovery()" title="تدوير الرمز السري وتجهيز مسودة واتساب للجوال المسجل فقط">🔑 استعادة دخول المتقدم</button>`
+                ${(window.__CURRENT_USER && ['super_admin', 'hr_coordinator'].includes(window.__CURRENT_USER.role))
+                  ? `<button class="btn btn-outline btn-sm" onclick="prepareCandidateRecovery()" title="تدوير الرمز السري وتجهيز مسودة واتساب للجوال المسجل فقط">🔑 استعادة دخول المتقدم</button>
+                     ${currentApp.status !== 'assessment_pending' ? `<button class="btn btn-olive btn-sm" onclick="changeAppStatus('offered')">اعتماد عرض وظيفي ✓</button>` : ''}
+                     <button class="btn btn-outline btn-sm" style="color:var(--terracotta);border-color:var(--terracotta);" onclick="changeAppStatus('rejected')">اعتذار للمرشح</button>`
                   : ''}
-                <button class="btn btn-olive btn-sm" onclick="changeAppStatus('offered')">اعتماد عرض وظيفي ✓</button>
-                <button class="btn btn-outline btn-sm" style="color:var(--terracotta);border-color:var(--terracotta);" onclick="changeAppStatus('rejected')">اعتذار للمرشح</button>
               </div>
             </div>
 
@@ -269,9 +269,11 @@
                     <textarea id="ev-notes" class="form-textarea" style="min-height:76px;" placeholder="سجّل ملاحظات المقابلة أو مراجعة الملف..."></textarea>
                   </div>
 
-                  <button type="submit" class="btn btn-terracotta" style="width:100%;">
-                    حفظ التقييم وتحديث الترتيب الموزون تلقائياً ←
-                  </button>
+                  ${(window.__CURRENT_USER && ['super_admin', 'committee_member'].includes(window.__CURRENT_USER.role))
+                    ? `<button type="submit" class="btn btn-terracotta" style="width:100%;">
+                         حفظ التقييم وتحديث الترتيب الموزون تلقائياً ←
+                       </button>`
+                    : `<div class="card-subtle" style="font-size:12.5px;color:var(--text-muted);text-align:center;">رصد درجات اللجنة مخصص لأعضاء لجنة التقييم ومدير النظام.</div>`}
                 </form>
               </section>
 
@@ -362,6 +364,7 @@
     }
 
     async function initProfilePage() {
+      await SmartHR.getCurrentUser().catch(() => null);
       const switcher = document.getElementById('candidate-switcher');
       const params = new URLSearchParams(window.location.search);
       const requestedId = params.get('app_id');

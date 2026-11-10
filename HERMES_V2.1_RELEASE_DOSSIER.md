@@ -1,8 +1,8 @@
-# ملف المراجعة الهندسية والأمنية المحدّث (الجولة الثانية) — الإصدار `v2.1`
+# ملف المراجعة الهندسية والأمنية النهائي الموحّد — الإصدار `v2.1`
 **موجه إلى:** وكيل المراجعة التقنية والبنية التحتية **Hermes** (بقيادة واعتماد **عبدالرحمن**)  
 **المشروع:** منصة التوظيف الذكية (`https://hrjpf.tech` — المسار `/opt/jpf-job` على `srv1924474`)  
 **طلب الدمج المفتوح:** `https://github.com/abdulrhmanbashniny-jpg/jpf-job/pull/1` (`release/v2.1` -> `main`)  
-**حالة النشر:** قيد إعادة المراجعة النهائية — **لا دمج ولا نشر ولا إعادة تشغيل للحاويات قبل موافقة عبدالرحمن الصريحة.**
+**حالة النشر:** دفعة نهائية موحّدة (Final Cohesive `v2.1` Commit) للمراجعة النهائية لعوائق الإطلاق فقط — **لا دمج ولا نشر ولا إعادة تشغيل للحاويات قبل موافقة عبدالرحمن الصريحة.**
 
 ---
 
@@ -135,3 +135,65 @@ $DC exec -T app sh -c 'rm -rf /app/uploads/* && mkdir -p /app/uploads/samples &&
   < "/root/backups/smarthr/uploads_pre_v21_${TS}.tar.gz"
 curl -fsS https://hrjpf.tech/api/health
 ```
+
+---
+
+## 5. التدقيق الشامل النهائي الموحّد (مصفوفات انتقالات الحالات، الأقفال الهرمية، الصلاحيات، المتصفح الفعلي، وما لم يُختبر)
+
+### أ. مصفوفة انتقالات رسائل واتساب (`wa_messages`) ومنع التوليفات المتعارضة (`PATCH /api/wa-messages/:id`)
+1. **رفض المعاملات المتعارضة من البوابة الأولى قبل لمس القاعدة:**
+   * إرسال `action` و `queue_status` معاً في طلب واحد (مثل `{ action: 'confirm_sent', queue_status: 'cancelled' }` أو `{ action: 'open_draft', queue_status: 'cancelled' }`) يُرفض فوراً بكود **`400 CONFLICTING_WA_PARAMS`**.
+   * إرسال قيمة `action` خارج `['open_draft', 'confirm_sent']` يُرفض بـ **`400 INVALID_WA_ACTION`**، وقيمة `queue_status` خارج القائمة المعتمدة تُرفض بـ **`400 INVALID_WA_STATUS`**، والطلب الفارغ يُرفض بـ **`400 EMPTY_WA_PATCH`**.
+2. **القفل النهائي الصارم للحالة الملغاة (`cancelled`):**
+   * أي صف في `wa_messages` حالته `cancelled` يُعد منتهياً نهائياً؛ وأي طلب `PATCH` عليه يرجع **`400 WA_MESSAGE_CANCELLED`** دون أي تعديل على الصف أو الموعد المرتبط.
+3. **ترتيب الأقفال الهرمي الموحّد لمنع `AB-BA Deadlock`:**
+   * تلتزم جميع المعاملات في النظام (`schedule-single`, `auto-schedule`, `PATCH /api/interviews/:id`, `POST /api/public/visit/:vt/confirm`, و `PATCH /api/wa-messages/:id`) بترتيب قفل واحد: **`applications` -> `interviews` -> `wa_messages` (`FOR UPDATE`)**.
+4. **جدول الانتقالات المسموحة والممنوعة:**
+   * `queued` + `action='open_draft'` -> يبقى `queued` مع تسجيل `prepared_at = NOW()` (لا يغيّر `interviews.booking_status`).
+   * `queued` -> `sent` (`action='confirm_sent'` أو `queue_status='sent'`): مسموح فقط إذا لم يكن الموعد ملغى (`400 INTERVIEW_ALREADY_CANCELLED`) ولم تتجاوزه دعوة أحدث (`409 SUPERSEDED_WA_MESSAGE`)؛ ويُحدّث `interviews.booking_status` إلى `'invitation_sent'` **فقط** لرسائل الدعوة/التحديث النشطة (`interview_invite`, `interview_inperson`, `reschedule_notice`) عندما يكون الموعد في `scheduled` أو `rescheduled`.
+   * `sent` -> `confirmed`: مسموح فقط لغير `portal_recovery` وبشرط أن يكون الموعد المرتبط في `invitation_sent` أو `confirmed`؛ ممنوع مباشرة من `queued` (`400 CANNOT_CONFIRM_UNSENT_MESSAGE`).
+   * `queued` -> `failed` ثم `failed` -> `queued` (إعادة محاولة): مسموح؛ أما الرجوع من `sent` أو `confirmed` إلى `queued` أو تعديل `message_body` بعد الخروج من `queued` فمرفوض (`400 INVALID_WA_TRANSITION` / `400 SENT_BODY_IMMUTABLE`).
+   * رسائل `portal_recovery`: يُمنع إنشاؤها عبر `POST /api/wa-messages` (`400`)، ويُمنع تعديل نصها (`400 RECOVERY_BODY_IMMUTABLE`)، وعند توليد رابط استعادة جديد عبر `POST /api/applications/:id/recovery-link` يُقفل صف الطلب `FOR UPDATE` وتُلغى جميع رسائل `portal_recovery` السابقة تلقائياً قبل إدراج المسودة الجديدة.
+
+### ب. مصفوفة انتقالات المقابلات والطلبات المترابطة (`applications` <-> `interviews`)
+* **أهلية الجدولة:** لا يُسمح بجدولة مرشح عبر `schedule-single` أو `auto-schedule` إلا إذا كانت حالة طلبه ضمن `['passed_assessment', 'under_review', 'interview_scheduled', 'interviewed']` (`400 APPLICATION_NOT_ELIGIBLE_FOR_INTERVIEW` لطلبات `assessment_pending` أو `failed_assessment` أو `rejected`)، مع التحقق الصارم من صيغة `YYYY-MM-DD` و `HH:MM` وأن وقت النهاية بعد البداية.
+* **قفل الحالات في `PATCH /api/interviews/:id`:** يُمنع تعيين `invitation_sent` أو `confirmed` يدوياً أو إرجاع الموعد إلى `scheduled` (`400`)، ويُمنع تسجيل `completed` أو `no_show` قبل `invitation_sent` (`400`)، ويُمنع إلغاء أو إعادة جدولة مقابلة مكتملة فعلياً (`400 INTERVIEW_ALREADY_COMPLETED`).
+* **التسلسل التلقائي عند الاعتذار (`status = 'rejected'`):** عند اعتماد اعتذار لمرشح لديه موعد غير مكتمل عبر `PATCH /api/applications/:id/status`، يُلغى الموعد تلقائياً (`cancelled`) ويُدوَّر `visit_token` (لإبطال رابط البطاقة فوراً `403`) وتُلغى دعوات الطابور المرتبطة به داخل نفس المعاملة الذرية.
+
+### ج. مصفوفة صلاحيات الموظفين الحية (`Live DB Staff RBAC` — متطابقة بين الـ API والـ HTML والـ UI)
+* **التحقق الحي من القاعدة (`resolveActiveStaffSession`):** كل طلب إلى `requireAuth`، `GET /api/auth/me`، صفحات `PROTECTED_PAGE_ROLES`، ومجلد `/uploads` يتحقق مباشرة من `staff_users.is_active = TRUE` والدور الحي في PostgreSQL؛ إيقاف أي حساب موظف يُسقط جلسته في اللحظة نفسها (`401` / `302`) حتى لو كان كوكي HMAC غير منتهي الصلاحية، كما يُمنع مدير النظام من إيقاف حسابه أو تخفيض صلاحياته (`400`).
+* **توزيع الأدوار الثلاثة:**
+  * `super_admin`: كامل الصلاحيات الإدارية وإدارة المستخدمين والأوزان وموديلات الذكاء الاصطناعي.
+  * `hr_coordinator`: إدارة الوظائف، جدولة وإعادة جدولة وإلغاء المقابلات، إدارة وتشغيل طابور وقوالب واتساب، تدوير روابط استعادة المتقدمين، واعتماد حالة الطلب (`under_review` / `offered` / `rejected`)؛ ممنوع (`403`) من تقييم اللجنة (`POST /api/evaluations`) ومن صفحات المستخدمين والإعدادات العامة وتعديل أوزان الترتيب.
+  * `committee_member`: استعراض المرشحين والترتيب، رصد درجات تقييم اللجنة (`POST /api/evaluations`)، رصد حضور/إتمام المقابلة (`completed` / `no_show` والملاحظات بعد إرسال الدعوة)، ومتابعة طابور المقابلات للقراءة فقط مع حجب تام لرسائل `portal_recovery`؛ ممنوع (`403`) من إنشاء أو تعديل أو فتح أو تأكيد رسائل واتساب، ومن جدولة/إعادة جدولة/إلغاء المقابلات، ومن استعادة وصول المتقدمين أو تغيير حالة التوظيف النهائية.
+
+### د. قائمة حالات الاختبار المنفذة فعلياً ونتائجها (`npm run verify:v21` + `Chromium Headless`)
+
+| المعرّف | المجال | وصف حالة الاختبار المنفذة | النتيجة |
+| :--- | :--- | :--- | :--- |
+| **TC-01** | حواجز الأمان | رفض تشغيل `verify-v21-drills.js` بدون `ALLOW_ISOLATED_DRILL=1` أو مع `NODE_ENV=production` | **PASS** |
+| **TC-02** | تطابق المخطط | ترقية قاعدة `v2.0` مأهولة إلى `v2.1` ومطابقة `139/139` عموداً وحفظ قوالب JSONB المخصصة (`9/9`) | **PASS** |
+| **TC-03** | ملكية المتقدم | منع الاستحواذ الجزئي (`409`) واشتراط مفتاح `JPFK-...` (`403` بدونه، `200` معه) ومنع التوكن العابر للطلبات | **PASS** |
+| **TC-04** | مرفقات الاختبار | اشتراط توكن متقدم حي في القاعدة وحالة `assessment_pending` لرفع المرفقات، ورفض الرفع بعد التسليم (`403`) | **PASS** |
+| **TC-05** | تزامن الاختبار | إرسال مزدوج متزامن (`Promise.all`) لـ `POST /api/assessments/submit` -> تقييم واحد `<35ms` والآخر `already_submitted: true` بلا تكرار صفوف | **PASS** |
+| **TC-06** | تدوير الاستعادة | تدوير `candidate_access_token` وإبطال المفتاح القديم (`403`) وإلغاء مسودات الاستعادة السابقة تلقائياً | **PASS** |
+| **TC-07** | تعارض معاملات WA | إرسال `{ action: 'confirm_sent', queue_status: 'cancelled' }` وكافة ثنائيات `action + queue_status` على الرسائل الملغاة والنشطة -> `400 CONFLICTING_WA_PARAMS` وبقاء الرسالة `cancelled` والموعد `rescheduled` | **PASS** |
+| **TC-08** | قفل الرسالة الملغاة | رفض جميع الطلبات المفردة (`open_draft`, `confirm_sent`, `sent`, `queued`, `confirmed`, `failed`, `cancelled`, `message_body`) على رسالة ملغاة بـ `400 WA_MESSAGE_CANCELLED` | **PASS** |
+| **TC-09** | انتقالات WA | دورة `queued -> failed -> queued -> sent`، سباق تأكيد إرسال مزدوج `[200, 400]`، منع الرجوع لـ `queued`، منع تعديل النص بعد الإرسال (`400 SENT_BODY_IMMUTABLE`)، ومنع تزوير `portal_recovery` | **PASS** |
+| **TC-10** | التزامن الذري | سباق `Promise.all` بين `confirm_sent` لدعوة قديمة وإعادة الجدولة (بترتيب قفل موحّد بلا Deadlock) + سباق تدوير استعادة مزدوج -> مسودة نشطة واحدة فقط | **PASS** |
+| **TC-11** | أهلية المقابلة | رفض جدولة أو تقييم أو تقديم عرض لمرشح `assessment_pending` (`400`) ورفض أوقات غير صالحة (`27:99` -> `400`) | **PASS** |
+| **TC-12** | مصفوفة RBAC والإيقاف | التحقق الكامل من صلاحيات الأدوار الثلاثة (`super_admin`, `hr_coordinator`, `committee_member`) على الـ API والـ HTML، ومنع تخفيض المدير لنفسه، والإسقاط اللحظي الفوري (`401`/`302`) لكوكي موظف أُوقف حسابه | **PASS** |
+| **TC-13** | متصفح فعلي (Chromium) | تسجيل دخول `hr_coordinator` في المتصفح -> فتح `Interviews.dc.html` -> النقر على صف `portal_recovery` -> التحقق من شاشة المعاينة وفتح مسودة `wa.me` بالرابط والمفتاح السليمين مع بقاء الحالة `queued` | **PASS** |
+| **TC-14** | متصفح فعلي (Chromium) | النقر في المتصفح على صف `reschedule_notice` -> فتح المسودة بالرمز الجديد `vt` مع بقاء الموعد `rescheduled` -> الضغط على `✓ تأكيد الإرسال` وتحول الموعد إلى `invitation_sent` | **PASS** |
+| **TC-15** | متصفح فعلي (المتقدم) | فتح متصفح مجهول لرابط الاستعادة المدوّر ثم فتح `Visit.dc.html?vt=...` والضغط على `#confirm-visit-btn` وتحول الموعد إلى `confirmed` | **PASS** |
+| **TC-16** | متصفح فعلي (عضو اللجنة) | تسجيل دخول `committee_member` في المتصفح -> خلو `Interviews.dc.html` من صفوف الاستعادة وأزرار الإرسال -> `403` على `/Users.dc.html` -> رصد إتمام المقابلة ومنع إعادة جدولتها بعد الإتمام (`400`) | **PASS** |
+| **TC-17** | تسلسل الاعتذار | تغيير حالة مرشح مجدول إلى `rejected` -> إلغاء الموعد تلقائياً وإبطال `vt` (`403`) وإلغاء دعوات الطابور | **PASS** |
+| **DRILL-3/4** | النسخ والرجوع | `pg_dump -Fc` + استعادة بمعاملَي `-c` منفصلين + أرشيف المرفقات + رجوع `v2.1 -> 70be659` مع ملف الترقيع وإدراج `201` + تمرين `docker compose` المعزول في CI | **PASS** |
+
+### هـ. إفصاح صريح وشفاف عمّا لم يُختبر (What Was NOT Tested)
+التزاماً بالشفافية الهندسية الكاملة قبل قرار الاعتماد:
+1. **التطبيق الفعلي لتطبيق واتساب الخارجي (`wa.me` -> تطبيق WhatsApp Desktop / Mobile):** تم التحقق في متصفح Chromium الحقيقي من توليد وفتح الرابط الكامل `https://wa.me/<phone>?text=...` ومطابقة الرقم والنص المشفر حرفياً، لكن لم يتم إرسال رسائل فعلية عبر خوادم شركة Meta/WhatsApp أو ربط حاوية `WAHA` بعد (مجدول للمرحلة المعتمدة `v2.3`).
+2. **زمن استجابة نموذج الذكاء الاصطناعي المحلي الحي (`Ollama` على `srv1924474`):** تم التحقق من المسار غير المتزامن والعودة الاحتياطية الآمنة (`smart-rubric` `<35ms`) وعزل الـ 60 ثانية، لكن لم يتم تشغيل استدلال حي ضد حاوية Ollama الإنتاجية الفعلية على `srv1924474` احتراماً لعدم لمس بيئة الإنتاج قبل الاعتماد.
+3. **التوافق البصري اليدوي على متصفحات الهواتف الفعلية (`iOS Safari` / `Android Chrome`) والطباعة الورقية الفعلية:** تم تنفيذ اختبارات المتصفح الفعلي آلياً على محرك **Playwright Headless Chromium (Linux)** وليس على أجهزة آيفون/أندرويد فيزيائية أو طابعة ورقية فعلية لبطاقة الزيارة.
+4. **اختبار الضغط العالي واسع النطاق (Load / Stress Soak Testing لآلاف المستخدمين المتزامنين) وفحص Traefik الحي على `srv1924474`:** شملت اختبارات التزامن سباقات متوازية حقيقية (`Promise.all`) على الصفوف المتنازع عليها مع `PostgreSQL FOR UPDATE`، لكن لم يُنفذ اختبار حمل مستمر بمئات الطلبات في الثانية ولا تبديل فعلي خلف `traefik-traefik-1` على الخادم الإنتاجي (الذي يظل محكوماً بموافقة عبدالرحمن وتنفيذ Hermes).
+

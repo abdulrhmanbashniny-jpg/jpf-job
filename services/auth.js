@@ -317,26 +317,60 @@ const ROLE_LABELS = {
 };
 
 /**
- * Middleware لحماية نقاط النهاية حسب الدور الوظيفي (RBAC)
+ * التحقق الحي من جلسة الموظف مقابل قاعدة البيانات (يضمن الإيقاف الفوري وتحديث الدور اللحظي)
  */
-function requireAuth(allowedRoles = null) {
-  return (req, res, next) => {
-    const session = getSessionFromRequest(req);
-    if (!session) {
-      return res.status(401).json({
-        error: 'يلزم تسجيل الدخول بحساب معتمد للوصول إلى لوحة اللجنة.',
-        code: 'AUTH_REQUIRED'
-      });
-    }
-    if (Array.isArray(allowedRoles) && allowedRoles.length > 0 && !allowedRoles.includes(session.role)) {
-      return res.status(403).json({
-        error: 'ليست لديك الصلاحية الكافية لتنفيذ هذا الإجراء.',
-        code: 'FORBIDDEN_ROLE'
-      });
-    }
-    req.user = session;
-    next();
+async function resolveActiveStaffSession(req, dbQuery) {
+  const tokenPayload = getSessionFromRequest(req);
+  if (!tokenPayload || !tokenPayload.uid) return null;
+  if (typeof dbQuery !== 'function') return tokenPayload;
+
+  const { rows } = await dbQuery(
+    'SELECT id, username, full_name, job_title, role, is_active FROM staff_users WHERE id = $1 LIMIT 1',
+    [tokenPayload.uid]
+  );
+  if (!rows.length || !rows[0].is_active) return null;
+  const u = rows[0];
+  return {
+    uid: u.id,
+    username: u.username,
+    full_name: u.full_name,
+    job_title: u.job_title || '',
+    role: u.role
   };
+}
+
+/**
+ * Middleware لحماية نقاط النهاية حسب الدور الوظيفي الحي في القاعدة (RBAC)
+ */
+function createRequireAuth(dbQuery) {
+  return function requireAuth(allowedRoles = null) {
+    return async (req, res, next) => {
+      try {
+        const session = await resolveActiveStaffSession(req, dbQuery);
+        if (!session) {
+          clearSessionCookie(res);
+          return res.status(401).json({
+            error: 'يلزم تسجيل الدخول بحساب نشط ومعتمد للوصول إلى لوحة اللجنة.',
+            code: 'AUTH_REQUIRED'
+          });
+        }
+        if (Array.isArray(allowedRoles) && allowedRoles.length > 0 && !allowedRoles.includes(session.role)) {
+          return res.status(403).json({
+            error: 'ليست لديك الصلاحية الكافية لتنفيذ هذا الإجراء.',
+            code: 'FORBIDDEN_ROLE'
+          });
+        }
+        req.user = session;
+        next();
+      } catch (err) {
+        res.status(500).json({ error: err.message });
+      }
+    };
+  };
+}
+
+function requireAuth(allowedRoles = null) {
+  return createRequireAuth(null)(allowedRoles);
 }
 
 module.exports = {
@@ -359,5 +393,7 @@ module.exports = {
   extractCandidateTokenFromRequest,
   extractAllCandidateTokensFromRequest,
   verifyScopedToken,
+  resolveActiveStaffSession,
+  createRequireAuth,
   requireAuth
 };

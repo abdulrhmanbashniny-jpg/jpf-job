@@ -35,8 +35,15 @@ const {
   extractCandidateTokenFromRequest,
   extractAllCandidateTokensFromRequest,
   verifyScopedToken,
-  requireAuth
+  resolveActiveStaffSession,
+  createRequireAuth
 } = require('./services/auth');
+
+const requireAuth = createRequireAuth(query);
+
+function isValidTimeHHMM(val) {
+  return /^([01]\d|2[0-3]):[0-5]\d(:[0-5]\d)?$/.test(String(val || '').trim());
+}
 
 const app = express();
 const PORT = parseInt(process.env.PORT || '3000', 10);
@@ -168,27 +175,37 @@ const uploadPublicImage = multer({
 // ---------------------------------------------------------------------------------
 // بوابة الحماية الخلفية لصفحات اللجنة والمرفقات (مع السماح ببطاقة الزيارة Visit.dc.html)
 // ---------------------------------------------------------------------------------
-const PROTECTED_PAGES = new Set([
-  '/Dashboard.dc.html',
-  '/JobBuilder.dc.html',
-  '/CandidateProfile.dc.html',
-  '/Ranking.dc.html',
-  '/Scheduler.dc.html',
-  '/Interviews.dc.html',
-  '/AIEngine.dc.html',
-  '/Settings.dc.html',
-  '/System.dc.html',
-  '/Users.dc.html'
-]);
+const PROTECTED_PAGE_ROLES = {
+  '/Dashboard.dc.html': ['super_admin', 'hr_coordinator', 'committee_member'],
+  '/JobBuilder.dc.html': ['super_admin', 'hr_coordinator'],
+  '/CandidateProfile.dc.html': ['super_admin', 'hr_coordinator', 'committee_member'],
+  '/Ranking.dc.html': ['super_admin', 'hr_coordinator', 'committee_member'],
+  '/Scheduler.dc.html': ['super_admin', 'hr_coordinator', 'committee_member'],
+  '/Interviews.dc.html': ['super_admin', 'hr_coordinator', 'committee_member'],
+  '/AIEngine.dc.html': ['super_admin', 'hr_coordinator', 'committee_member'],
+  '/Settings.dc.html': ['super_admin'],
+  '/System.dc.html': ['super_admin', 'hr_coordinator', 'committee_member'],
+  '/Users.dc.html': ['super_admin']
+};
 
-app.use((req, res, next) => {
-  if (PROTECTED_PAGES.has(req.path)) {
-    const session = getSessionFromRequest(req);
-    if (!session) {
-      const nextTarget = encodeURIComponent(req.originalUrl || req.path);
-      return res.redirect(`/Login.dc.html?next=${nextTarget}`);
+app.use(async (req, res, next) => {
+  const allowedRoles = PROTECTED_PAGE_ROLES[req.path];
+  if (allowedRoles) {
+    try {
+      const session = await resolveActiveStaffSession(req, query);
+      if (!session) {
+        clearSessionCookie(res);
+        const nextTarget = encodeURIComponent(req.originalUrl || req.path);
+        return res.redirect(`/Login.dc.html?next=${nextTarget}`);
+      }
+      if (!allowedRoles.includes(session.role)) {
+        res.setHeader('Cache-Control', 'no-store');
+        return res.status(403).send('ليست لديك الصلاحية الكافية لفتح هذه الصفحة.');
+      }
+      res.setHeader('Cache-Control', 'no-store');
+    } catch (err) {
+      return next(err);
     }
-    res.setHeader('Cache-Control', 'no-store');
   }
   next();
 });
@@ -196,12 +213,17 @@ app.use((req, res, next) => {
 // السماح بعرض صورة مدخل المقر فقط للزوار في بطاقة الوصول الحضورية، مع إبقاء السير الذاتية محمية
 app.use('/uploads/public', express.static(publicUploadsDir));
 
-app.use('/uploads', (req, res, next) => {
-  const session = getSessionFromRequest(req);
-  if (!session) {
-    return res.status(401).send('غير مصرح بالوصول إلى ملفات السير الذاتية إلا لأعضاء لجنة التوظيف.');
+app.use('/uploads', async (req, res, next) => {
+  try {
+    const session = await resolveActiveStaffSession(req, query);
+    if (!session) {
+      clearSessionCookie(res);
+      return res.status(401).send('غير مصرح بالوصول إلى ملفات السير الذاتية إلا لأعضاء لجنة التوظيف النشطين.');
+    }
+    next();
+  } catch (err) {
+    next(err);
   }
-  next();
 }, express.static(uploadsDir));
 
 app.use(express.static(path.join(__dirname, 'public')));
@@ -367,22 +389,27 @@ app.post('/api/auth/logout', (_req, res) => {
   res.json({ message: 'تم تسجيل الخروج بنجاح.' });
 });
 
-app.get('/api/auth/me', (req, res) => {
-  const session = getSessionFromRequest(req);
-  if (!session) {
-    return res.status(401).json({ authenticated: false });
-  }
-  res.json({
-    authenticated: true,
-    user: {
-      id: session.uid,
-      username: session.username,
-      full_name: session.full_name,
-      job_title: session.job_title,
-      role: session.role,
-      role_label: ROLE_LABELS[session.role] || session.role
+app.get('/api/auth/me', async (req, res) => {
+  try {
+    const session = await resolveActiveStaffSession(req, query);
+    if (!session) {
+      clearSessionCookie(res);
+      return res.status(401).json({ authenticated: false });
     }
-  });
+    res.json({
+      authenticated: true,
+      user: {
+        id: session.uid,
+        username: session.username,
+        full_name: session.full_name,
+        job_title: session.job_title,
+        role: session.role,
+        role_label: ROLE_LABELS[session.role] || session.role
+      }
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
 app.post('/api/auth/change-password', requireAuth(), async (req, res) => {
@@ -474,8 +501,17 @@ app.patch('/api/users/:id', requireAuth(['super_admin']), async (req, res) => {
     const targetId = parseInt(req.params.id, 10);
     const { role, is_active, new_password, full_name, job_title } = req.body || {};
 
-    if (targetId === req.user.uid && is_active === false) {
-      return res.status(400).json({ error: 'لا يمكنك إيقاف حسابك الشخصي الحالي.' });
+    if (role !== undefined && !['super_admin', 'committee_member', 'hr_coordinator'].includes(role)) {
+      return res.status(400).json({ error: 'الدور الوظيفي غير صالح.' });
+    }
+
+    if (targetId === req.user.uid) {
+      if (is_active === false) {
+        return res.status(400).json({ error: 'لا يمكنك إيقاف حسابك الشخصي الحالي.' });
+      }
+      if (role !== undefined && role !== 'super_admin') {
+        return res.status(400).json({ error: 'لا يمكنك تخفيض صلاحيات حسابك الحالي كمدير نظام.' });
+      }
     }
 
     let pwdHash = null;
@@ -1274,6 +1310,26 @@ app.post('/api/applications/:id/recovery-link', requireAuth(['super_admin', 'hr_
 
     await client.query('BEGIN');
 
+    // قفل صف الطلب أولاً لمنع التدوير المتزامن المزدوج وضمان إبطال أي رسائل استعادة قديمة
+    const lockedApp = await client.query(
+      'SELECT id FROM applications WHERE id = $1 FOR UPDATE',
+      [appId]
+    );
+    if (!lockedApp.rows.length) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({ error: 'الطلب غير موجود.' });
+    }
+
+    // إبطال كافة رسائل الاستعادة السابقة غير الملغاة المرتبطة بنفس الطلب قبل إصدار مسودة الاستعادة الجديدة
+    await client.query(
+      `UPDATE wa_messages
+       SET queue_status = 'cancelled'
+       WHERE application_id = $1
+         AND template_key = 'portal_recovery'
+         AND queue_status <> 'cancelled'`,
+      [appId]
+    );
+
     const newSecretNonce = crypto.randomBytes(32).toString('hex');
     const updRes = await client.query(
       `UPDATE applications a
@@ -1350,7 +1406,7 @@ app.post('/api/applications/:id/recovery-link', requireAuth(['super_admin', 'hr_
 app.get('/api/applications/:idOrRef', async (req, res) => {
   try {
     const { idOrRef } = req.params;
-    const session = getSessionFromRequest(req);
+    const session = await resolveActiveStaffSession(req, query);
     const isNum = /^\d+$/.test(idOrRef);
 
     if (isNum && !session) {
@@ -1665,15 +1721,66 @@ app.post('/api/public/visit/:vt/confirm', candidateVerifyLimiter, async (req, re
   }
 });
 
-app.patch('/api/applications/:id/status', requireAuth(), async (req, res) => {
+app.patch('/api/applications/:id/status', requireAuth(['super_admin', 'hr_coordinator']), async (req, res) => {
+  const client = await pool.connect();
   try {
     const appId = parseInt(req.params.id, 10);
-    const { status } = req.body;
-    const { rows } = await query(
+    const { status } = req.body || {};
+    const allowedManualStatuses = ['under_review', 'offered', 'rejected'];
+    if (!allowedManualStatuses.includes(status)) {
+      return res.status(400).json({
+        error: 'الحالة المطلوبة غير مسموح بتعيينها يدوياً؛ الحالات المتاحة لقرار التوظيف هي: قيد المراجعة، عرض وظيفي، أو اعتذار.',
+        code: 'INVALID_APPLICATION_STATUS_TRANSITION'
+      });
+    }
+
+    await client.query('BEGIN');
+    const curRes = await client.query('SELECT * FROM applications WHERE id = $1 FOR UPDATE', [appId]);
+    if (!curRes.rows.length) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({ error: 'الطلب غير موجود.' });
+    }
+    const curApp = curRes.rows[0];
+
+    if (curApp.status === 'assessment_pending' && status !== 'rejected') {
+      await client.query('ROLLBACK');
+      return res.status(400).json({
+        error: 'لا يمكن نقل طلب لم يُكمل الاختبار بعد إلى مرحلة المراجعة أو العرض الوظيفي.',
+        code: 'INVALID_APPLICATION_STATUS_TRANSITION'
+      });
+    }
+
+    const { rows } = await client.query(
       `UPDATE applications SET status = $1, updated_at = NOW() WHERE id = $2 RETURNING *`,
       [status, appId]
     );
-    if (!rows.length) return res.status(404).json({ error: 'الطلب غير موجود.' });
+
+    // اتساق الحالات عبر الكيانات: عند الاعتذار لمرشح لديه موعد غير مكتمل، يُلغى الموعد وتُبطل بطاقة الزيارة ودعوات الطابور تلقائياً
+    if (status === 'rejected') {
+      const openIntRes = await client.query(
+        `SELECT id, booking_status FROM interviews WHERE application_id = $1 FOR UPDATE`,
+        [appId]
+      );
+      if (openIntRes.rows.length > 0 && !['completed', 'cancelled'].includes(openIntRes.rows[0].booking_status)) {
+        const revokedVt = crypto.randomBytes(32).toString('hex');
+        await client.query(
+          `UPDATE interviews
+           SET booking_status = 'cancelled', visit_token = $1, updated_at = NOW()
+           WHERE id = $2`,
+          [revokedVt, openIntRes.rows[0].id]
+        );
+      }
+      await client.query(
+        `UPDATE wa_messages
+         SET queue_status = 'cancelled'
+         WHERE application_id = $1
+           AND template_key <> 'portal_recovery'
+           AND queue_status <> 'cancelled'`,
+        [appId]
+      );
+    }
+
+    await client.query('COMMIT');
 
     await logAudit({
       actor: req.user.full_name,
@@ -1681,13 +1788,17 @@ app.patch('/api/applications/:id/status', requireAuth(), async (req, res) => {
       action: 'APPLICATION_STATUS_CHANGED',
       entityType: 'application',
       entityId: rows[0].reference_no,
-      metadata: { new_status: status },
+      metadata: { previous_status: curApp.status, new_status: status },
       ipAddress: req.ip
     });
 
-    res.json({ application: rows[0] });
+    const { candidate_access_token: _catHidden, ...safeApplication } = rows[0];
+    res.json({ application: safeApplication });
   } catch (err) {
+    await client.query('ROLLBACK').catch(() => {});
     res.status(500).json({ error: err.message });
+  } finally {
+    client.release();
   }
 });
 
@@ -1695,14 +1806,44 @@ app.patch('/api/applications/:id/status', requireAuth(), async (req, res) => {
 // 5. اختبار الجدارة غير المتزامن (فوري بلا تعليق + عداد 60 ثانية + استطلاع حي)
 // ---------------------------------------------------------------------------------
 
-app.post('/api/assessments/upload-attachment', (req, res, next) => {
-  const staff = getSessionFromRequest(req);
-  const candTok = extractCandidateTokenFromRequest(req, null);
-  const validScoped = candTok ? verifyScopedToken(candTok, 'candidate_portal') : null;
-  if (!staff && !validScoped) {
-    return res.status(403).json({ error: 'يلزم جلسة متقدم موثقة لرفع مرفقات الاختبار.' });
+app.post('/api/assessments/upload-attachment', async (req, res, next) => {
+  try {
+    const staff = await resolveActiveStaffSession(req, query);
+    if (staff) {
+      req.user = staff;
+      return next();
+    }
+
+    const allTokens = extractAllCandidateTokensFromRequest(req);
+    let verifiedPendingApp = null;
+    for (const tok of allTokens) {
+      const parsed = verifyScopedToken(tok, 'candidate_portal');
+      if (!parsed || !parsed.sub) continue;
+      const appCheck = await query(
+        'SELECT id, reference_no, status, candidate_access_token FROM applications WHERE UPPER(reference_no) = UPPER($1) LIMIT 1',
+        [parsed.sub]
+      );
+      if (
+        appCheck.rows.length > 0 &&
+        appCheck.rows[0].status === 'assessment_pending' &&
+        verifyCandidatePortalToken(tok, appCheck.rows[0].reference_no, appCheck.rows[0].candidate_access_token)
+      ) {
+        verifiedPendingApp = appCheck.rows[0];
+        break;
+      }
+    }
+
+    if (!verifiedPendingApp) {
+      return res.status(403).json({
+        error: 'يلزم جلسة متقدم نشطة وغير منتهية وطلب قيد الاختبار لرفع مرفقات الاختبار.',
+        code: 'CANDIDATE_ATTACHMENT_FORBIDDEN'
+      });
+    }
+    req.verifiedCandidateApp = verifiedPendingApp;
+    next();
+  } catch (err) {
+    next(err);
   }
-  next();
 }, upload.single('attachment_file'), (req, res) => {
   if (!req.file) {
     return res.status(400).json({ error: 'لم يتم اختيار ملف صالح.' });
@@ -1717,7 +1858,7 @@ app.post('/api/assessments/upload-attachment', (req, res, next) => {
 app.get('/api/assessments/status/:ref', async (req, res) => {
   try {
     const ref = String(req.params.ref || '').trim();
-    const staff = getSessionFromRequest(req);
+    const staff = await resolveActiveStaffSession(req, query);
     const [appRes, locCfg] = await Promise.all([
       query(
         `SELECT a.reference_no, a.status, a.ai_analysis_status, a.assessment_score, a.ai_overall_score,
@@ -1772,21 +1913,26 @@ app.post('/api/assessments/submit', async (req, res) => {
       return res.status(400).json({ error: 'معرّف الطلب مفقود.' });
     }
 
-    const staff = getSessionFromRequest(req);
+    const staff = await resolveActiveStaffSession(req, query);
     if (application_id && !staff) {
       return res.status(403).json({ error: 'غير مصرح بإرسال الاختبار بمعرّف داخلي.' });
     }
 
+    await client.query('BEGIN');
+
+    // قفل صف الطلب (FOR UPDATE OF a) لمنع الإرسال المتزامن المزدوج وضمان الإدمبوتنسي الذرية
     const appRes = await client.query(
       `SELECT a.*, c.full_name, c.email, c.phone, c.years_experience, c.qualification, c.specialization,
               c.portfolio_url, c.cv_filename, c.cv_stored_path, c.cv_extracted_text
        FROM applications a
        JOIN candidates c ON c.id = a.candidate_id
-       WHERE ${application_id ? 'a.id = $1' : 'UPPER(a.reference_no) = UPPER($1)'}`,
+       WHERE ${application_id ? 'a.id = $1' : 'UPPER(a.reference_no) = UPPER($1)'}
+       FOR UPDATE OF a`,
       [application_id ? parseInt(application_id, 10) : reference_no]
     );
 
     if (!appRes.rows.length) {
+      await client.query('ROLLBACK');
       return res.status(403).json({ error: 'غير مصرح بالوصول إلى هذا الطلب.' });
     }
     const appRow = appRes.rows[0];
@@ -1794,6 +1940,7 @@ app.post('/api/assessments/submit', async (req, res) => {
     if (!staff) {
       const candTok = extractCandidateTokenFromRequest(req, appRow.reference_no);
       if (!verifyCandidatePortalToken(candTok, appRow.reference_no, appRow.candidate_access_token)) {
+        await client.query('ROLLBACK');
         return res.status(403).json({ error: 'يلزم التحقق من ملكية الطلب قبل إرسال الاختبار.', code: 'CANDIDATE_VERIFY_REQUIRED' });
       }
       setCandidateCookie(res, req, appRow.reference_no, candTok);
@@ -1801,6 +1948,7 @@ app.post('/api/assessments/submit', async (req, res) => {
     const locCfg = await getCompanyLocationConfig();
 
     if (appRow.assessed_at && appRow.status !== 'assessment_pending') {
+      await client.query('ROLLBACK');
       const alreadyPassed = Number(appRow.assessment_score) >= 60;
       return res.status(200).json({
         already_submitted: true,
@@ -1837,7 +1985,6 @@ app.post('/api/assessments/submit', async (req, res) => {
     const pasteAttempts = Math.max(0, parseInt(telemetry.paste_attempts || 0, 10) || 0);
     const initialAiStatus = usesAsyncAI ? 'processing' : 'completed';
 
-    await client.query('BEGIN');
     await client.query('DELETE FROM assessment_answers WHERE application_id = $1', [appRow.id]);
 
     for (const item of baseEval.gradedItems) {
@@ -2069,6 +2216,17 @@ app.post('/api/evaluations', requireAuth(['super_admin', 'committee_member']), a
       return res.status(400).json({ error: 'معرّف الطلب مفقود.' });
     }
 
+    const appCheck = await query('SELECT id, status FROM applications WHERE id = $1', [parseInt(application_id, 10)]);
+    if (!appCheck.rows.length) {
+      return res.status(404).json({ error: 'الطلب غير موجود.' });
+    }
+    if (appCheck.rows[0].status === 'assessment_pending') {
+      return res.status(400).json({
+        error: 'لا يمكن رصد تقييم اللجنة لمرشح لم يُكمل اختبار الجدارة بعد.',
+        code: 'APPLICATION_NOT_ASSESSED'
+      });
+    }
+
     const finalEvaluatorName = String(evaluator_name || req.user.full_name).trim();
     const finalEvaluatorRole = String(evaluator_role || req.user.job_title || 'عضو لجنة التوظيف').trim();
 
@@ -2180,9 +2338,9 @@ app.get('/api/ranking', requireAuth(), async (req, res) => {
         j.id AS job_id, j.code AS job_code, j.title AS job_title, j.department, j.accent_color, j.passing_score,
         (SELECT COUNT(*)::int FROM committee_evaluations ce WHERE ce.application_id = a.id) AS evaluations_count,
         i.id AS interview_id, i.visit_token, i.scheduled_date, i.start_time, i.booking_status, i.interview_mode, i.meeting_url,
-        (SELECT wm.id FROM wa_messages wm WHERE wm.interview_id = i.id ORDER BY wm.id DESC LIMIT 1) AS wa_message_id,
-        (SELECT wm.queue_status FROM wa_messages wm WHERE wm.interview_id = i.id ORDER BY wm.id DESC LIMIT 1) AS wa_queue_status,
-        (SELECT wm.prepared_at FROM wa_messages wm WHERE wm.interview_id = i.id ORDER BY wm.id DESC LIMIT 1) AS wa_prepared_at
+        (SELECT wm.id FROM wa_messages wm WHERE wm.interview_id = i.id ORDER BY (wm.queue_status = 'cancelled') ASC, wm.id DESC LIMIT 1) AS wa_message_id,
+        (SELECT wm.queue_status FROM wa_messages wm WHERE wm.interview_id = i.id ORDER BY (wm.queue_status = 'cancelled') ASC, wm.id DESC LIMIT 1) AS wa_queue_status,
+        (SELECT wm.prepared_at FROM wa_messages wm WHERE wm.interview_id = i.id ORDER BY (wm.queue_status = 'cancelled') ASC, wm.id DESC LIMIT 1) AS wa_prepared_at
       FROM applications a
       JOIN candidates c ON c.id = a.candidate_id
       JOIN jobs j ON j.id = a.job_id
@@ -2274,9 +2432,9 @@ app.get('/api/interviews', requireAuth(), async (req, res) => {
           a.reference_no, a.final_weighted_score, a.ai_overall_score, a.committee_avg_score, a.status AS app_status,
           c.full_name, c.phone, c.email, c.city,
           j.code AS job_code, j.title AS job_title, j.department, j.accent_color,
-          (SELECT wm.id FROM wa_messages wm WHERE wm.interview_id = i.id ORDER BY wm.id DESC LIMIT 1) AS wa_message_id,
-          (SELECT wm.queue_status FROM wa_messages wm WHERE wm.interview_id = i.id ORDER BY wm.id DESC LIMIT 1) AS wa_status,
-          (SELECT wm.wa_link FROM wa_messages wm WHERE wm.interview_id = i.id ORDER BY wm.id DESC LIMIT 1) AS wa_link
+          (SELECT wm.id FROM wa_messages wm WHERE wm.interview_id = i.id ORDER BY (wm.queue_status = 'cancelled') ASC, wm.id DESC LIMIT 1) AS wa_message_id,
+          (SELECT wm.queue_status FROM wa_messages wm WHERE wm.interview_id = i.id ORDER BY (wm.queue_status = 'cancelled') ASC, wm.id DESC LIMIT 1) AS wa_status,
+          (SELECT wm.wa_link FROM wa_messages wm WHERE wm.interview_id = i.id ORDER BY (wm.queue_status = 'cancelled') ASC, wm.id DESC LIMIT 1) AS wa_link
         FROM interviews i
         JOIN applications a ON a.id = i.application_id
         JOIN candidates c ON c.id = a.candidate_id
@@ -2318,7 +2476,7 @@ app.get('/api/interviews', requireAuth(), async (req, res) => {
 });
 
 // جدولة سريعة لمرشح واحد مباشرة من صفحة الترتيب (عن بُعد أو حضوري) وتوليد رسالة واتساب فورية
-app.post('/api/interviews/schedule-single', requireAuth(['super_admin', 'hr_coordinator', 'committee_member']), async (req, res) => {
+app.post('/api/interviews/schedule-single', requireAuth(['super_admin', 'hr_coordinator']), async (req, res) => {
   const client = await pool.connect();
   try {
     const {
@@ -2336,32 +2494,72 @@ app.post('/api/interviews/schedule-single', requireAuth(['super_admin', 'hr_coor
       location_notes,
       interviewer_panel = 'لجنة التوظيف والاختيار المركزية',
       open_draft = false
-    } = req.body;
+    } = req.body || {};
 
     if (!application_id || !scheduled_date || !start_time) {
       return res.status(400).json({ error: 'يرجى تحديد المرشح وتاريخ ووقت المقابلة.' });
     }
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(String(scheduled_date).trim()) || !isValidTimeHHMM(start_time)) {
+      return res.status(400).json({ error: 'صيغة تاريخ أو وقت المقابلة غير صالحة.', code: 'INVALID_INTERVIEW_SLOT' });
+    }
+    if (interview_mode !== undefined && !['remote', 'in_person'].includes(interview_mode)) {
+      return res.status(400).json({ error: 'نمط المقابلة يجب أن يكون remote أو in_person.' });
+    }
 
+    const dur = Math.max(15, Math.min(240, parseInt(duration_minutes, 10) || 30));
+    const startMin = timeToMinutes(start_time);
+    if (startMin + dur >= 24 * 60) {
+      return res.status(400).json({ error: 'وقت نهاية المقابلة يتجاوز نهاية اليوم.', code: 'INVALID_INTERVIEW_SLOT' });
+    }
+    const endStr = minutesToTime(startMin + dur);
+
+    const [locCfg, tplRes] = await Promise.all([
+      getCompanyLocationConfig(),
+      client.query("SELECT setting_value FROM system_settings WHERE setting_key = 'whatsapp_templates'")
+    ]);
+    const templates = tplRes.rows[0]?.setting_value || {};
+
+    await client.query('BEGIN');
+
+    // قفل صف الطلب أولاً لمنع السباق المتزامن في جدولة نفس المرشح والتحقق الصارم من أهليته للمقابلة
     const candRes = await client.query(
-      `SELECT a.id AS application_id, a.reference_no, c.full_name, c.phone, j.code AS job_code, j.title AS job_title
+      `SELECT a.id AS application_id, a.reference_no, a.status,
+              c.full_name, c.phone, j.code AS job_code, j.title AS job_title
        FROM applications a
        JOIN candidates c ON c.id = a.candidate_id
        JOIN jobs j ON j.id = a.job_id
-       WHERE a.id = $1`,
+       WHERE a.id = $1
+       FOR UPDATE OF a`,
       [parseInt(application_id, 10)]
     );
     if (!candRes.rows.length) {
+      await client.query('ROLLBACK');
       return res.status(404).json({ error: 'المرشح المطلوب غير موجود.' });
     }
     const cand = candRes.rows[0];
-    const locCfg = await getCompanyLocationConfig();
-    const tplRes = await client.query("SELECT setting_value FROM system_settings WHERE setting_key = 'whatsapp_templates'");
-    const templates = tplRes.rows[0]?.setting_value || {};
 
-    const dur = Math.max(15, parseInt(duration_minutes, 10) || 30);
-    const endStr = minutesToTime(timeToMinutes(start_time) + dur);
+    const eligibleStatuses = ['passed_assessment', 'under_review', 'interview_scheduled', 'interviewed'];
+    if (!eligibleStatuses.includes(cand.status)) {
+      await client.query('ROLLBACK');
+      return res.status(400).json({
+        error: 'لا يمكن جدولة مقابلة لمرشح غير متأهل أو لم يُكمل الاختبار أو تم الاعتذار له.',
+        code: 'APPLICATION_NOT_ELIGIBLE_FOR_INTERVIEW'
+      });
+    }
+
+    const prevIntRes = await client.query(
+      'SELECT id, booking_status FROM interviews WHERE application_id = $1 FOR UPDATE',
+      [cand.application_id]
+    );
+    if (prevIntRes.rows.length > 0 && prevIntRes.rows[0].booking_status === 'completed') {
+      await client.query('ROLLBACK');
+      return res.status(400).json({
+        error: 'تمت هذه المقابلة بالفعل ولا يمكن إعادة جدولتها فوق سجل مكتمل.',
+        code: 'INTERVIEW_ALREADY_COMPLETED'
+      });
+    }
+
     const origin = getBaseOrigin(req);
-
     const isRemote = interview_mode !== 'in_person';
     const defaultRoom = `https://meet.jit.si/JPF-${cand.job_code.replace(/[^a-zA-Z0-9]/g, '')}-${cand.reference_no.slice(-4)}`;
     const provisionalMeetUrl = isRemote ? (meeting_url && String(meeting_url).trim() ? String(meeting_url).trim() : defaultRoom) : origin;
@@ -2373,21 +2571,15 @@ app.post('/api/interviews/schedule-single', requireAuth(['super_admin', 'hr_coor
     const finalImg = location_image_url || locCfg.entrance_image_url || '/img/hq-entrance.svg';
     const finalNotes = location_notes || locCfg.arrival_instructions;
 
-    await client.query('BEGIN');
-
-    const prevIntRes = await client.query(
-      'SELECT id, booking_status FROM interviews WHERE application_id = $1 FOR UPDATE',
-      [cand.application_id]
-    );
     const isReschedule = prevIntRes.rows.length > 0;
     const freshVisitToken = crypto.randomBytes(32).toString('hex');
 
     if (isReschedule) {
-      // إبطال كافة الدعوات والرسائل السابقة المرتبطة بالموعد القديم قبل إصدار الدعوة الجديدة برمز زيارة جديد
+      // إبطال كافة الدعوات والرسائل السابقة غير الملغاة المرتبطة بالموعد القديم قبل إصدار الدعوة الجديدة برمز زيارة جديد
       await client.query(
         `UPDATE wa_messages
          SET queue_status = 'cancelled'
-         WHERE interview_id = $1 AND queue_status IN ('queued', 'sent', 'confirmed')`,
+         WHERE interview_id = $1 AND queue_status <> 'cancelled'`,
         [prevIntRes.rows[0].id]
       );
     }
@@ -2541,14 +2733,29 @@ app.post('/api/interviews/auto-schedule', requireAuth(['super_admin', 'hr_coordi
     } = req.body;
 
     const scheduleDate = target_date || new Date().toISOString().slice(0, 10);
-    const duration = Math.max(15, parseInt(slot_duration_minutes, 10) || 30);
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(String(scheduleDate).trim()) || !isValidTimeHHMM(work_start) || !isValidTimeHHMM(work_end)) {
+      return res.status(400).json({ error: 'صيغة تاريخ أو أوقات الدوام غير صالحة.', code: 'INVALID_INTERVIEW_SLOT' });
+    }
+    const dayStart = timeToMinutes(work_start);
+    const dayEnd = timeToMinutes(work_end);
+    if (dayEnd <= dayStart) {
+      return res.status(400).json({ error: 'وقت نهاية الدوام يجب أن يكون بعد وقت البداية.', code: 'INVALID_INTERVIEW_SLOT' });
+    }
+
+    const duration = Math.max(15, Math.min(240, parseInt(slot_duration_minutes, 10) || 30));
     const buffer = Math.max(0, parseInt(buffer_minutes, 10) || 10);
     const isRemote = interview_mode !== 'in_person';
     const origin = getBaseOrigin(req);
     const locCfg = await getCompanyLocationConfig();
+    const tplRes = await client.query("SELECT setting_value FROM system_settings WHERE setting_key = 'whatsapp_templates'");
+    const templates = tplRes.rows[0]?.setting_value || {};
+    const tplKey = isRemote ? 'interview_invite' : 'interview_inperson';
+    const inviteTemplate = templates[tplKey] || 'مرحباً {الاسم}، يسعدنا دعوتك لمقابلة ({الوظيفة}) بتاريخ {موعد_المقابلة}. التفاصيل وتأكيد الحضور: {رابط_الحجز}';
+
+    await client.query('BEGIN');
 
     let candidatesQuery = `
-      SELECT a.id AS application_id, a.reference_no, c.full_name, c.phone, j.code AS job_code, j.title AS job_title
+      SELECT a.id AS application_id, a.reference_no, a.status, c.full_name, c.phone, j.code AS job_code, j.title AS job_title
       FROM applications a
       JOIN candidates c ON c.id = a.candidate_id
       JOIN jobs j ON j.id = a.job_id
@@ -2559,22 +2766,26 @@ app.post('/api/interviews/auto-schedule', requireAuth(['super_admin', 'hr_coordi
     if (Array.isArray(application_ids) && application_ids.length > 0) {
       params.push(application_ids.map((x) => parseInt(x, 10)));
       candidatesQuery = `
-        SELECT a.id AS application_id, a.reference_no, c.full_name, c.phone, j.code AS job_code, j.title AS job_title
+        SELECT a.id AS application_id, a.reference_no, a.status, c.full_name, c.phone, j.code AS job_code, j.title AS job_title
         FROM applications a
         JOIN candidates c ON c.id = a.candidate_id
         JOIN jobs j ON j.id = a.job_id
+        LEFT JOIN interviews i ON i.application_id = a.id
         WHERE a.id = ANY($1::int[])
+          AND a.status IN ('passed_assessment', 'under_review', 'interview_scheduled')
+          AND (i.id IS NULL OR i.booking_status <> 'completed')
       `;
     }
-    candidatesQuery += ' ORDER BY a.final_weighted_score DESC, a.ai_overall_score DESC';
+    candidatesQuery += ' ORDER BY a.final_weighted_score DESC, a.ai_overall_score DESC FOR UPDATE OF a';
 
     const candRes = await client.query(candidatesQuery, params);
     if (!candRes.rows.length) {
-      return res.status(400).json({ error: 'لا يوجد مرشحون مؤهلون غير مجدولين حالياً لتوزيع المواعيد عليهم.' });
+      await client.query('ROLLBACK');
+      return res.status(400).json({ error: 'لا يوجد مرشحون مؤهلون غير مكتملين حالياً لتوزيع المواعيد عليهم.' });
     }
 
     const bookedRes = await client.query(
-      'SELECT start_time, end_time FROM interviews WHERE scheduled_date = $1',
+      "SELECT start_time, end_time FROM interviews WHERE scheduled_date = $1 AND booking_status <> 'cancelled' FOR UPDATE",
       [scheduleDate]
     );
     const bookedRanges = bookedRes.rows.map((b) => [
@@ -2582,17 +2793,8 @@ app.post('/api/interviews/auto-schedule', requireAuth(['super_admin', 'hr_coordi
       timeToMinutes(String(b.end_time).slice(0, 5))
     ]);
 
-    const dayStart = timeToMinutes(work_start);
-    const dayEnd = timeToMinutes(work_end);
     const prayerStart = timeToMinutes(dhuhr_start);
     const prayerEnd = timeToMinutes(dhuhr_end);
-
-    const tplRes = await client.query("SELECT setting_value FROM system_settings WHERE setting_key = 'whatsapp_templates'");
-    const templates = tplRes.rows[0]?.setting_value || {};
-    const tplKey = isRemote ? 'interview_invite' : 'interview_inperson';
-    const inviteTemplate = templates[tplKey] || 'مرحباً {الاسم}، يسعدنا دعوتك لمقابلة ({الوظيفة}) بتاريخ {موعد_المقابلة}. التفاصيل وتأكيد الحضور: {رابط_الحجز}';
-
-    await client.query('BEGIN');
 
     let cursor = dayStart;
     const scheduled = [];
@@ -2626,7 +2828,7 @@ app.post('/api/interviews/auto-schedule', requireAuth(['super_admin', 'hr_coordi
           await client.query(
             `UPDATE wa_messages
              SET queue_status = 'cancelled'
-             WHERE interview_id = $1 AND queue_status IN ('queued', 'sent', 'confirmed')`,
+             WHERE interview_id = $1 AND queue_status <> 'cancelled'`,
             [prevAutoInt.rows[0].id]
           );
         }
@@ -2762,7 +2964,24 @@ app.patch('/api/interviews/:id', requireAuth(['super_admin', 'hr_coordinator', '
   const client = await pool.connect();
   try {
     const id = parseInt(req.params.id, 10);
-    const { booking_status, notes, scheduled_date, start_time, end_time, interview_mode } = req.body;
+    const { booking_status, notes, scheduled_date, start_time, end_time, interview_mode } = req.body || {};
+
+    const validInterviewStatuses = ['scheduled', 'rescheduled', 'invitation_sent', 'confirmed', 'completed', 'no_show', 'cancelled'];
+    if (booking_status !== undefined && !validInterviewStatuses.includes(booking_status)) {
+      return res.status(400).json({ error: 'حالة الموعد غير صالحة.', code: 'INVALID_INTERVIEW_STATUS' });
+    }
+    if (scheduled_date !== undefined && !/^\d{4}-\d{2}-\d{2}$/.test(String(scheduled_date).trim())) {
+      return res.status(400).json({ error: 'صيغة تاريخ المقابلة غير صالحة.', code: 'INVALID_INTERVIEW_SLOT' });
+    }
+    if (start_time !== undefined && !isValidTimeHHMM(start_time)) {
+      return res.status(400).json({ error: 'صيغة وقت البداية غير صالحة.', code: 'INVALID_INTERVIEW_SLOT' });
+    }
+    if (end_time !== undefined && !isValidTimeHHMM(end_time)) {
+      return res.status(400).json({ error: 'صيغة وقت النهاية غير صالحة.', code: 'INVALID_INTERVIEW_SLOT' });
+    }
+    if (interview_mode !== undefined && !['remote', 'in_person'].includes(interview_mode)) {
+      return res.status(400).json({ error: 'نمط المقابلة غير صالح.', code: 'INVALID_INTERVIEW_MODE' });
+    }
 
     await client.query('BEGIN');
     const curRes = await client.query(
@@ -2787,17 +3006,53 @@ app.patch('/api/interviews/:id', requireAuth(['super_admin', 'hr_coordinator', '
     const curStartStr = String(cur.start_time || '').slice(0, 5);
     const curEndStr = String(cur.end_time || '').slice(0, 5);
 
-    const scheduleChanged =
+    const slotOrModeChanged =
       (scheduled_date && String(scheduled_date).slice(0, 10) !== curDateStr) ||
       (start_time && String(start_time).slice(0, 5) !== curStartStr) ||
       (end_time && String(end_time).slice(0, 5) !== curEndStr) ||
-      (interview_mode && interview_mode !== cur.interview_mode) ||
-      booking_status === 'rescheduled';
+      (interview_mode && interview_mode !== cur.interview_mode);
 
+    const scheduleChanged = slotOrModeChanged || booking_status === 'rescheduled';
     const isCancelled = booking_status === 'cancelled';
 
-    // منع تعيين invitation_sent أو confirmed أو تجاوز آلة الحالات يدوياً من مسار تعديل الموعد
+    // صلاحية عضو اللجنة (committee_member): يقتصر دوره على رصد إتمام المقابلة أو عدم الحضور والملاحظات دون إعادة الجدولة أو الإلغاء
+    if (req.user.role === 'committee_member') {
+      if (scheduleChanged || isCancelled || (booking_status !== undefined && !['completed', 'no_show'].includes(booking_status))) {
+        await client.query('ROLLBACK');
+        return res.status(403).json({
+          error: 'صلاحية عضو اللجنة تقتصر على رصد حضور وإتمام المقابلة والملاحظات؛ إعادة الجدولة والإلغاء من اختصاص الموارد البشرية.',
+          code: 'FORBIDDEN_ROLE'
+        });
+      }
+    }
+
+    // لا يُسمح بإعادة جدولة أو إلغاء مقابلة مكتملة فعلياً (completed)
+    if (cur.booking_status === 'completed' && (scheduleChanged || isCancelled || (booking_status && booking_status !== 'completed'))) {
+      await client.query('ROLLBACK');
+      return res.status(400).json({
+        error: 'تمت هذه المقابلة بالفعل وتوثيقها كمكتملة؛ لا يمكن إلغاؤها أو إعادة جدولتها.',
+        code: 'INTERVIEW_ALREADY_COMPLETED'
+      });
+    }
+
+    // إذا كان الموعد ملغى وطلب إعادة جدولة دون إرسال تاريخ أو وقت جديد، يُرفض الطلب
+    if (cur.booking_status === 'cancelled' && scheduleChanged && !slotOrModeChanged && !scheduled_date && !start_time) {
+      await client.query('ROLLBACK');
+      return res.status(400).json({
+        error: 'لإعادة جدولة موعد ملغى، يرجى تحديد التاريخ والوقت الجديدين للمقابلة.',
+        code: 'INVALID_INTERVIEW_TRANSITION'
+      });
+    }
+
+    // منع تعيين invitation_sent أو confirmed أو الرجوع إلى scheduled أو القفز قبل الدعوة
     if (booking_status && booking_status !== cur.booking_status && !scheduleChanged) {
+      if (booking_status === 'scheduled') {
+        await client.query('ROLLBACK');
+        return res.status(400).json({
+          error: 'لا يمكن إرجاع حالة الموعد إلى (مجدولة مبدئياً) بعد تقدم حالتها؛ استخدم إعادة الجدولة لتحديد موعد جديد.',
+          code: 'INVALID_INTERVIEW_TRANSITION'
+        });
+      }
       if (booking_status === 'invitation_sent') {
         await client.query('ROLLBACK');
         return res.status(400).json({
@@ -2828,18 +3083,29 @@ app.patch('/api/interviews/:id', requireAuth(['super_admin', 'hr_coordinator', '
       }
     }
 
-    const shouldRevokePriorPass = scheduleChanged || isCancelled;
+    const effectiveStartStr = start_time ? String(start_time).slice(0, 5) : curStartStr;
+    let effectiveEndTime = end_time ? String(end_time).slice(0, 5) : null;
+    if (!effectiveEndTime && start_time) {
+      const nextEndMin = timeToMinutes(effectiveStartStr) + (Number(cur.duration_minutes) || 30);
+      if (nextEndMin >= 24 * 60) {
+        await client.query('ROLLBACK');
+        return res.status(400).json({ error: 'وقت نهاية المقابلة يتجاوز نهاية اليوم.', code: 'INVALID_INTERVIEW_SLOT' });
+      }
+      effectiveEndTime = minutesToTime(nextEndMin);
+    }
+    const checkEndStr = effectiveEndTime || curEndStr;
+    if (timeToMinutes(checkEndStr) <= timeToMinutes(effectiveStartStr)) {
+      await client.query('ROLLBACK');
+      return res.status(400).json({ error: 'وقت نهاية المقابلة يجب أن يكون بعد وقت البداية.', code: 'INVALID_INTERVIEW_SLOT' });
+    }
+
+    const shouldRevokePriorPass = (scheduleChanged && !isCancelled) || (isCancelled && cur.booking_status !== 'cancelled');
     const nextVisitToken = shouldRevokePriorPass ? crypto.randomBytes(32).toString('hex') : cur.visit_token;
     const effectiveStatus = isCancelled
       ? 'cancelled'
       : scheduleChanged
         ? 'rescheduled'
         : (booking_status || cur.booking_status);
-
-    let effectiveEndTime = end_time || null;
-    if (!effectiveEndTime && start_time) {
-      effectiveEndTime = minutesToTime(timeToMinutes(start_time) + (Number(cur.duration_minutes) || 30));
-    }
 
     const origin = getBaseOrigin(req);
     const nextMode = interview_mode || cur.interview_mode || 'remote';
@@ -2878,7 +3144,7 @@ app.patch('/api/interviews/:id', requireAuth(['super_admin', 'hr_coordinator', '
       await client.query(
         `UPDATE wa_messages
          SET queue_status = 'cancelled'
-         WHERE interview_id = $1 AND queue_status IN ('queued', 'sent', 'confirmed')`,
+         WHERE interview_id = $1 AND queue_status <> 'cancelled'`,
         [id]
       );
 
@@ -3034,19 +3300,22 @@ app.put('/api/wa-templates', requireAuth(['super_admin', 'hr_coordinator']), asy
   }
 });
 
-app.post('/api/wa-messages', requireAuth(['super_admin', 'hr_coordinator', 'committee_member']), async (req, res) => {
+app.post('/api/wa-messages', requireAuth(['super_admin', 'hr_coordinator']), async (req, res) => {
   try {
-    const { application_id, interview_id, recipient_name, recipient_phone, message_body, template_key = 'custom', open_draft = false } = req.body;
-    if (template_key === 'portal_recovery' && !['super_admin', 'hr_coordinator'].includes(req.user.role)) {
-      return res.status(403).json({
-        error: 'صلاحية رسائل استعادة دخول المتقدمين محصورة بالمدير والموارد البشرية.',
-        code: 'FORBIDDEN_ROLE'
+    const { application_id, interview_id, recipient_name, recipient_phone, message_body, template_key = 'custom', open_draft = false } = req.body || {};
+    if (template_key === 'portal_recovery') {
+      return res.status(400).json({
+        error: 'رسائل استعادة الوصول (portal_recovery) تُولَّد حصراً عبر مسار تدوير رمز الاستعادة الرسمي.',
+        code: 'INVALID_WA_TEMPLATE_KEY'
       });
     }
     if (!recipient_name || !recipient_phone || !message_body) {
       return res.status(400).json({ error: 'اسم المستلم ورقم الجوال ونص الرسالة مطلوبة.' });
     }
     const cleanPhone = normalizePhoneForWa(recipient_phone);
+    if (cleanPhone.length < 9) {
+      return res.status(400).json({ error: 'رقم الجوال غير صالح.' });
+    }
     const waLink = buildWaLink(cleanPhone, message_body);
 
     const { rows } = await query(
@@ -3070,48 +3339,148 @@ app.post('/api/wa-messages', requireAuth(['super_admin', 'hr_coordinator', 'comm
   }
 });
 
-app.patch('/api/wa-messages/:id', requireAuth(['super_admin', 'hr_coordinator', 'committee_member']), async (req, res) => {
+app.patch('/api/wa-messages/:id', requireAuth(['super_admin', 'hr_coordinator']), async (req, res) => {
+  const id = parseInt(req.params.id, 10);
+  if (!Number.isInteger(id) || id <= 0) {
+    return res.status(400).json({ error: 'معرّف الرسالة غير صالح.' });
+  }
+
+  const { action, queue_status, message_body } = req.body || {};
+  const actorName = req.user.full_name;
+
+  // 1. رفض أي تعارض أو قيم غير معروفة في المعاملات من البوابة الأولى قبل قراءة الحالة
+  if (action !== undefined && queue_status !== undefined) {
+    return res.status(400).json({
+      error: 'لا يُسمح بإرسال المعاملين (action) و(queue_status) معاً في طلب واحد منعاً لتعارض انتقال الحالة.',
+      code: 'CONFLICTING_WA_PARAMS'
+    });
+  }
+  if (action !== undefined && !['open_draft', 'confirm_sent'].includes(action)) {
+    return res.status(400).json({
+      error: 'قيمة الإجراء (action) غير صالحة؛ القيم المسموحة هي open_draft أو confirm_sent فقط.',
+      code: 'INVALID_WA_ACTION'
+    });
+  }
+  if (queue_status !== undefined && !['queued', 'sent', 'confirmed', 'failed', 'cancelled'].includes(queue_status)) {
+    return res.status(400).json({
+      error: 'قيمة حالة الرسالة (queue_status) غير صالحة.',
+      code: 'INVALID_WA_STATUS'
+    });
+  }
+  if (action === undefined && queue_status === undefined && message_body === undefined) {
+    return res.status(400).json({
+      error: 'لم يتم تحديد أي إجراء أو تحديث صالح على الرسالة.',
+      code: 'EMPTY_WA_PATCH'
+    });
+  }
+
+  const client = await pool.connect();
   try {
-    const id = parseInt(req.params.id, 10);
-    const { action, queue_status, message_body } = req.body;
-    const actorName = req.user.full_name;
+    await client.query('BEGIN');
 
-    const existing = await query('SELECT * FROM wa_messages WHERE id = $1', [id]);
-    if (!existing.rows.length) return res.status(404).json({ error: 'الرسالة غير موجودة في الطابور.' });
-
-    const current = existing.rows[0];
-    if (current.template_key === 'portal_recovery' && !['super_admin', 'hr_coordinator'].includes(req.user.role)) {
-      return res.status(403).json({
-        error: 'حساب عضو اللجنة غير مخوّل بالاطلاع على أسرار وروابط استعادة المتقدمين أو تعديلها.',
-        code: 'FORBIDDEN_ROLE'
-      });
+    // 2. قفل هرمي بترتيب موحّد (interviews أولاً ثم wa_messages ثانياً) لمنع أي Deadlock متبادل (AB-BA) مع إعادة الجدولة المتزامنة
+    const preLookup = await client.query('SELECT id, interview_id FROM wa_messages WHERE id = $1', [id]);
+    if (!preLookup.rows.length) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({ error: 'الرسالة غير موجودة في الطابور.' });
     }
 
-    if (current.queue_status === 'cancelled' && queue_status !== 'cancelled') {
+    let linkedInt = null;
+    if (preLookup.rows[0].interview_id) {
+      const intRes = await client.query('SELECT * FROM interviews WHERE id = $1 FOR UPDATE', [preLookup.rows[0].interview_id]);
+      linkedInt = intRes.rows[0] || null;
+    }
+
+    const existing = await client.query('SELECT * FROM wa_messages WHERE id = $1 FOR UPDATE', [id]);
+    const current = existing.rows[0];
+
+    // 3. الحالة النهائية الصارمة: الرسالة الملغاة (cancelled) لا تقبل أي تعديل أو فتح مسودة أو إعادة تفعيل إطلاقاً
+    if (current.queue_status === 'cancelled') {
+      await client.query('ROLLBACK');
       return res.status(400).json({
-        error: 'هذه الرسالة ملغاة بسبب تحديث أو إلغاء الموعد؛ يرجى استخدام الرسالة المحدّثة الجديدة.',
+        error: 'هذه الرسالة ملغاة نهائياً (بسبب تحديث أو إلغاء الموعد أو إصدار رمز أحدث) ولا يمكن تنفيذ أي إجراء عليها.',
         code: 'WA_MESSAGE_CANCELLED'
       });
     }
 
-    // حماية نص رسائل portal_recovery من أي استبدال بقالب آخر للحفاظ على رابط الاستعادة والمفتاح السري المولّدين
-    const updatedBody =
-      current.template_key === 'portal_recovery'
-        ? current.message_body
-        : (message_body !== undefined ? message_body : current.message_body);
-    const updatedLink = buildWaLink(current.recipient_phone, updatedBody);
+    // 4. منع تعديل نص رسائل استعادة الوصول (portal_recovery) صراحةً
+    if (
+      current.template_key === 'portal_recovery' &&
+      message_body !== undefined &&
+      String(message_body) !== String(current.message_body)
+    ) {
+      await client.query('ROLLBACK');
+      return res.status(400).json({
+        error: 'نص رسالة استعادة الوصول محمي ولا يُسمح بتعديله حفاظاً على الرابط الموقّع ومفتاح الدخول السري.',
+        code: 'RECOVERY_BODY_IMMUTABLE'
+      });
+    }
 
-    // 1. فتح رابط wa.me كمسودة لا يُسجّل الرسالة كـ sent؛ يحدّث prepared_at فقط وتبقى queued («بانتظار تأكيد الإرسال»)
+    const inviteTemplates = ['interview_invite', 'interview_inperson', 'reschedule_notice'];
+    const isInviteLifecycleMsg = inviteTemplates.includes(current.template_key);
+    const requestedStatus = action === 'confirm_sent'
+      ? 'sent'
+      : action === 'open_draft'
+        ? 'queued'
+        : (queue_status !== undefined ? queue_status : current.queue_status);
+
+    // 5. إذا كان الموعد المرتبط ملغى، لا يُسمح بأي إجراء غير إلغاء الرسالة نفسها
+    if (linkedInt && linkedInt.booking_status === 'cancelled' && requestedStatus !== 'cancelled') {
+      await client.query('ROLLBACK');
+      return res.status(400).json({
+        error: 'الموعد المرتبط بهذه الرسالة ملغى؛ لا يمكن إرسال أو تأكيد دعوة لموعد ملغى.',
+        code: 'INTERVIEW_ALREADY_CANCELLED'
+      });
+    }
+
+    // 6. منع العمل على رسالة دعوة قديمة تجاوزتها رسالة دعوة أحدث لنفس الموعد
+    if (linkedInt && isInviteLifecycleMsg && requestedStatus !== 'cancelled') {
+      const latestMsgRes = await client.query(
+        `SELECT MAX(id) AS max_id
+         FROM wa_messages
+         WHERE interview_id = $1
+           AND template_key = ANY($2::varchar[])
+           AND queue_status <> 'cancelled'`,
+        [linkedInt.id, inviteTemplates]
+      );
+      const maxActiveId = latestMsgRes.rows[0]?.max_id ? Number(latestMsgRes.rows[0].max_id) : null;
+      if (maxActiveId && current.id < maxActiveId) {
+        await client.query('ROLLBACK');
+        return res.status(409).json({
+          error: 'توجد دعوة أحدث لهذا الموعد؛ لا يمكن تفعيل أو تأكيد رسالة قديمة متجاوَزة.',
+          code: 'SUPERSEDED_WA_MESSAGE'
+        });
+      }
+    }
+
+    // 7. التحقق الصارم والشامل من جدول انتقال الحالات (Exhaustive State Transition Matrix)
     if (action === 'open_draft') {
-      const { rows } = await query(
+      if (current.queue_status !== 'queued') {
+        await client.query('ROLLBACK');
+        return res.status(400).json({
+          error: `لا يمكن فتح المسودة كرسالة قيد الإعداد وهي في حالة (${current.queue_status}).`,
+          code: 'INVALID_WA_TRANSITION'
+        });
+      }
+      const draftBody = current.template_key === 'portal_recovery'
+        ? current.message_body
+        : (message_body !== undefined ? String(message_body) : current.message_body);
+      if (!String(draftBody).trim()) {
+        await client.query('ROLLBACK');
+        return res.status(400).json({ error: 'نص الرسالة لا يمكن أن يكون فارغاً.' });
+      }
+      const draftLink = buildWaLink(current.recipient_phone, draftBody);
+
+      const { rows } = await client.query(
         `UPDATE wa_messages SET
           message_body = $1,
           wa_link = $2,
           prepared_at = NOW()
          WHERE id = $3
          RETURNING *`,
-        [updatedBody, updatedLink, id]
+        [draftBody, draftLink, id]
       );
+      await client.query('COMMIT');
 
       await logAudit({
         actor: actorName,
@@ -3119,62 +3488,147 @@ app.patch('/api/wa-messages/:id', requireAuth(['super_admin', 'hr_coordinator', 
         action: 'WA_DRAFT_OPENED',
         entityType: 'wa_message',
         entityId: id,
-        metadata: { recipient: current.recipient_name, queue_status: rows[0].queue_status },
+        metadata: { recipient: current.recipient_name, template_key: current.template_key, queue_status: rows[0].queue_status },
         ipAddress: req.ip
       });
 
       return res.json({ message: rows[0] });
     }
 
-    // 2. التأكيد الفعلي من الموظف بعد إرسال الرسالة فعلياً داخل واتساب
-    const updatedStatus = action === 'confirm_sent' ? 'sent' : (queue_status || current.queue_status);
+    const fromStatus = current.queue_status;
+    const toStatus = requestedStatus;
 
-    // منع الانتقال المباشر من queued (غير مرسلة) إلى confirmed دون تأكيد إرسال الدعوة أولاً
-    if (updatedStatus === 'confirmed' && current.queue_status === 'queued') {
+    if (toStatus === 'sent') {
+      if (fromStatus !== 'queued') {
+        await client.query('ROLLBACK');
+        return res.status(400).json({
+          error: `لا يمكن تأكيد إرسال رسالة من الحالة (${fromStatus})؛ يجب أن تكون في الطابور (queued).`,
+          code: 'INVALID_WA_TRANSITION'
+        });
+      }
+    } else if (toStatus === 'confirmed') {
+      if (fromStatus === 'queued') {
+        await client.query('ROLLBACK');
+        return res.status(400).json({
+          error: 'لا يمكن تسجيل تأكيد حضور على رسالة ما زالت في الطابور (queued) ولم يتأكد إرسالها بعد.',
+          code: 'CANNOT_CONFIRM_UNSENT_MESSAGE'
+        });
+      }
+      if (fromStatus !== 'sent') {
+        await client.query('ROLLBACK');
+        return res.status(400).json({
+          error: `لا يمكن نقل الرسالة إلى (confirmed) من الحالة (${fromStatus}).`,
+          code: 'INVALID_WA_TRANSITION'
+        });
+      }
+      if (current.template_key === 'portal_recovery') {
+        await client.query('ROLLBACK');
+        return res.status(400).json({
+          error: 'رسائل استعادة الوصول ليست دعوات مقابلة ولا تقبل حالة تأكيد الحضور.',
+          code: 'INVALID_WA_TRANSITION'
+        });
+      }
+      if (linkedInt && !['invitation_sent', 'confirmed'].includes(linkedInt.booking_status)) {
+        await client.query('ROLLBACK');
+        return res.status(409).json({
+          error: 'لا يمكن تأكيد حضور موعد لم تُسجل دعوته كمرسلة نشطة بعد.',
+          code: 'INVITATION_NOT_SENT_YET'
+        });
+      }
+    } else if (toStatus === 'queued') {
+      if (!['queued', 'failed'].includes(fromStatus)) {
+        await client.query('ROLLBACK');
+        return res.status(400).json({
+          error: `لا يمكن إرجاع رسالة بعد إرسالها أو تأكيدها (${fromStatus}) إلى الطابور (queued).`,
+          code: 'INVALID_WA_TRANSITION'
+        });
+      }
+    } else if (toStatus === 'failed') {
+      if (!['queued', 'sent'].includes(fromStatus)) {
+        await client.query('ROLLBACK');
+        return res.status(400).json({
+          error: `لا يمكن وسم رسالة في حالة (${fromStatus}) كفاشلة.`,
+          code: 'INVALID_WA_TRANSITION'
+        });
+      }
+    }
+
+    // السجل التاريخي للرسالة بعد الإرسال غير قابل للتزوير؛ يُسمح بتعديل النص فقط والرسالة في حالة queued
+    if (fromStatus !== 'queued' && message_body !== undefined && String(message_body) !== String(current.message_body)) {
+      await client.query('ROLLBACK');
       return res.status(400).json({
-        error: 'لا يمكن تسجيل تأكيد حضور على رسالة ما زالت في الطابور (queued) ولم يتأكد إرسالها بعد.',
-        code: 'CANNOT_CONFIRM_UNSENT_MESSAGE'
+        error: 'لا يمكن تعديل نص الرسالة بعد خروجها من حالة الطابور (queued) حفاظاً على السجل التدقيقي.',
+        code: 'SENT_BODY_IMMUTABLE'
       });
     }
 
-    const { rows } = await query(
+    const finalBody = fromStatus === 'queued' && current.template_key !== 'portal_recovery' && message_body !== undefined
+      ? String(message_body)
+      : current.message_body;
+    if (!String(finalBody).trim()) {
+      await client.query('ROLLBACK');
+      return res.status(400).json({ error: 'نص الرسالة لا يمكن أن يكون فارغاً.' });
+    }
+    const finalLink = buildWaLink(current.recipient_phone, finalBody);
+
+    const { rows } = await client.query(
       `UPDATE wa_messages SET
         message_body = $1,
         wa_link = $2,
         queue_status = $3::varchar,
-        sent_by = CASE WHEN $3::varchar IN ('sent','confirmed') THEN $4 ELSE sent_by END,
-        sent_at = CASE WHEN $3::varchar = 'sent' AND sent_at IS NULL THEN NOW() ELSE sent_at END
-      WHERE id = $5
+        sent_by = CASE
+          WHEN $3::varchar = 'queued' THEN NULL
+          WHEN $3::varchar IN ('sent','confirmed') THEN $4
+          ELSE sent_by
+        END,
+        sent_at = CASE
+          WHEN $3::varchar = 'queued' THEN NULL
+          WHEN $3::varchar = 'sent' AND sent_at IS NULL THEN NOW()
+          ELSE sent_at
+        END,
+        prepared_at = CASE
+          WHEN $3::varchar = 'queued' AND $5::varchar = 'failed' THEN NULL
+          ELSE prepared_at
+        END
+      WHERE id = $6
       RETURNING *`,
-      [updatedBody, updatedLink, updatedStatus, actorName, id]
+      [finalBody, finalLink, toStatus, actorName, fromStatus, id]
     );
 
-    if (current.interview_id && updatedStatus === 'sent') {
-      await query(
-        `UPDATE interviews SET booking_status = 'invitation_sent', updated_at = NOW()
+    if (linkedInt && isInviteLifecycleMsg && toStatus === 'sent' && ['scheduled', 'rescheduled'].includes(linkedInt.booking_status)) {
+      await client.query(
+        `UPDATE interviews
+         SET booking_status = 'invitation_sent', updated_at = NOW()
          WHERE id = $1 AND booking_status IN ('scheduled', 'rescheduled')`,
-        [current.interview_id]
+        [linkedInt.id]
       );
-    } else if (current.interview_id && updatedStatus === 'confirmed') {
-      await query(
-        `UPDATE interviews SET booking_status = 'confirmed', updated_at = NOW() WHERE id = $1`,
-        [current.interview_id]
+    } else if (linkedInt && isInviteLifecycleMsg && toStatus === 'confirmed' && ['invitation_sent', 'confirmed'].includes(linkedInt.booking_status)) {
+      await client.query(
+        `UPDATE interviews
+         SET booking_status = 'confirmed', updated_at = NOW()
+         WHERE id = $1 AND booking_status IN ('invitation_sent', 'confirmed')`,
+        [linkedInt.id]
       );
     }
+
+    await client.query('COMMIT');
 
     await logAudit({
       actor: actorName,
       actorRole: req.user.role,
-      action: updatedStatus === 'sent' ? 'WA_SEND_CONFIRMED' : 'WA_MESSAGE_UPDATED',
+      action: toStatus === 'sent' ? 'WA_SEND_CONFIRMED' : 'WA_MESSAGE_UPDATED',
       entityType: 'wa_message',
       entityId: id,
-      metadata: { status: updatedStatus, recipient: current.recipient_name },
+      metadata: { from_status: fromStatus, to_status: toStatus, template_key: current.template_key, recipient: current.recipient_name },
       ipAddress: req.ip
     });
 
     res.json({ message: rows[0] });
   } catch (err) {
+    await client.query('ROLLBACK').catch(() => {});
     res.status(500).json({ error: err.message });
+  } finally {
+    client.release();
   }
 });
 

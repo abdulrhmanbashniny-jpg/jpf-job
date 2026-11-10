@@ -323,18 +323,34 @@ const SmartHR = (() => {
 
     draw();
 
-    fetch('/api/auth/me')
-      .then((r) => (r.ok ? r.json() : Promise.reject()))
-      .then((res) => {
-        if (res && res.user) {
-          window.__CURRENT_USER = res.user;
-          draw(res.user.role, res.user);
+    getCurrentUser()
+      .then((user) => {
+        if (user) {
+          draw(user.role, user);
+          window.dispatchEvent(new CustomEvent('smarthr:user-ready', { detail: user }));
         }
       })
       .catch(() => {
         const next = encodeURIComponent(window.location.pathname + window.location.search);
         window.location.replace(`Login.dc.html?next=${next}`);
       });
+  }
+
+  let _currentUserPromise = null;
+  function getCurrentUser() {
+    if (window.__CURRENT_USER) return Promise.resolve(window.__CURRENT_USER);
+    if (!_currentUserPromise) {
+      _currentUserPromise = fetch('/api/auth/me')
+        .then((r) => (r.ok ? r.json() : Promise.reject(new Error('AUTH_REQUIRED'))))
+        .then((res) => {
+          if (res && res.user) {
+            window.__CURRENT_USER = res.user;
+            return res.user;
+          }
+          throw new Error('AUTH_REQUIRED');
+        });
+    }
+    return _currentUserPromise;
   }
 
   return {
@@ -346,6 +362,7 @@ const SmartHR = (() => {
     formatTime,
     showToast,
     apiFetch,
+    getCurrentUser,
     renderCandidateVerifyCard,
     logout,
     renderPortalHeader,

@@ -198,6 +198,8 @@ function spawnServer(cwd, port, dbName, uploadDir) {
 
     const pMig = new Pool({ connectionString: `${dbBaseOrigin}/${dbMig}` });
     const pFresh = new Pool({ connectionString: `${dbBaseOrigin}/${dbFresh}` });
+    pMig.on('error', () => {});
+    pFresh.on('error', () => {});
 
     const postCounts = (
       await pMig.query(`
@@ -623,17 +625,27 @@ function spawnServer(cwd, port, dbName, uploadDir) {
       'UI resolveDraftPayload overwrote reschedule_notice body!'
     );
 
-    // اختبار الـ API الفعلي عند فتح مسودة portal_recovery و reschedule_notice
-    const openRecApi = await fetch(`${base}/api/wa-messages/${recJson.wa_message.id}`, {
+    // اختبار الـ API الفعلي: رفض أي محاولة تعديل لنص portal_recovery (400 RECOVERY_BODY_IMMUTABLE) والسماح بفتح المسودة بنصها الأصلي
+    const tamperRecResp = await fetch(`${base}/api/wa-messages/${recJson.wa_message.id}`, {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json', Cookie: hrCookie },
       body: JSON.stringify({ action: 'open_draft', message_body: 'MALICIOUS_OR_ACCIDENTAL_OVERWRITE' })
+    });
+    assert(tamperRecResp.status === 400, 'Tampering portal_recovery body must return 400 RECOVERY_BODY_IMMUTABLE, got ' + tamperRecResp.status);
+    const tamperRecBody = await tamperRecResp.json();
+    assert(tamperRecBody.code === 'RECOVERY_BODY_IMMUTABLE', 'Expected code RECOVERY_BODY_IMMUTABLE!');
+
+    const openRecApi = await fetch(`${base}/api/wa-messages/${recJson.wa_message.id}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json', Cookie: hrCookie },
+      body: JSON.stringify({ action: 'open_draft' })
     }).then((r) => r.json());
     assert(
       openRecApi.message.message_body.includes(recJson.recovery_url) &&
         openRecApi.message.message_body.includes(recJson.access_key) &&
+        openRecApi.message.queue_status === 'queued' &&
         openRecApi.message.prepared_at !== null,
-      'Backend failed to protect portal_recovery message_body on open_draft!'
+      'Backend failed to open portal_recovery draft cleanly!'
     );
 
     const openReschedApi = await fetch(`${base}/api/wa-messages/${patchResched.wa_message.id}`, {
@@ -704,6 +716,677 @@ function spawnServer(cwd, port, dbName, uploadDir) {
       'Old vt3 must return 403 after concurrent reschedule!'
     );
     console.log('[OK] Committee RBAC secret isolation, draft body preservation & atomic FOR UPDATE concurrency verified!');
+
+    console.log('\n=== [DRILL 2D] EXHAUSTIVE CONFLICTING PARAMS, STATE MATRICES, 3-ROLE RBAC & MULTI-WAY CONCURRENCY ===');
+    const executedCases = [];
+    const recordCase = (id, category, desc, status = 'PASS') => {
+      executedCases.push({ id, category, desc, status });
+      console.log(`  [${status}] ${id} (${category}): ${desc}`);
+    };
+
+    // 1. اختبار ثغرة { action: 'confirm_sent', queue_status: 'cancelled' } وكافة التوليفات المتعارضة على الرسائل الملغاة والنشطة
+    const cancelledMsgId = sch1.wa_message.id; // ملغاة من إعادة الجدولة السابقة
+    const activeQueuedAfterRace = (
+      await pMig.query(
+        "SELECT id FROM wa_messages WHERE interview_id = $1 AND queue_status = 'queued' ORDER BY id DESC LIMIT 1",
+        [sch1.interview.id]
+      )
+    ).rows[0].id;
+
+    for (const badBody of [
+      { action: 'confirm_sent', queue_status: 'cancelled' },
+      { action: 'confirm_sent', queue_status: 'queued' },
+      { action: 'open_draft', queue_status: 'cancelled' },
+      { action: 'open_draft', queue_status: 'sent' }
+    ]) {
+      const rCancelled = await fetch(`${base}/api/wa-messages/${cancelledMsgId}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json', Cookie: hrCookie },
+        body: JSON.stringify(badBody)
+      });
+      const bCancelled = await rCancelled.json();
+      assert(rCancelled.status === 400 && bCancelled.code === 'CONFLICTING_WA_PARAMS', 'Must reject conflicting params on cancelled msg!');
+
+      const rActive = await fetch(`${base}/api/wa-messages/${activeQueuedAfterRace}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json', Cookie: hrCookie },
+        body: JSON.stringify(badBody)
+      });
+      const bActive = await rActive.json();
+      assert(rActive.status === 400 && bActive.code === 'CONFLICTING_WA_PARAMS', 'Must reject conflicting params on active msg!');
+    }
+
+    const dbCancelledCheck = (await pMig.query('SELECT queue_status FROM wa_messages WHERE id = $1', [cancelledMsgId])).rows[0];
+    const dbIntAfterBypassTry = (await pMig.query('SELECT booking_status FROM interviews WHERE id = $1', [sch1.interview.id])).rows[0];
+    assert(dbCancelledCheck.queue_status === 'cancelled', 'Cancelled message was revived!');
+    assert(dbIntAfterBypassTry.booking_status === 'rescheduled', 'Rescheduled interview was altered by cancelled message!');
+    recordCase('TC-07', 'WA Conflict Guard', '{ action: "confirm_sent", queue_status: "cancelled" } & all dual action+queue_status payloads -> 400 CONFLICTING_WA_PARAMS; DB unchanged');
+
+    // اختبار قيم غير صالحة وطلب فارغ
+    assert(
+      (await fetch(`${base}/api/wa-messages/${activeQueuedAfterRace}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json', Cookie: hrCookie },
+        body: JSON.stringify({ action: 'force_send' })
+      })).status === 400,
+      'Unknown action must return 400!'
+    );
+    assert(
+      (await fetch(`${base}/api/wa-messages/${activeQueuedAfterRace}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json', Cookie: hrCookie },
+        body: JSON.stringify({ queue_status: 'bogus' })
+      })).status === 400,
+      'Unknown queue_status must return 400!'
+    );
+    assert(
+      (await fetch(`${base}/api/wa-messages/${activeQueuedAfterRace}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json', Cookie: hrCookie },
+        body: JSON.stringify({})
+      })).status === 400,
+      'Empty PATCH body must return 400!'
+    );
+
+    // 2. القفل النهائي الصارم للرسالة الملغاة ضد جميع الطلبات المفردة
+    for (const singlePayload of [
+      { action: 'open_draft' },
+      { action: 'confirm_sent' },
+      { queue_status: 'sent' },
+      { queue_status: 'queued' },
+      { queue_status: 'confirmed' },
+      { queue_status: 'failed' },
+      { queue_status: 'cancelled' },
+      { message_body: 'تعديل نص رسالة ملغاة' }
+    ]) {
+      const resp = await fetch(`${base}/api/wa-messages/${cancelledMsgId}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json', Cookie: hrCookie },
+        body: JSON.stringify(singlePayload)
+      });
+      const body = await resp.json();
+      assert(resp.status === 400 && body.code === 'WA_MESSAGE_CANCELLED', `Cancelled msg accepted ${JSON.stringify(singlePayload)}!`);
+    }
+    recordCase('TC-08', 'WA Terminal Lock', 'Every single-param mutation on cancelled wa_message returns 400 WA_MESSAGE_CANCELLED');
+
+    // 3. دورة حياة الفشل وإعادة المحاولة (queued -> failed -> queued -> sent) + منع التعديل والرجوع بعد sent
+    const customMsgRes = await fetch(`${base}/api/wa-messages`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Cookie: hrCookie },
+      body: JSON.stringify({
+        application_id: aliceAppId,
+        template_key: 'thank_followup',
+        recipient_name: 'أليس المتقدمة',
+        recipient_phone: '0558887766',
+        message_body: 'شكراً لحضورك'
+      })
+    }).then((r) => r.json());
+    const customMsgId = customMsgRes.message.id;
+
+    assert(
+      (await fetch(`${base}/api/wa-messages/${customMsgId}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json', Cookie: hrCookie },
+        body: JSON.stringify({ queue_status: 'failed' })
+      })).status === 200,
+      'queued -> failed must succeed!'
+    );
+    assert(
+      (await fetch(`${base}/api/wa-messages/${customMsgId}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json', Cookie: hrCookie },
+        body: JSON.stringify({ action: 'confirm_sent' })
+      })).status === 400,
+      'failed -> confirm_sent directly must return 400!'
+    );
+    assert(
+      (await fetch(`${base}/api/wa-messages/${customMsgId}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json', Cookie: hrCookie },
+        body: JSON.stringify({ queue_status: 'queued' })
+      })).status === 200,
+      'failed -> queued retry reset must succeed!'
+    );
+
+    // سباق تزامن تأكيد إرسال نفس الرسالة مرتين في نفس اللحظة (Promise.all)
+    const [concSendA, concSendB] = await Promise.all([
+      fetch(`${base}/api/wa-messages/${customMsgId}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json', Cookie: hrCookie },
+        body: JSON.stringify({ action: 'confirm_sent' })
+      }),
+      fetch(`${base}/api/wa-messages/${customMsgId}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json', Cookie: staffCookie },
+        body: JSON.stringify({ action: 'confirm_sent' })
+      })
+    ]);
+    const sendCodes = [concSendA.status, concSendB.status].sort();
+    assert(sendCodes[0] === 200 && sendCodes[1] === 400, `Concurrent confirm_sent expected [200,400], got ${JSON.stringify(sendCodes)}`);
+
+    // منع الرجوع من sent إلى queued أو open_draft أو تعديل النص بعد الإرسال
+    assert(
+      (await fetch(`${base}/api/wa-messages/${customMsgId}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json', Cookie: hrCookie },
+        body: JSON.stringify({ queue_status: 'queued' })
+      })).status === 400,
+      'sent -> queued regression must return 400!'
+    );
+    assert(
+      (await fetch(`${base}/api/wa-messages/${customMsgId}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json', Cookie: hrCookie },
+        body: JSON.stringify({ action: 'open_draft' })
+      })).status === 400,
+      'sent -> open_draft must return 400!'
+    );
+    assert(
+      (await fetch(`${base}/api/wa-messages/${customMsgId}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json', Cookie: hrCookie },
+        body: JSON.stringify({ message_body: 'تزوير بعد الإرسال' })
+      })).status === 400,
+      'Editing sent message_body must return 400 SENT_BODY_IMMUTABLE!'
+    );
+    // منع تزوير رسالة portal_recovery عبر POST /api/wa-messages
+    assert(
+      (await fetch(`${base}/api/wa-messages`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Cookie: hrCookie },
+        body: JSON.stringify({
+          application_id: aliceAppId,
+          template_key: 'portal_recovery',
+          recipient_name: 'أليس',
+          recipient_phone: '0558887766',
+          message_body: 'مزورة'
+        })
+      })).status === 400,
+      'Manual POST portal_recovery must return 400!'
+    );
+    recordCase('TC-09', 'WA Transition Matrix', 'Retry (queued->failed->queued->sent), concurrent double-send [200,400], post-send immutability & portal_recovery spoof block verified');
+
+    // 4. سباق تزامن تأكيد دعوة قديمة مقابل إعادة جدولة الموعد (Race A) + سباق تدوير استعادة مزدوج (Race D)
+    const [raceSendOldInvite, raceReschedAgain] = await Promise.all([
+      fetch(`${base}/api/wa-messages/${activeQueuedAfterRace}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json', Cookie: hrCookie },
+        body: JSON.stringify({ action: 'confirm_sent' })
+      }),
+      fetch(`${base}/api/interviews/${sch1.interview.id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json', Cookie: staffCookie },
+        body: JSON.stringify({ start_time: '16:15' })
+      })
+    ]);
+    assert(raceReschedAgain.status === 200, 'Race reschedule to 16:15 failed!');
+    assert([200, 400, 409].includes(raceSendOldInvite.status), 'Unexpected status in raceSendOldInvite: ' + raceSendOldInvite.status);
+    const oldInviteAfterRace = (await pMig.query('SELECT queue_status FROM wa_messages WHERE id = $1', [activeQueuedAfterRace])).rows[0];
+    const intAfterInviteRace = (await pMig.query('SELECT booking_status, start_time FROM interviews WHERE id = $1', [sch1.interview.id])).rows[0];
+    assert(oldInviteAfterRace.queue_status === 'cancelled', 'Old invite must end cancelled after concurrent reschedule!');
+    assert(intAfterInviteRace.booking_status === 'rescheduled', 'Interview must end rescheduled after concurrent reschedule!');
+
+    const [concRec1, concRec2] = await Promise.all([
+      fetch(`${base}/api/applications/${aliceAppId}/recovery-link`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Cookie: hrCookie },
+        body: JSON.stringify({})
+      }),
+      fetch(`${base}/api/applications/${aliceAppId}/recovery-link`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Cookie: staffCookie },
+        body: JSON.stringify({})
+      })
+    ]);
+    assert(concRec1.status === 201 && concRec2.status === 201, 'Concurrent recovery-link calls must serialize cleanly!');
+    const activeRecoveryRows = (
+      await pMig.query(
+        "SELECT id, message_body FROM wa_messages WHERE application_id = $1 AND template_key = 'portal_recovery' AND queue_status = 'queued'",
+        [aliceAppId]
+      )
+    ).rows;
+    assert(activeRecoveryRows.length === 1, `Expected exactly 1 active portal_recovery draft after concurrent rotation, got ${activeRecoveryRows.length}!`);
+    recordCase('TC-10', 'Atomic Concurrency', 'Concurrent confirm_sent vs reschedule & concurrent dual recovery-link rotation serialized cleanly with 1 active draft');
+
+    // 5. مصفوفة انتقالات المقابلات وأهلية المرشحين + التقديم المزدوج المتزامن للاختبار + حارس رفع المرفقات
+    const fdPending = new FormData();
+    fdPending.append('job_id', '1');
+    fdPending.append('full_name', 'خالد قيد الاختبار');
+    fdPending.append('email', 'khalid.pending@jpf.sa');
+    fdPending.append('phone', '0554443322');
+    fdPending.append('city', 'جدة');
+    fdPending.append('qualification', 'بكالوريوس');
+    fdPending.append('specialization', 'هندسة صناعية');
+    fdPending.append('years_experience', '4');
+    fdPending.append('privacy_consent', 'true');
+    fdPending.append('cv_file', new Blob(['%PDF-1.4 Khalid CV خبرة 4 سنوات جودة ومبيعات'], { type: 'application/pdf' }), 'khalid.pdf');
+    const khalidAppResp = await fetch(`${base}/api/applications`, { method: 'POST', body: fdPending });
+    assert(khalidAppResp.status === 201, 'Creating pending candidate Khalid failed');
+    const khalidCookie = khalidAppResp.headers.get('set-cookie').split(';')[0];
+    const khalidBody = await khalidAppResp.json();
+    const khalidRef = khalidBody.application.reference_no;
+    const khalidId = (await pMig.query('SELECT id FROM applications WHERE reference_no = $1', [khalidRef])).rows[0].id;
+
+    // منع جدولة مرشح ما زال assessment_pending + منع تقييم اللجنة له + منع اعتماده لعرض وظيفي
+    assert(
+      (await fetch(`${base}/api/interviews/schedule-single`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Cookie: hrCookie },
+        body: JSON.stringify({ application_id: khalidId, scheduled_date: '2026-11-25', start_time: '10:00' })
+      })).status === 400,
+      'Scheduling assessment_pending candidate must return 400!'
+    );
+    assert(
+      (await fetch(`${base}/api/interviews/schedule-single`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Cookie: hrCookie },
+        body: JSON.stringify({ application_id: aliceAppId, scheduled_date: '2026-11-25', start_time: '27:99' })
+      })).status === 400,
+      'Invalid HH:MM start_time must return 400!'
+    );
+    assert(
+      (await fetch(`${base}/api/evaluations`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Cookie: commCookie },
+        body: JSON.stringify({
+          application_id: khalidId,
+          technical_competence: 4,
+          communication_persuasion: 4,
+          problem_solving: 4,
+          cultural_fit: 4,
+          portfolio_practical: 4
+        })
+      })).status === 400,
+      'Evaluating assessment_pending candidate must return 400!'
+    );
+    assert(
+      (await fetch(`${base}/api/applications/${khalidId}/status`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json', Cookie: hrCookie },
+        body: JSON.stringify({ status: 'offered' })
+      })).status === 400,
+      'Offering assessment_pending candidate must return 400!'
+    );
+
+    // فحص حارس رفع مرفقات الاختبار: رفض بدون توكن، نجاح بتوكن نشط، ورفض بعد إتمام الاختبار
+    const attUnauthFd = new FormData();
+    attUnauthFd.append('attachment_file', new Blob(['%PDF-1.4 unauth'], { type: 'application/pdf' }), 'u.pdf');
+    assert((await fetch(`${base}/api/assessments/upload-attachment`, { method: 'POST', body: attUnauthFd })).status === 403, 'Unauth upload must be 403!');
+
+    const attOkFd = new FormData();
+    attOkFd.append('attachment_file', new Blob(['%PDF-1.4 valid portfolio'], { type: 'application/pdf' }), 'portfolio.pdf');
+    assert(
+      (await fetch(`${base}/api/assessments/upload-attachment`, {
+        method: 'POST',
+        headers: { Cookie: khalidCookie },
+        body: attOkFd
+      })).status === 200,
+      'Active pending candidate attachment upload must return 200!'
+    );
+
+    // سباق التقديم المتزامن المزدوج للاختبار (Promise.all) على طلب خالد
+    const job1Questions = (await pMig.query('SELECT questions FROM jobs WHERE id = 1')).rows[0].questions;
+    const khalidAnswers = job1Questions.map((q) => ({
+      question_index: q.index,
+      answer_value: q.type === 'mcq' ? 0 : q.type === 'numeric' ? (q.correct_number ?? 85) : 'تحليل خطة جودة ومبيعات وتطوير مؤشرات الأداء والالتزام بالمواصفات القياسية للدهانات'
+    }));
+    const [kSub1, kSub2] = await Promise.all([
+      fetch(`${base}/api/assessments/submit`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Cookie: khalidCookie },
+        body: JSON.stringify({ reference_no: khalidRef, answers: khalidAnswers, telemetry: { time_spent_seconds: 75 } })
+      }).then((r) => r.json()),
+      fetch(`${base}/api/assessments/submit`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Cookie: khalidCookie },
+        body: JSON.stringify({ reference_no: khalidRef, answers: khalidAnswers, telemetry: { time_spent_seconds: 75 } })
+      }).then((r) => r.json())
+    ]);
+    assert(Boolean(kSub1.already_submitted) !== Boolean(kSub2.already_submitted), 'Exactly one concurrent submit must grade and the second return already_submitted!');
+    const khalidAnsCount = (await pMig.query('SELECT COUNT(*)::int AS cnt FROM assessment_answers WHERE application_id = $1', [khalidId])).rows[0].cnt;
+    assert(khalidAnsCount === job1Questions.length, `Duplicate assessment_answers rows created (${khalidAnsCount})!`);
+
+    // بعد إتمام الاختبار يُرفض رفع مرفق جديد بنفس الكوكي لأن الحالة لم تعد assessment_pending
+    const attAfterSubmitFd = new FormData();
+    attAfterSubmitFd.append('attachment_file', new Blob(['%PDF-1.4 late'], { type: 'application/pdf' }), 'late.pdf');
+    assert(
+      (await fetch(`${base}/api/assessments/upload-attachment`, {
+        method: 'POST',
+        headers: { Cookie: khalidCookie },
+        body: attAfterSubmitFd
+      })).status === 403,
+      'Post-submit attachment upload must return 403!'
+    );
+    recordCase('TC-11', 'Assessment & Eligibility', 'Attachment live-DB guard, concurrent double-submit idempotency, and ineligible scheduling/evaluation/offer blocks verified');
+
+    // 6. مصفوفة الصلاحيات الكاملة للأدوار الثلاثة + الإيقاف اللحظي لحساب الموظف النشط
+    assert(
+      (await fetch(`${base}/api/interviews/schedule-single`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Cookie: commCookie },
+        body: JSON.stringify({ application_id: khalidId, scheduled_date: '2026-11-26', start_time: '10:00' })
+      })).status === 403,
+      'committee_member must get 403 on schedule-single!'
+    );
+    assert(
+      (await fetch(`${base}/api/interviews/${sch1.interview.id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json', Cookie: commCookie },
+        body: JSON.stringify({ start_time: '17:00' })
+      })).status === 403,
+      'committee_member must get 403 on interview reschedule!'
+    );
+    assert(
+      (await fetch(`${base}/api/interviews/${sch1.interview.id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json', Cookie: commCookie },
+        body: JSON.stringify({ booking_status: 'cancelled' })
+      })).status === 403,
+      'committee_member must get 403 on interview cancel!'
+    );
+    assert(
+      (await fetch(`${base}/api/applications/${aliceAppId}/status`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json', Cookie: commCookie },
+        body: JSON.stringify({ status: 'offered' })
+      })).status === 403,
+      'committee_member must get 403 on application status decision!'
+    );
+    assert(
+      (await fetch(`${base}/api/evaluations`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Cookie: hrCookie },
+        body: JSON.stringify({
+          application_id: aliceAppId,
+          technical_competence: 4.5,
+          communication_persuasion: 4.5,
+          problem_solving: 4.5,
+          cultural_fit: 4.5,
+          portfolio_practical: 4.5
+        })
+      })).status === 403,
+      'hr_coordinator must get 403 on POST /api/evaluations!'
+    );
+    assert(
+      (await fetch(`${base}/api/evaluations`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Cookie: commCookie },
+        body: JSON.stringify({
+          application_id: aliceAppId,
+          technical_competence: 4.6,
+          communication_persuasion: 4.4,
+          problem_solving: 4.5,
+          cultural_fit: 4.7,
+          portfolio_practical: 4.5,
+          recommendation: 'strong_hire',
+          notes: 'أداء متميز في المقابلة الفنية'
+        })
+      })).status === 201,
+      'committee_member POST /api/evaluations must return 201!'
+    );
+    const hrStatusUpd = await fetch(`${base}/api/applications/${khalidId}/status`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json', Cookie: hrCookie },
+      body: JSON.stringify({ status: 'under_review' })
+    });
+    assert(hrStatusUpd.status === 200, 'hr_coordinator status=under_review must return 200!');
+    const hrStatusBody = await hrStatusUpd.json();
+    assert(hrStatusBody.application.candidate_access_token === undefined, 'PATCH status leaked candidate_access_token!');
+    assert(
+      (await fetch(`${base}/api/applications/${khalidId}/status`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json', Cookie: hrCookie },
+        body: JSON.stringify({ status: 'passed_assessment' })
+      })).status === 400,
+      'Forging passed_assessment via PATCH status must return 400!'
+    );
+
+    // منع مدير النظام من تخفيض صلاحياته أو إيقاف حسابه الشخصي
+    const adminMe = await fetch(`${base}/api/auth/me`, { headers: { Cookie: staffCookie } }).then((r) => r.json());
+    assert(
+      (await fetch(`${base}/api/users/${adminMe.user.id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json', Cookie: staffCookie },
+        body: JSON.stringify({ role: 'hr_coordinator' })
+      })).status === 400,
+      'Admin self-demotion must return 400!'
+    );
+
+    // اختبار الإيقاف الفوري اللحظي لحساب موظف لديه كوكي جلسة موقّع صالح
+    const tempStaffRes = await fetch(`${base}/api/users`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Cookie: staffCookie },
+      body: JSON.stringify({
+        username: 'temp_hr_revoke',
+        full_name: 'موظف اختبار الإيقاف اللحظي',
+        role: 'hr_coordinator',
+        password: 'TempRevoke-2026-Pass'
+      })
+    }).then((r) => r.json());
+    const tempLogin = await fetch(`${base}/api/auth/login`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username: 'temp_hr_revoke', password: 'TempRevoke-2026-Pass' })
+    });
+    const tempCookie = tempLogin.headers.get('set-cookie').split(';')[0];
+    assert((await fetch(`${base}/api/stats`, { headers: { Cookie: tempCookie } })).status === 200, 'Active temp user should get 200');
+
+    await fetch(`${base}/api/users/${tempStaffRes.user.id}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json', Cookie: staffCookie },
+      body: JSON.stringify({ is_active: false })
+    });
+    assert((await fetch(`${base}/api/auth/me`, { headers: { Cookie: tempCookie } })).status === 401, 'Deactivated user cookie must get 401 on /api/auth/me!');
+    assert((await fetch(`${base}/api/stats`, { headers: { Cookie: tempCookie } })).status === 401, 'Deactivated user cookie must get 401 on /api/stats!');
+    assert(
+      (await fetch(`${base}/Dashboard.dc.html`, { headers: { Cookie: tempCookie }, redirect: 'manual' })).status === 302,
+      'Deactivated user cookie must get 302 redirect on protected HTML!'
+    );
+    assert(
+      (await fetch(`${base}/uploads/${preUpgradeCvName}`, { headers: { Cookie: tempCookie } })).status === 401,
+      'Deactivated user cookie must get 401 on /uploads!'
+    );
+    recordCase('TC-12', '3-Role RBAC & Live Revocation', 'Full super_admin / hr_coordinator / committee_member API+HTML matrix & instant DB session revocation verified');
+
+    console.log('\n=== [DRILL 2E] REAL HEADLESS CHROMIUM BROWSER E2E (PORTAL_RECOVERY & RESCHEDULE_NOTICE DRAFTS) ===');
+    // نجهز مسودة استعادة طازجة لطلب خالد ومسودة إعادة جدولة طازجة لطلب أليس لفحصهما من متصفح كروميوم فعلي!
+    const freshKhalidRec = await fetch(`${base}/api/applications/${khalidId}/recovery-link`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Cookie: hrCookie },
+      body: JSON.stringify({})
+    }).then((r) => r.json());
+    const khalidRecMsgId = freshKhalidRec.wa_message.id;
+
+    const freshAliceResched = await fetch(`${base}/api/interviews/${sch1.interview.id}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json', Cookie: hrCookie },
+      body: JSON.stringify({ scheduled_date: '2026-11-28', start_time: '13:15' })
+    }).then((r) => r.json());
+    const aliceReschedMsgId = freshAliceResched.wa_message.id;
+    const vtBrowser = new URL(freshAliceResched.visit_url).searchParams.get('vt');
+
+    const { chromium } = require('playwright');
+    const browser = await chromium.launch({ headless: true });
+    try {
+      // 1. سياق متصفح حقيقي لمنسق الموارد البشرية (hr_audit)
+      const hrContext = await browser.newContext({ locale: 'ar-SA' });
+      await hrContext.addInitScript(() => {
+        window.__OPENED_WA_URLS = [];
+        window.open = function(url) {
+          window.__OPENED_WA_URLS.push(String(url));
+          return { closed: false, close() {} };
+        };
+      });
+      const hrPage = await hrContext.newPage();
+
+      // تسجيل الدخول الفعلي من صفحة Login.dc.html
+      await hrPage.goto(`${base}/Login.dc.html`, { waitUntil: 'networkidle' });
+      await hrPage.fill('#username', 'hr_audit');
+      await hrPage.fill('#password', 'HrCoordPass-2026-Strong');
+      await Promise.all([
+        hrPage.waitForURL('**/Dashboard.dc.html*'),
+        hrPage.click('button[type="submit"]')
+      ]);
+
+      // فتح استوديو واتساب الفعلي Interviews.dc.html
+      await hrPage.goto(`${base}/Interviews.dc.html`, { waitUntil: 'networkidle' });
+      await hrPage.waitForSelector(`tr[data-row-msg-id="${khalidRecMsgId}"]`);
+      await hrPage.waitForSelector(`tr[data-row-msg-id="${aliceReschedMsgId}"]`);
+
+      // أ) النقر الفعلي على صف رسالة استعادة الوصول (portal_recovery) والتحقق من شاشة الجوال وفتح المسودة
+      await hrPage.click(`tr[data-row-msg-id="${khalidRecMsgId}"]`);
+      const recBubbleText = await hrPage.textContent('#pv-bubble');
+      assert(
+        recBubbleText.includes(freshKhalidRec.recovery_url) && recBubbleText.includes(freshKhalidRec.access_key),
+        'Browser #pv-bubble did not display exact portal_recovery URL and access_key!'
+      );
+
+      await Promise.all([
+        hrPage.waitForResponse((r) => r.url().includes(`/api/wa-messages/${khalidRecMsgId}`) && r.request().method() === 'PATCH'),
+        hrPage.click(`button[data-msg-id="${khalidRecMsgId}"]`)
+      ]);
+
+      const openedAfterRec = await hrPage.evaluate(() => window.__OPENED_WA_URLS.slice());
+      assert(openedAfterRec.length === 1, 'Expected 1 window.open call for portal_recovery draft!');
+      const parsedRecWa = new URL(openedAfterRec[0]);
+      const recWaText = parsedRecWa.searchParams.get('text') || '';
+      assert(
+        parsedRecWa.hostname === 'wa.me' &&
+          parsedRecWa.pathname === '/966554443322' &&
+          recWaText.includes(freshKhalidRec.recovery_url) &&
+          recWaText.includes(freshKhalidRec.access_key),
+        'Browser window.open wa.me payload corrupted portal_recovery URL or key!'
+      );
+      const dbRecAfterBrowserOpen = (await pMig.query('SELECT queue_status, prepared_at FROM wa_messages WHERE id = $1', [khalidRecMsgId])).rows[0];
+      assert(
+        dbRecAfterBrowserOpen.queue_status === 'queued' && dbRecAfterBrowserOpen.prepared_at !== null,
+        'Browser open_draft on portal_recovery did not keep status=queued with prepared_at!'
+      );
+      recordCase('TC-13', 'Browser E2E (Recovery Draft)', 'Real Chromium clicked portal_recovery row & opened wa.me draft with intact signed recovery URL + JPFK key');
+
+      // ب) النقر الفعلي على صف إشعار تحديث الموعد (reschedule_notice) وفتح المسودة ثم تأكيد الإرسال الفعلي
+      await hrPage.waitForSelector(`tr[data-row-msg-id="${aliceReschedMsgId}"]`);
+      await hrPage.click(`tr[data-row-msg-id="${aliceReschedMsgId}"]`);
+      const reschedBubbleText = await hrPage.textContent('#pv-bubble');
+      assert(
+        reschedBubbleText.includes('13:15') && reschedBubbleText.includes(encodeURIComponent(vtBrowser)),
+        'Browser #pv-bubble did not display exact reschedule_notice slot and rotated vt link!'
+      );
+
+      await Promise.all([
+        hrPage.waitForResponse((r) => r.url().includes(`/api/wa-messages/${aliceReschedMsgId}`) && r.request().method() === 'PATCH'),
+        hrPage.click(`button[data-msg-id="${aliceReschedMsgId}"]`)
+      ]);
+
+      const openedAfterResched = await hrPage.evaluate(() => window.__OPENED_WA_URLS.slice());
+      assert(openedAfterResched.length === 2, 'Expected 2nd window.open call for reschedule_notice draft!');
+      const parsedReschedWa = new URL(openedAfterResched[1]);
+      const reschedWaText = parsedReschedWa.searchParams.get('text') || '';
+      assert(
+        parsedReschedWa.pathname === '/966558887766' &&
+          reschedWaText.includes('13:15') &&
+          reschedWaText.includes(encodeURIComponent(vtBrowser)),
+        'Browser window.open wa.me payload lost reschedule_notice slot or rotated vt token!'
+      );
+
+      const dbIntWhileDraftOnly = (await pMig.query('SELECT booking_status FROM interviews WHERE id = $1', [sch1.interview.id])).rows[0];
+      assert(dbIntWhileDraftOnly.booking_status === 'rescheduled', 'Opening reschedule draft in browser must NOT mark interview invitation_sent prematurely!');
+
+      // الضغط الفعلي على زر «✓ تأكيد الإرسال» في المتصفح
+      await hrPage.waitForSelector(`button[data-confirm-id="${aliceReschedMsgId}"]`);
+      await Promise.all([
+        hrPage.waitForResponse((r) => r.url().includes(`/api/wa-messages/${aliceReschedMsgId}`) && r.request().method() === 'PATCH'),
+        hrPage.click(`button[data-confirm-id="${aliceReschedMsgId}"]`)
+      ]);
+      await hrPage.waitForSelector(`tr[data-row-msg-id="${aliceReschedMsgId}"][data-row-status="sent"]`);
+
+      const dbIntAfterBrowserConfirm = (await pMig.query('SELECT booking_status FROM interviews WHERE id = $1', [sch1.interview.id])).rows[0];
+      assert(dbIntAfterBrowserConfirm.booking_status === 'invitation_sent', 'Confirming send in browser must advance interview to invitation_sent!');
+      recordCase('TC-14', 'Browser E2E (Reschedule Draft & Confirm)', 'Real Chromium opened reschedule_notice draft (kept rescheduled) then confirmed send (-> invitation_sent)');
+
+      // ج) سياق متصفح مجهول للمرشح: فتح رابط الاستعادة الفعلي وبطاقة الزيارة وتأكيد الحضور من المتصفح
+      const candContext = await browser.newContext({ locale: 'ar-SA' });
+      const candPage = await candContext.newPage();
+      await candPage.goto(freshKhalidRec.recovery_url, { waitUntil: 'networkidle' });
+      const candPageContent = await candPage.content();
+      assert(candPageContent.includes(khalidRef), 'Anonymous browser failed to load candidate result via rotated recovery_url!');
+
+      await candPage.goto(freshAliceResched.visit_url, { waitUntil: 'networkidle' });
+      await candPage.waitForSelector('#confirm-visit-btn:not([disabled])');
+      await Promise.all([
+        candPage.waitForResponse((r) => r.url().includes('/api/public/visit/') && r.url().endsWith('/confirm')),
+        candPage.click('#confirm-visit-btn')
+      ]);
+      const dbIntAfterCandBrowser = (await pMig.query('SELECT booking_status FROM interviews WHERE id = $1', [sch1.interview.id])).rows[0];
+      assert(dbIntAfterCandBrowser.booking_status === 'confirmed', 'Candidate browser click on Visit.dc.html did not confirm interview!');
+      recordCase('TC-15', 'Browser E2E (Candidate Recovery & Visit Pass)', 'Anonymous Chromium loaded rotated recovery_url & confirmed attendance on Visit.dc.html');
+
+      // د) سياق متصفح حقيقي لعضو اللجنة (comm_audit): التحقق من اختفاء رسائل الاستعادة وأزرار الإرسال ومنع صفحة Users.dc.html (403)
+      const commContext = await browser.newContext({ locale: 'ar-SA' });
+      const commPage = await commContext.newPage();
+      await commPage.goto(`${base}/Login.dc.html`, { waitUntil: 'networkidle' });
+      await commPage.fill('#username', 'comm_audit');
+      await commPage.fill('#password', 'CommPass-2026-Strong');
+      await Promise.all([
+        commPage.waitForURL('**/Dashboard.dc.html*'),
+        commPage.click('button[type="submit"]')
+      ]);
+      await commPage.goto(`${base}/Interviews.dc.html`, { waitUntil: 'networkidle' });
+      const commDomRecoveryCount = await commPage.locator('tr[data-row-tpl="portal_recovery"]').count();
+      const commDomSendButtons = await commPage.locator('button.wa-btn-inline').count();
+      assert(commDomRecoveryCount === 0 && commDomSendButtons === 0, 'committee_member browser DOM exposed recovery row or send buttons!');
+
+      const usersPageResp = await commPage.goto(`${base}/Users.dc.html`);
+      assert(usersPageResp.status() === 403, `committee_member navigating to /Users.dc.html must get 403, got ${usersPageResp.status()}!`);
+
+      // عضو اللجنة يسجل إتمام المقابلة ثم نتحقق من منع إعادة جدولة مقابلة مكتملة (400 INTERVIEW_ALREADY_COMPLETED)
+      const commCompleteResp = await fetch(`${base}/api/interviews/${sch1.interview.id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json', Cookie: commCookie },
+        body: JSON.stringify({ booking_status: 'completed', notes: 'حضر المرشح وأتم المقابلة بنجاح' })
+      });
+      assert(commCompleteResp.status === 200, 'committee_member marking confirmed interview completed must return 200!');
+      assert(
+        (await fetch(`${base}/api/interviews/${sch1.interview.id}`, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json', Cookie: hrCookie },
+          body: JSON.stringify({ start_time: '15:00' })
+        })).status === 400,
+        'Rescheduling an already completed interview must return 400 INTERVIEW_ALREADY_COMPLETED!'
+      );
+      recordCase('TC-16', 'Browser E2E (Committee RBAC & Completed Lock)', 'Real Chromium verified committee_member read-only queue UI, 403 on /Users.dc.html, completion & post-completion reschedule lock');
+
+      // هـ) التحقق من اتساق الحالات عبر الكيانات عند الاعتذار لمرشح مجدول (إلغاء الموعد وإبطال vt وإلغاء دعوات الطابور)
+      const khalidSched = await fetch(`${base}/api/interviews/schedule-single`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Cookie: hrCookie },
+        body: JSON.stringify({ application_id: khalidId, scheduled_date: '2026-11-29', start_time: '11:00', interview_mode: 'remote' })
+      }).then((r) => r.json());
+      const khalidVt = new URL(khalidSched.visit_url).searchParams.get('vt');
+      assert((await fetch(`${base}/api/public/visit/${encodeURIComponent(khalidVt)}`)).status === 200, 'Khalid visit pass should be active');
+
+      const rejectKhalidResp = await fetch(`${base}/api/applications/${khalidId}/status`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json', Cookie: hrCookie },
+        body: JSON.stringify({ status: 'rejected' })
+      });
+      assert(rejectKhalidResp.status === 200, 'Rejecting Khalid failed!');
+      assert((await fetch(`${base}/api/public/visit/${encodeURIComponent(khalidVt)}`)).status === 403, 'Rejecting candidate must revoke active visit_token!');
+      const khalidIntAfterRej = (await pMig.query('SELECT booking_status FROM interviews WHERE id = $1', [khalidSched.interview.id])).rows[0];
+      const khalidMsgAfterRej = (await pMig.query('SELECT queue_status FROM wa_messages WHERE id = $1', [khalidSched.wa_message.id])).rows[0];
+      assert(
+        khalidIntAfterRej.booking_status === 'cancelled' && khalidMsgAfterRej.queue_status === 'cancelled',
+        'Rejecting candidate must cancel open interview and queued invite!'
+      );
+      recordCase('TC-17', 'Cross-Entity Rejection Cascade', 'Setting application status=rejected automatically cancelled open interview, revoked visit_token (403), and cancelled queued WA invite');
+
+      await hrContext.close();
+      await candContext.close();
+      await commContext.close();
+    } finally {
+      await browser.close();
+    }
+    console.log('[OK] All API Conflict, State-Machine, Concurrency, RBAC & Real Headless Chromium Browser E2E tests passed!');
 
     console.log('\n=== [DRILL 3] ISOLATED pg_dump -Fc + SEPARATE -c psql RESTORE + UPLOADS ARCHIVE ===');
     const dumpFile = path.join(backupDir, 'db_drill.dump');
@@ -812,6 +1495,7 @@ function spawnServer(cwd, port, dbName, uploadDir) {
   } finally {
     if (v21Proc) v21Proc.kill('SIGTERM');
     if (v20Proc) v20Proc.kill('SIGTERM');
+    if (typeof pMig !== 'undefined' && pMig) await pMig.end().catch(() => {});
     await dropIsolatedDb(dbMig);
     await dropIsolatedDb(dbFresh);
     await dropIsolatedDb(dbRest);

@@ -376,16 +376,24 @@
               }
             </td>
             <td>
-              <div style="display:flex;gap:6px;flex-wrap:wrap;">
-                <button type="button" onclick="openScheduleModal(${c.id})" class="btn ${hasInt ? 'btn-outline' : 'btn-terracotta'} btn-sm">
-                  ${hasInt ? '💬 فتح مسودة / تعديل' : '📲 تحديد موعد + مسودة'}
-                </button>
-                ${
-                  c.wa_message_id && c.wa_queue_status === 'queued'
-                    ? `<button type="button" onclick="confirmInviteSent(${c.wa_message_id})" class="btn btn-olive btn-sm">✓ تأكيد الإرسال</button>`
-                    : ''
-                }
-              </div>
+              ${
+                c.booking_status === 'completed'
+                  ? '<span class="badge badge-olive">مقابلة مكتملة ✓</span>'
+                  : !['passed_assessment', 'under_review', 'interview_scheduled', 'interviewed'].includes(c.status)
+                    ? SmartHR.statusBadge(c.status)
+                    : (window.__CURRENT_USER && ['super_admin', 'hr_coordinator'].includes(window.__CURRENT_USER.role))
+                      ? `<div style="display:flex;gap:6px;flex-wrap:wrap;">
+                          <button type="button" onclick="openScheduleModal(${c.id})" class="btn ${hasInt ? 'btn-outline' : 'btn-terracotta'} btn-sm">
+                            ${hasInt ? '💬 فتح مسودة / تعديل' : '📲 تحديد موعد + مسودة'}
+                          </button>
+                          ${
+                            c.wa_message_id && c.wa_queue_status === 'queued'
+                              ? `<button type="button" onclick="confirmInviteSent(${c.wa_message_id})" class="btn btn-olive btn-sm">✓ تأكيد الإرسال</button>`
+                              : ''
+                          }
+                        </div>`
+                      : '<span style="font-size:12px;color:var(--text-muted);">مختص الموارد البشرية</span>'
+              }
             </td>
             <td><a href="CandidateProfile.dc.html?app_id=${c.id}" class="btn btn-outline btn-sm">الملف</a></td>
           </tr>
@@ -513,6 +521,11 @@
         SmartHR.showToast('تم تصدير جدول الترتيب بنجاح!', 'success');
       });
 
+      await SmartHR.getCurrentUser().catch(() => null);
+      if (!window.__CURRENT_USER || window.__CURRENT_USER.role !== 'super_admin') {
+        const saveWeightsBtn = document.getElementById('save-weights-btn');
+        if (saveWeightsBtn) saveWeightsBtn.style.display = 'none';
+      }
       await loadRanking();
     }
 

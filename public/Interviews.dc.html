@@ -239,6 +239,7 @@
               <option value="draft_opened">فُتح الرابط — بانتظار تأكيد الإرسال</option>
               <option value="sent">تأكد إرسالها ✓</option>
               <option value="confirmed">مؤكدة الحضور ✓</option>
+              <option value="cancelled">ملغاة (تم استبدالها)</option>
             </select>
             <button type="button" id="open-next-wa-btn" class="btn btn-terracotta btn-sm">
               فتح المسودة التالية في واتساب 📲
@@ -361,7 +362,12 @@
       updatePhonePreview();
     }
 
-    function updatePhonePreview() {
+    function isQueueManagerRole() {
+      const role = window.__CURRENT_USER && window.__CURRENT_USER.role;
+      return role === 'super_admin' || role === 'hr_coordinator';
+    }
+
+    function updatePhonePreview(useStoredCandidateBody = false) {
       const rawTpl = document.getElementById('tpl-editor').value;
       const cand = previewCandidate || queueList[0] || null;
       if (cand) {
@@ -369,8 +375,8 @@
         document.getElementById('pv-avatar').textContent = String(cand.recipient_name || 'م').trim().charAt(0);
         document.getElementById('pv-phone').textContent = '+' + cand.recipient_phone;
       }
-      if (previewCandidate && previewCandidate.template_key === 'portal_recovery') {
-        document.getElementById('pv-bubble').textContent = previewCandidate.message_body;
+      if (cand && (cand.template_key === 'portal_recovery' || useStoredCandidateBody)) {
+        document.getElementById('pv-bubble').textContent = cand.message_body;
         return;
       }
       document.getElementById('pv-bubble').textContent = applyTemplateClient(rawTpl, cand);
@@ -398,15 +404,16 @@
       const actEl = document.getElementById('banner-actions');
       const eyebrowEl = document.getElementById('banner-eyebrow');
 
-      if (!interviews.length) {
+      const activeUpcoming = interviews.filter((i) => !['cancelled', 'completed', 'no_show'].includes(i.booking_status));
+      if (!activeUpcoming.length) {
         eyebrowEl.textContent = 'جدول المقابلات';
-        titleEl.textContent = 'لا توجد مقابلات مجدولة حالياً';
+        titleEl.textContent = 'لا توجد مقابلات نشطة قادمة حالياً';
         subEl.textContent = 'يمكنك جدولة أي مرشح مؤهل مباشرة من صفحة ترتيب المرشحين أو الجدولة الذكية.';
-        actEl.innerHTML = `<a href="Ranking.dc.html" class="btn btn-saffron">فتح ترتيب المرشحين وتحديد موعد ←</a>`;
+        actEl.innerHTML = `<a href="Ranking.dc.html" class="btn btn-saffron">فتح ترتيب المرشحين ←</a>`;
         return;
       }
 
-      const next = interviews[0];
+      const next = activeUpcoming[0];
       const isInPerson = next.interview_mode === 'in_person';
       const visitUrl = next.visit_url || `${window.location.origin}/Visit.dc.html`;
       eyebrowEl.textContent = `أقرب مقابلة قادمة · ${SmartHR.formatDate(next.scheduled_date)} الساعة ${String(next.start_time).slice(0,5)}`;
@@ -432,9 +439,9 @@
       actEl.innerHTML = `
         <div style="display:flex;gap:10px;flex-wrap:wrap;">
           <a href="${VisitUrlSafe(visitUrl)}" target="_blank" class="btn btn-outline" style="color:#FFF;border-color:rgba(255,255,255,0.25);">معاينة بطاقة المرشح ↗</a>
-          <a href="${waHref}" target="_blank" rel="noopener" class="btn btn-saffron" style="font-weight:700;">
+          ${isQueueManagerRole() ? `<a href="${waHref}" target="_blank" rel="noopener" class="btn btn-saffron" style="font-weight:700;">
             📲 فتح واتساب وإرسال ${isInPerson ? 'بطاقة الموقع' : 'رابط القاعة'}
-          </a>
+          </a>` : ''}
         </div>
       `;
     }
@@ -522,9 +529,26 @@
         }
 
         const isCancelledMsg = q.queue_status === 'cancelled';
+        const isQueuedMsg = q.queue_status === 'queued';
+        const canManageQueue = isQueueManagerRole();
+        const isRescheduleNotice = q.template_key === 'reschedule_notice';
+
+        let actionCellHtml = '<span style="font-size:12px;color:var(--text-muted);">متابعة للّجنة فقط</span>';
+        if (isCancelledMsg) {
+          actionCellHtml = '<span style="font-size:12px;color:var(--text-muted);">تم استبدالها بموعد أو رمز محدّث</span>';
+        } else if (canManageQueue && isQueuedMsg) {
+          actionCellHtml = `<div style="display:flex;gap:6px;flex-wrap:wrap;">
+            <button type="button" class="wa-btn-inline" data-msg-id="${q.id}" data-tpl-key="${SmartHR.escapeHtml(q.template_key || '')}" onclick="triggerRowSend(${q.id}, this)">
+              💬 فتح مسودة
+            </button>
+            <button type="button" class="btn btn-olive btn-sm" data-confirm-id="${q.id}" onclick="confirmRowSent(${q.id})">✓ تأكيد الإرسال</button>
+          </div>`;
+        } else if (canManageQueue && q.wa_link) {
+          actionCellHtml = `<a href="${SmartHR.escapeHtml(q.wa_link)}" target="_blank" rel="noopener" class="btn btn-outline btn-sm">عرض في واتساب ↗</a>`;
+        }
 
         return `
-          <tr style="cursor:pointer;${isCancelledMsg ? 'opacity:0.62;' : ''}" onclick="selectCandidateForPreview(${q.id})">
+          <tr data-row-msg-id="${q.id}" data-row-tpl="${SmartHR.escapeHtml(q.template_key || '')}" data-row-status="${SmartHR.escapeHtml(q.queue_status)}" style="cursor:pointer;${isCancelledMsg ? 'opacity:0.62;' : ''}" onclick="selectCandidateForPreview(${q.id})">
             <td>
               <div style="font-weight:700;">${SmartHR.escapeHtml(q.recipient_name)}</div>
               <div style="font-size:11.5px;color:var(--text-muted);">${SmartHR.escapeHtml(q.job_title || '')} ${q.job_code ? `(${SmartHR.escapeHtml(q.job_code)})` : ''}</div>
@@ -534,10 +558,11 @@
               ${
                 q.template_key === 'portal_recovery'
                   ? '<span class="badge badge-saffron">🔑 استعادة دخول (نص محمي)</span>'
-                  : `<div style="margin-bottom:4px;">
+                  : `<div style="margin-bottom:4px;display:flex;gap:4px;flex-wrap:wrap;">
                       ${isInPerson ? '<span class="badge badge-terracotta">🏢 حضوري</span>' : '<span class="badge badge-charcoal">🎥 عن بُعد</span>'}
+                      ${isRescheduleNotice ? '<span class="badge badge-saffron">🔄 تحديث موعد</span>' : ''}
                     </div>
-                    <select class="form-select row-tpl-sel" data-id="${q.id}" style="padding:4px 8px;font-size:11.5px;min-width:150px;" ${isCancelledMsg ? 'disabled' : ''}>
+                    <select class="form-select row-tpl-sel" data-id="${q.id}" style="padding:4px 8px;font-size:11.5px;min-width:150px;" ${(!canManageQueue || !isQueuedMsg) ? 'disabled' : ''}>
                       ${
                         TEMPLATE_STAGES.some((s) => s.key === q.template_key)
                           ? ''
@@ -554,20 +579,7 @@
               ${!isCancelledMsg && q.visit_url && q.visit_url.includes('vt=') ? `<a href="${SmartHR.escapeHtml(q.visit_url)}" target="_blank" rel="noopener" class="btn btn-outline btn-sm">معاينة البطاقة ↗</a>` : '—'}
             </td>
             <td onclick="event.stopPropagation()">
-              ${
-                isCancelledMsg
-                  ? '<span style="font-size:12px;color:var(--text-muted);">تم استبدالها بموعد محدّث</span>'
-                  : `<div style="display:flex;gap:6px;flex-wrap:wrap;">
-                      <button type="button" class="wa-btn-inline" onclick="triggerRowSend(${q.id}, this)">
-                        💬 فتح مسودة
-                      </button>
-                      ${
-                        q.queue_status === 'queued'
-                          ? `<button type="button" class="btn btn-olive btn-sm" onclick="confirmRowSent(${q.id})">✓ تأكيد الإرسال</button>`
-                          : ''
-                      }
-                    </div>`
-              }
+              ${actionCellHtml}
             </td>
             <td>${statusHtml}</td>
           </tr>
@@ -577,7 +589,18 @@
 
     window.selectCandidateForPreview = function(id) {
       previewCandidate = queueList.find((x) => x.id === id) || null;
-      updatePhonePreview();
+      if (previewCandidate) {
+        const matchedIdx = TEMPLATE_STAGES.findIndex((s) => s.key === previewCandidate.template_key);
+        if (matchedIdx >= 0) {
+          activeStageIdx = matchedIdx;
+          const stage = TEMPLATE_STAGES[activeStageIdx];
+          document.getElementById('editor-title').textContent = `قالب: ${stage.title}`;
+          document.getElementById('editor-when').textContent = stage.when;
+          document.getElementById('tpl-editor').value = templatesState[stage.key] || '';
+          renderFlowCards();
+        }
+      }
+      updatePhonePreview(true);
     };
 
     window.triggerRowSend = function(id, btnEl) {
@@ -591,6 +614,14 @@
     };
 
     async function loadAllData() {
+      await SmartHR.getCurrentUser().catch(() => null);
+      const canManageQueue = isQueueManagerRole();
+      document.getElementById('save-tpl-btn').style.display = canManageQueue ? '' : 'none';
+      document.getElementById('open-next-wa-btn').style.display = canManageQueue ? '' : 'none';
+      document.getElementById('tpl-editor').readOnly = !canManageQueue;
+      const hqSubmitBtn = document.querySelector('#hq-location-form button[type="submit"]');
+      if (hqSubmitBtn) hqSubmitBtn.style.display = canManageQueue ? '' : 'none';
+
       const filterVal = document.getElementById('queue-filter').value;
       const [waData, intData] = await Promise.all([
         SmartHR.apiFetch(`/api/wa-messages?status=${encodeURIComponent(filterVal)}`),
