@@ -2,7 +2,7 @@ name: JPF Smart HR — Production CI
 
 on:
   push:
-    branches: [ "main" ]
+    branches: [ "main", "release/**" ]
   pull_request:
     branches: [ "main" ]
 
@@ -53,9 +53,13 @@ jobs:
           node server.js &
           SERVER_PID=$!
           sleep 3
-          # 1. فحص الصحة وبوابة المتقدمين العامة
+          # 1. فحص الصحة وبوابة المتقدمين العامة وصفحات v2.1
           curl -fsS http://127.0.0.1:3000/api/health
           curl -fsS http://127.0.0.1:3000/index.html >/dev/null
+          curl -fsS http://127.0.0.1:3000/Apply.dc.html >/dev/null
+          curl -fsS http://127.0.0.1:3000/Assessment.dc.html >/dev/null
+          curl -fsS http://127.0.0.1:3000/Visit.dc.html >/dev/null
+          curl -fsS http://127.0.0.1:3000/img/hq-entrance.svg >/dev/null
           curl -fsS http://127.0.0.1:3000/Login.dc.html >/dev/null
 
           # 2. التأكد من منع الزوار غير المسجلين من دخول صفحات اللجنة (302 Redirect) و API (401)
@@ -69,8 +73,12 @@ jobs:
             -H "Content-Type: application/json" \
             -d '{"username":"admin","password":"CI-TEST-ADMIN-2026"}'
           curl -fsS -b /tmp/cookies.txt http://127.0.0.1:3000/Dashboard.dc.html >/dev/null
+          curl -fsS -b /tmp/cookies.txt http://127.0.0.1:3000/Ranking.dc.html >/dev/null
+          curl -fsS -b /tmp/cookies.txt http://127.0.0.1:3000/Interviews.dc.html >/dev/null
           curl -fsS -b /tmp/cookies.txt http://127.0.0.1:3000/Users.dc.html >/dev/null
           curl -fsS -b /tmp/cookies.txt http://127.0.0.1:3000/api/stats >/dev/null
+          curl -fsS -b /tmp/cookies.txt "http://127.0.0.1:3000/api/ranking?passed_only=1" >/dev/null
+          curl -fsS -b /tmp/cookies.txt http://127.0.0.1:3000/api/wa-messages >/dev/null
           curl -fsS -b /tmp/cookies.txt http://127.0.0.1:3000/api/ollama/models >/dev/null
           rm -f /tmp/cookies.txt
           kill $SERVER_PID

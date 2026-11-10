@@ -13,8 +13,8 @@ COPY scripts ./scripts
 COPY public ./public
 COPY server.js ./
 
-# إنشاء مجلد المرفقات ومنح الصلاحيات لمستخدم غير جذري للأمان
-RUN mkdir -p /app/uploads/samples && chown -R node:node /app
+# إنشاء مجلد المرفقات (الخاص للمرشحين والعام لصورة مدخل المقر) ومنح الصلاحيات لمستخدم غير جذري للأمان
+RUN mkdir -p /app/uploads/samples /app/uploads/public && chown -R node:node /app
 
 USER node
 
