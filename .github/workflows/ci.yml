@@ -94,14 +94,11 @@ jobs:
           kill $SERVER_PID
 
       - name: Run Isolated v2.1 Security, 139-Column Parity & Backup/Restore Suite (verify:v21)
-        env:
-          ALLOW_ISOLATED_DRILL: "1"
-          DRILL_PG_ADMIN_URL: postgresql://postgres:postgres_ci_password@127.0.0.1:5432/postgres
         run: |
           # التأكد أولاً من أن حواجز الأمان ترفض التشغيل بدون المتغير الصريح أو في وضع الإنتاج
-          if node scripts/verify-v21-drills.js 2>/dev/null; then exit 1; fi
-          if NODE_ENV=production node scripts/verify-v21-drills.js 2>/dev/null; then exit 1; fi
-          npm run verify:v21
+          if ALLOW_ISOLATED_DRILL=0 node scripts/verify-v21-drills.js 2>/dev/null; then exit 1; fi
+          if ALLOW_ISOLATED_DRILL=1 NODE_ENV=production DRILL_PG_ADMIN_URL="postgresql://postgres:postgres_ci_password@127.0.0.1:5432/postgres" node scripts/verify-v21-drills.js 2>/dev/null; then exit 1; fi
+          ALLOW_ISOLATED_DRILL=1 DRILL_PG_ADMIN_URL="postgresql://postgres:postgres_ci_password@127.0.0.1:5432/postgres" npm run verify:v21
 
   container-upgrade-rollback-drill:
     name: Docker Compose Upgrade, Override, Uploads Backup & Rollback Drill

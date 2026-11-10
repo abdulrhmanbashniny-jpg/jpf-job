@@ -32,12 +32,19 @@ SIM_BAK="${SIM_ROOT}/backups"
 SIM_PORT=13080
 
 cleanup() {
+  local ec=$?
+  if [ "$ec" -ne 0 ] && [ -d "${SIM_APP}" ] && [ -f "${SIM_APP}/docker-compose.yml" ]; then
+    echo "=== [DIAGNOSTIC CONTAINER LOGS ON EXIT $ec] ===" >&2
+    docker compose -p "${SIM_ID}" --env-file "${SIM_APP}/.env" -f "${SIM_APP}/docker-compose.yml" -f "${SIM_APP}/docker-compose.override.yml" ps >&2 || true
+    docker compose -p "${SIM_ID}" --env-file "${SIM_APP}/.env" -f "${SIM_APP}/docker-compose.yml" -f "${SIM_APP}/docker-compose.override.yml" logs --tail=80 >&2 || true
+  fi
   if [ -d "${SIM_APP}" ] && [ -f "${SIM_APP}/docker-compose.yml" ]; then
-    docker compose -p "${SIM_ID}" -f "${SIM_APP}/docker-compose.yml" -f "${SIM_APP}/docker-compose.override.yml" down -v --remove-orphans >/dev/null 2>&1 || true
+    docker compose -p "${SIM_ID}" --env-file "${SIM_APP}/.env" -f "${SIM_APP}/docker-compose.yml" -f "${SIM_APP}/docker-compose.override.yml" down -v --remove-orphans >/dev/null 2>&1 || true
   fi
   docker network rm "${SIM_ID}_ext_ai_net" >/dev/null 2>&1 || true
   rm -rf "${SIM_ROOT}"
 }
+trap 'echo "[DRILL_ERROR] Failed at line $LINENO" >&2' ERR
 trap cleanup EXIT
 
 mkdir -p "${SIM_APP}" "${SIM_BAK}"
@@ -83,13 +90,19 @@ DC=(docker compose -p "${SIM_ID}" --env-file "${SIM_APP}/.env" -f "${SIM_APP}/do
 "${DC[@]}" up -d --build
 
 # انتظار جاهزية خدمة التطبيق على المنفذ المعزول
-for i in $(seq 1 40); do
-  if curl -fsS "http://127.0.0.1:${SIM_PORT}/api/health" >/dev/null 2>&1; then
+HEALTH_OK=0
+for i in $(seq 1 45); do
+  if curl -fsS "http://127.0.0.1:${SIM_PORT}/api/health" 2>/dev/null | grep '"status":"ok"' >/dev/null; then
+    HEALTH_OK=1
     break
   fi
   sleep 2
 done
-curl -fsS "http://127.0.0.1:${SIM_PORT}/api/health" | grep -q '"status":"ok"'
+if [ "${HEALTH_OK}" != "1" ]; then
+  echo "[ERR] v2.0 container failed healthcheck; container logs:" >&2
+  "${DC[@]}" logs || true
+  exit 1
+fi
 
 # رفع طلب وسيرة ذاتية حقيقية في v2.0 داخل حجم uploads_data وتخصيص قوالب واتساب
 printf '%%PDF-1.4 Pre-upgrade Production CV Inside Named Volume\n' > "${SIM_ROOT}/v20_cand.pdf"
@@ -116,11 +129,12 @@ cp "${SIM_APP}/services/aiEvaluator.js" "${SIM_BAK}/aiEvaluator_pre_v21.js"
 cp "${SIM_APP}/docker-compose.override.yml" "${SIM_BAK}/docker-compose.override.pre_v21.yml"
 
 "${DC[@]}" exec -T db sh -c 'pg_dump -U "$POSTGRES_USER" -d "$POSTGRES_DB" -Fc' > "${SIM_BAK}/db_pre_v21.dump"
-"${DC[@]}" exec -T db pg_restore --list < "${SIM_BAK}/db_pre_v21.dump" | head -n 15 >/dev/null
+TOC_LINES=$("${DC[@]}" exec -T db pg_restore --list < "${SIM_BAK}/db_pre_v21.dump" | wc -l | tr -d ' \r\n')
+test "${TOC_LINES}" -gt 10
 
 "${DC[@]}" exec -T app sh -c 'tar -czf - -C /app/uploads .' > "${SIM_BAK}/uploads_pre_v21.tar.gz"
 tar -tzf "${SIM_BAK}/uploads_pre_v21.tar.gz" >/dev/null
-echo "[OK] Pre-upgrade backups verified (db_pre_v21.dump + uploads_pre_v21.tar.gz + hotfix + override)"
+echo "[OK] Pre-upgrade backups verified (db_pre_v21.dump [${TOC_LINES} TOC items] + uploads_pre_v21.tar.gz + hotfix + override)"
 
 echo "=== [CONTAINER DRILL 3] UPGRADING CONTAINER TO v2.1 (${HEAD_SHA:0:7}) ==="
 git -C "${REPO_ROOT}" archive "${HEAD_SHA}" | tar -x -C "${SIM_APP}"
@@ -129,12 +143,16 @@ test -f "${SIM_APP}/.env"
 
 T_UP0=$(date +%s)
 "${DC[@]}" up -d --build app
-for i in $(seq 1 40); do
-  if curl -fsS "http://127.0.0.1:${SIM_PORT}/api/health" >/dev/null 2>&1; then
+UP_OK=0
+for i in $(seq 1 45); do
+  if curl -fsS "http://127.0.0.1:${SIM_PORT}/Visit.dc.html" >/dev/null 2>&1 && \
+     curl -fsS "http://127.0.0.1:${SIM_PORT}/api/health" 2>/dev/null | grep '"status":"ok"' >/dev/null; then
+    UP_OK=1
     break
   fi
   sleep 1
 done
+test "${UP_OK}" = "1"
 T_UP1=$(date +%s)
 echo "[OK] v2.1 container rebuilt and healthy in $((T_UP1 - T_UP0))s"
 
@@ -177,16 +195,21 @@ echo "=== [CONTAINER DRILL 5] FULL CONTAINER ROLLBACK TO v2.0 (70be659 + HOTFIX 
 git -C "${REPO_ROOT}" archive 70be659 | tar -x -C "${SIM_APP}"
 cp "${SIM_BAK}/aiEvaluator_pre_v21.js" "${SIM_APP}/services/aiEvaluator.js"
 test -f "${SIM_APP}/docker-compose.override.yml"
-grep -q "PROD_HOTFIX_OLLAMA_LOCAL_KEEP" "${SIM_APP}/services/aiEvaluator.js"
+grep "PROD_HOTFIX_OLLAMA_LOCAL_KEEP" "${SIM_APP}/services/aiEvaluator.js" >/dev/null
 
 T_RB0=$(date +%s)
 "${DC[@]}" up -d --build app
-for i in $(seq 1 40); do
-  if curl -fsS "http://127.0.0.1:${SIM_PORT}/api/health" >/dev/null 2>&1; then
+RB_OK=0
+for i in $(seq 1 45); do
+  VISIT_RB_CODE=$(curl -s -o /dev/null -w "%{http_code}" "http://127.0.0.1:${SIM_PORT}/Visit.dc.html" || true)
+  if [ "${VISIT_RB_CODE}" = "404" ] && \
+     curl -fsS "http://127.0.0.1:${SIM_PORT}/api/health" 2>/dev/null | grep '"status":"ok"' >/dev/null; then
+    RB_OK=1
     break
   fi
   sleep 1
 done
+test "${RB_OK}" = "1"
 T_RB1=$(date +%s)
 echo "[OK] Container rolled back to v2.0 + hotfix in $((T_RB1 - T_RB0))s"
 
