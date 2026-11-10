@@ -58,8 +58,15 @@
 
     async function loadPassResult() {
       const params = new URLSearchParams(window.location.search);
-      const ref = params.get('ref') || 'APP-2026-1001';
+      const ref = params.get('ref');
       const mount = document.getElementById('result-mount');
+
+      if (!ref) {
+        SmartHR.renderCandidateVerifyCard(mount, '', (verifiedRef) => {
+          window.location.href = `ResultPass.dc.html?ref=${encodeURIComponent(verifiedRef)}`;
+        });
+        return;
+      }
 
       try {
         const res = await SmartHR.apiFetch(`/api/applications/${encodeURIComponent(ref)}`);
@@ -142,7 +149,7 @@
                   ? `
                     <p style="font-size:13px;color:var(--text-secondary);margin-bottom:10px;">تم تحديد موعد مقابلتك الشخصية مع اللجنة:</p>
                     <div style="font-size:14px;font-weight:700;margin-bottom:6px;">التاريخ: ${SmartHR.formatDate(interview.scheduled_date)} — الساعة: ${SmartHR.formatTime(interview.start_time)}</div>
-                    <a href="${SmartHR.escapeHtml(interview.meeting_url)}" target="_blank" rel="noopener" class="btn btn-olive btn-sm">فتح رابط قاعة Google Meet ↗</a>
+                    <a href="${SmartHR.escapeHtml(interview.visit_url || 'index.html')}" target="_blank" rel="noopener" class="btn btn-olive btn-sm">فتح بطاقة المقابلة وتأكيد الحضور ↗</a>
                   `
                   : `
                     <p style="font-size:13px;color:var(--text-secondary);line-height:1.7;">
@@ -167,6 +174,10 @@
           }, 80);
         });
       } catch (err) {
+        if (err.code === 'CANDIDATE_VERIFY_REQUIRED' || err.status === 403) {
+          SmartHR.renderCandidateVerifyCard(mount, ref, () => loadPassResult(), err.data?.hr_whatsapp_phone);
+          return;
+        }
         mount.innerHTML = `<div style="color:var(--terracotta);text-align:center;">${SmartHR.escapeHtml(err.message)}</div>`;
       }
     }

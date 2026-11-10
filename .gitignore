@@ -15,10 +15,12 @@ npm-debug.log*
 .wget-hsts
 .lesshst
 
-# Environment Variables & Secrets
+# Environment Variables, Local Overrides & Secrets
 .env
 .env.local
 .env.production
+docker-compose.override.yml
+backups/
 
 # Uploaded Candidate Files (keep directory structure & samples only)
 uploads/*

@@ -100,6 +100,27 @@
       background: var(--terracotta);
       color: #FFF;
     }
+    /* شاشة العداد التنازلي 60 ثانية لتحليل الذكاء الاصطناعي */
+    .analysis-stage-card {
+      max-width: 720px;
+      margin: 20px auto;
+      background: #FFFFFF;
+      border-radius: 24px;
+      border: 1.5px solid var(--border-color);
+      border-top: 8px solid var(--saffron);
+      padding: 40px 34px;
+      text-align: center;
+      box-shadow: var(--shadow-lg);
+    }
+    .countdown-circle-wrap {
+      width: 156px;
+      height: 156px;
+      margin: 0 auto 20px;
+      position: relative;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
     @media (max-width: 960px) {
       .assessment-layout { grid-template-columns: 1fr; }
     }
@@ -115,12 +136,12 @@
         <span>البيانات ورفع السيرة</span>
       </div>
       <span style="color:var(--olive);">━━</span>
-      <div class="step-item active">
+      <div class="step-item active" id="step-2-pill">
         <span class="step-num">2</span>
         <span>اختبار الجدارة (10 أسئلة)</span>
       </div>
       <span style="color:var(--border-strong);">━━</span>
-      <div class="step-item">
+      <div class="step-item" id="step-3-pill">
         <span class="step-num">3</span>
         <span>التقرير والنتيجة الفورية</span>
       </div>
@@ -139,11 +160,11 @@
     SmartHR.renderPortalFooter();
 
     let appData = null;
+    let hrWhatsappPhone = '966550000000';
     let questions = [];
     let currentIdx = 0;
-    const answersState = {}; // index -> { answer_value, attachment_path, attachment_name, time_taken_seconds }
+    const answersState = {};
 
-    // متتبعات النزاهة والزمن
     let remainingSeconds = 1200;
     let totalSpentSeconds = 0;
     let tabSwitches = 0;
@@ -182,7 +203,24 @@
 
     function renderShell() {
       const root = document.getElementById('assessment-root');
+      let savedKey = '';
+      try {
+        savedKey = sessionStorage.getItem('jpf_access_key_' + appData.reference_no) || '';
+      } catch (_e) {}
+      const keyBannerHtml = savedKey
+        ? `
+          <div class="card-subtle" style="margin-bottom:16px;padding:12px 16px;border:1.5px solid var(--olive);display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px;">
+            <div style="font-size:13px;">
+              <strong>🔑 مفتاح الدخول السري الخاص بطلبك (احتفظ به لمتابعة الطلب من أي جهاز آخر):</strong>
+              <span class="mono" dir="ltr" style="margin-right:8px;font-weight:800;color:var(--olive);">${SmartHR.escapeHtml(savedKey)}</span>
+            </div>
+            <button type="button" class="btn btn-outline btn-sm" onclick="navigator.clipboard.writeText('${SmartHR.escapeHtml(savedKey)}');SmartHR.showToast('تم نسخ مفتاح الدخول السري','success');">نسخ المفتاح</button>
+          </div>
+        `
+        : '';
+
       root.innerHTML = `
+        ${keyBannerHtml}
         <div class="assessment-layout">
           <aside>
             <div class="timer-panel" id="timer-panel">
@@ -333,7 +371,6 @@
         </div>
       `;
 
-      // ربط الأحداث التفاعلية حسب نوع السؤال
       if (q.type === 'mcq') {
         stage.querySelectorAll('.mcq-option').forEach((el) => {
           el.addEventListener('click', () => {
@@ -391,6 +428,138 @@
       if (finalBtn) finalBtn.addEventListener('click', () => confirmAndSubmit(false));
     }
 
+    /**
+     * شاشة العداد التنازلي 60 ثانية لتحليل الذكاء الاصطناعي مع تحويل تلقائي فوري أو تصعيد واتساب
+     */
+    function launch60SecAnalysisScreen(initialSubmitRes) {
+      const root = document.getElementById('assessment-root');
+      const refNo = initialSubmitRes.reference_no || appData.reference_no;
+      const candName = initialSubmitRes.full_name || appData.full_name;
+      const jobTitle = initialSubmitRes.job_title || appData.job_title;
+      const waPhone = String(initialSubmitRes.hr_whatsapp_phone || hrWhatsappPhone || '966550000000').replace(/\D/g, '');
+      let targetRedirect = initialSubmitRes.redirect_url;
+
+      let countdown = 60;
+      const radius = 64;
+      const circumference = 2 * Math.PI * radius;
+
+      root.innerHTML = `
+        <div class="analysis-stage-card" id="analysis-card">
+          <span class="badge badge-olive" style="margin-bottom:12px;font-size:13px;">✓ تم استلام وحفظ إجاباتك بنجاح</span>
+          <h1 style="font-size:25px;margin-bottom:8px;">جاري تحليل إجاباتك وإعداد تقرير الجدارة الفوري</h1>
+          <p style="font-size:14px;color:var(--text-secondary);max-width:540px;margin:0 auto 24px;">
+            يقوم محرك الذكاء الاصطناعي الآن بتقييم الإجابات بنظام الفحص الأعمى. سيتم تحويلك <strong>تلقائياً وفوراً</strong> إلى صفحة النتيجة بمجرد اكتمال التحليل حتى قبل انتهاء العداد!
+          </p>
+
+          <div class="countdown-circle-wrap">
+            <svg width="156" height="156" style="transform:rotate(-90deg);">
+              <circle cx="78" cy="78" r="${radius}" fill="none" stroke="#EFECE4" stroke-width="11"></circle>
+              <circle id="cd-ring" cx="78" cy="78" r="${radius}" fill="none" stroke="#E0A21B" stroke-width="11"
+                stroke-linecap="round" stroke-dasharray="${circumference}" stroke-dashoffset="0"
+                style="transition:stroke-dashoffset 0.95s linear;"></circle>
+            </svg>
+            <div style="position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;">
+              <span class="mono" id="cd-seconds" style="font-size:36px;font-weight:800;color:var(--charcoal);">60</span>
+              <span style="font-size:11px;color:var(--text-muted);font-weight:700;">ثانية</span>
+            </div>
+          </div>
+
+          <div class="card-subtle" style="max-width:480px;margin:0 auto;text-align:right;font-size:13px;">
+            <div style="display:flex;justify-content:space-between;margin-bottom:6px;">
+              <span>المتقدم:</span>
+              <strong>${SmartHR.escapeHtml(candName)}</strong>
+            </div>
+            <div style="display:flex;justify-content:space-between;margin-bottom:6px;">
+              <span>رقم الطلب المرجعي:</span>
+              <strong class="mono" style="color:var(--terracotta);">${SmartHR.escapeHtml(refNo)}</strong>
+            </div>
+            <div style="display:flex;justify-content:space-between;">
+              <span>حالة المحرك الذكي:</span>
+              <span id="ai-live-step" style="color:var(--olive);font-weight:700;">⏳ قيد التحليل الدلالي...</span>
+            </div>
+          </div>
+
+          <div id="timeout-fallback-area" style="display:none;margin-top:24px;padding-top:22px;border-top:1.5px dashed var(--border-strong);">
+            <div style="background:var(--saffron-soft,#FBF3DE);color:#5A4410;padding:14px 18px;border-radius:12px;font-size:13.5px;margin-bottom:16px;line-height:1.7;">
+              تم حفظ إجاباتك ودرجتك الأولية بأمان! نظراً لضغط التحليل الحالي، اضغط الزر أدناه ليتم <strong>نسخ رقم طلبك واسمك تلقائياً</strong> وفتح محادثة واتساب لطلب التقييم الفوري:
+            </div>
+            <div style="display:flex;flex-direction:column;gap:10px;max-width:480px;margin:0 auto;">
+              <button type="button" id="wa-request-eval-btn" class="btn btn-olive btn-lg" style="width:100%;font-size:15px;">
+                📲 اضغط هنا: نسخ رقم الطلب والاسم وطلب التقييم عبر واتساب
+              </button>
+              <a href="${SmartHR.escapeHtml(targetRedirect)}" class="btn btn-outline" style="width:100%;">
+                أو الانتقال لعرض النتيجة المحفوظة الآن ←
+              </a>
+            </div>
+          </div>
+        </div>
+      `;
+
+      // إذا كانت النتيجة جاهزة فوراً (مثلاً محرك Smart Rubric)، يتم التحويل السريع خلال 1.2 ثانية
+      if (initialSubmitRes.ready) {
+        document.getElementById('ai-live-step').textContent = '✓ اكتمل التحليل! جاري تحويلك للنتيجة...';
+        setTimeout(() => { window.location.replace(targetRedirect); }, 1100);
+        return;
+      }
+
+      let redirected = false;
+
+      // عداد تنازلي كل ثانية (60 -> 0)
+      const cdInterval = setInterval(() => {
+        if (redirected) return;
+        countdown = Math.max(0, countdown - 1);
+        const secEl = document.getElementById('cd-seconds');
+        const ringEl = document.getElementById('cd-ring');
+        if (secEl) secEl.textContent = String(countdown).padStart(2, '0');
+        if (ringEl) {
+          const offset = circumference - (countdown / 60) * circumference;
+          ringEl.style.strokeDashoffset = String(offset);
+        }
+
+        if (countdown === 0) {
+          clearInterval(cdInterval);
+          const fb = document.getElementById('timeout-fallback-area');
+          const stepEl = document.getElementById('ai-live-step');
+          if (stepEl) stepEl.textContent = 'تم حفظ الدرجة — بانتظار المراجعة أو طلب التقييم';
+          if (fb) fb.style.display = 'block';
+        }
+      }, 1000);
+
+      // استطلاع حالة التحليل كل ثانيتين للتحويل الأوتوماتيكي فور انتهاء الموديل حتى قبل انتهاء الـ 60 ثانية
+      const pollInterval = setInterval(async () => {
+        if (redirected) return;
+        try {
+          const st = await SmartHR.apiFetch(`/api/assessments/status/${encodeURIComponent(refNo)}`);
+          if (st.redirect_url) targetRedirect = st.redirect_url;
+          if (st.ready) {
+            redirected = true;
+            clearInterval(cdInterval);
+            clearInterval(pollInterval);
+            const stepEl = document.getElementById('ai-live-step');
+            if (stepEl) stepEl.textContent = '✓ اكتمل التحليل! جاري عرض نتيجتك الفورية...';
+            setTimeout(() => { window.location.replace(targetRedirect); }, 500);
+          }
+        } catch (_e) {}
+      }, 2000);
+
+      // زر نسخ الاسم ورقم الطلب وفتح واتساب لطلب التقييم
+      setTimeout(() => {
+        const waBtn = document.getElementById('wa-request-eval-btn');
+        if (waBtn) {
+          waBtn.addEventListener('click', async () => {
+            const copyText = `الاسم: ${candName} | رقم الطلب: ${refNo} | الوظيفة: ${jobTitle}`;
+            try {
+              await navigator.clipboard.writeText(copyText);
+              SmartHR.showToast('✓ تم نسخ اسمك ورقم طلبك تلقائياً!', 'success');
+            } catch (_e) {}
+            const waMsg = `السلام عليكم ورحمة الله،\nأتممت اختبار الجدارة على المنصة وأرغب في استلام نتيجة التقييم الخاصة بطلبي:\n👤 الاسم: ${candName}\n🔖 رقم الطلب: ${refNo}\n💼 الوظيفة: ${jobTitle}`;
+            const waUrl = `https://wa.me/${waPhone}?text=${encodeURIComponent(waMsg)}`;
+            window.open(waUrl, '_blank', 'noopener');
+          });
+        }
+      }, 100);
+    }
+
     async function confirmAndSubmit(autoTimeout = false) {
       if (isSubmitting) return;
       if (!autoTimeout) {
@@ -404,6 +573,12 @@
       isSubmitting = true;
       clearInterval(timerHandle);
 
+      // تعطيل الأزرار فوراً لمنع الإحساس بالتعليق
+      const finalBtn = document.getElementById('submit-final-btn');
+      const sideBtn = document.getElementById('finish-exam-sidebar-btn');
+      if (finalBtn) { finalBtn.disabled = true; finalBtn.textContent = 'جاري حفظ الإجابات وبدء العداد الذكي...'; }
+      if (sideBtn) { sideBtn.disabled = true; }
+
       const payloadAnswers = questions.map((q) => ({
         question_index: q.index,
         answer_value: answersState[q.index]?.answer_value ?? '',
@@ -412,10 +587,8 @@
       }));
 
       try {
-        SmartHR.showToast('جاري تصحيح الاختبار وإعداد التقرير الذكي...', 'info');
         const res = await SmartHR.apiFetch('/api/assessments/submit', {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             reference_no: appData.reference_no,
             answers: payloadAnswers,
@@ -427,9 +600,11 @@
           })
         });
 
-        window.location.href = res.redirect_url;
+        launch60SecAnalysisScreen(res);
       } catch (err) {
         isSubmitting = false;
+        if (finalBtn) { finalBtn.disabled = false; finalBtn.textContent = 'إرسال الإجابات وإظهار النتيجة الفورية ←'; }
+        if (sideBtn) { sideBtn.disabled = false; }
         SmartHR.showToast(err.message, 'error');
       }
     }
@@ -457,7 +632,7 @@
         if (document.hidden && !isSubmitting && appData) {
           tabSwitches++;
           updateIntegrityUI();
-          SmartHR.showToast(`تنبيه نزاهة: تم رصد مغادرة شاشة الاختبار (${tabSwitches}). يؤثر ذلك على مؤشر النزاهة.`, 'error');
+          SmartHR.showToast(`تنبيه نزاهة: تم رصد مغادرة شاشة الاختبار (${tabSwitches}).`, 'error');
         }
       });
 
@@ -465,7 +640,6 @@
         if (!isSubmitting && appData) {
           pasteAttempts++;
           updateIntegrityUI();
-          SmartHR.showToast('ملاحظة نزاهة: تم تسجيل عملية لصق نص خارجي في تقرير الجلسة.', 'info');
         }
       });
     }
@@ -476,30 +650,32 @@
       const root = document.getElementById('assessment-root');
 
       if (!refOrId) {
-        root.innerHTML = `
-          <div class="card" style="max-width:640px;margin:20px auto;text-align:center;padding:38px;">
-            <div style="font-size:38px;margin-bottom:10px;">🧭</div>
-            <h2 style="margin-bottom:8px;">بدء جلسة اختبار الجدارة</h2>
-            <p style="color:var(--text-secondary);font-size:14px;margin-bottom:22px;">
-              يرجى إدخال الرقم المرجعي لطلبك المسجل لبدء الاختبار، أو التقديم أولاً عبر نموذج الوظيفة للحصول على رقم طلب فوري.
-            </p>
-            <div style="display:flex;gap:10px;justify-content:center;max-width:420px;margin:0 auto 18px;">
-              <input id="manual-ref" class="form-control mono" placeholder="APP-2026-1001" />
-              <button class="btn btn-primary" onclick="const v=document.getElementById('manual-ref').value.trim(); if(v) location.href='Assessment.dc.html?ref='+encodeURIComponent(v);">دخول</button>
-            </div>
-            <a href="Apply.dc.html?job_id=1" class="btn btn-terracotta">تسجيل طلب جديد وبدء الاختبار فوراً ←</a>
-          </div>
-        `;
+        SmartHR.renderCandidateVerifyCard(root, '', (verifiedRef) => {
+          window.location.href = `Assessment.dc.html?ref=${encodeURIComponent(verifiedRef)}`;
+        });
         return;
       }
 
       try {
         const res = await SmartHR.apiFetch(`/api/applications/${encodeURIComponent(refOrId)}`);
         appData = res.application;
+        if (res.hr_whatsapp_phone) hrWhatsappPhone = res.hr_whatsapp_phone;
 
         if (appData.assessed_at && appData.status !== 'assessment_pending') {
           const passed = Number(appData.assessment_score) >= Number(appData.passing_score || 60);
-          window.location.href = `${passed ? 'ResultPass.dc.html' : 'ResultFail.dc.html'}?ref=${encodeURIComponent(appData.reference_no)}`;
+          const redir = `${passed ? 'ResultPass.dc.html' : 'ResultFail.dc.html'}?ref=${encodeURIComponent(appData.reference_no)}`;
+          if (appData.ai_analysis_status === 'processing') {
+            launch60SecAnalysisScreen({
+              reference_no: appData.reference_no,
+              full_name: appData.full_name,
+              job_title: appData.job_title,
+              ready: false,
+              hr_whatsapp_phone: hrWhatsappPhone,
+              redirect_url: redir
+            });
+            return;
+          }
+          window.location.href = redir;
           return;
         }
 
@@ -508,6 +684,10 @@
         renderShell();
         startMonitoringAndTimer();
       } catch (err) {
+        if (err.code === 'CANDIDATE_VERIFY_REQUIRED' || err.status === 403) {
+          SmartHR.renderCandidateVerifyCard(root, refOrId, () => initAssessment(), err.data?.hr_whatsapp_phone);
+          return;
+        }
         root.innerHTML = `<div class="card" style="color:var(--terracotta);text-align:center;padding:36px;">${SmartHR.escapeHtml(err.message)}</div>`;
       }
     }

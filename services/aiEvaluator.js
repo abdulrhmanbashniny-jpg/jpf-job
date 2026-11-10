@@ -32,7 +32,7 @@ function anonymizeText(text, candidate = {}) {
 }
 
 /**
- * استخراج JSON بأمان حتى من نماذج التفكير مثل deepseek-r1 على Ollama
+ * استخراج JSON بأمان حتى من نماذج التفكير على Ollama
  */
 function safeParseModelJson(rawText) {
   if (!rawText) return null;
@@ -57,16 +57,19 @@ function safeParseModelJson(rawText) {
 }
 
 function resolveOllamaBaseUrl(customUrl) {
-  const raw = customUrl || process.env.OLLAMA_BASE_URL || 'http://host.docker.internal:11434';
+  const raw = customUrl || process.env.OLLAMA_BASE_URL || 'http://ollama-yk6j-ollama-1:11434';
   return String(raw).replace(/\/+$/, '');
 }
 
 /**
- * جلب قائمة الموديلات المثبتة فعلياً على خادم Ollama المحلي
+ * جلب قائمة الموديلات المثبتة فعلياً على خادم Ollama المحلي أو حاوية Docker
  */
 async function listOllamaModels(customBaseUrl) {
   const candidates = [
     resolveOllamaBaseUrl(customBaseUrl),
+    'http://ollama-yk6j-ollama-1:11434',
+    'http://ollama:11434',
+    'http://host.docker.internal:11434',
     'http://127.0.0.1:11434',
     'http://172.17.0.1:11434'
   ];
@@ -74,7 +77,7 @@ async function listOllamaModels(customBaseUrl) {
 
   for (const baseUrl of uniqueUrls) {
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 3500);
+    const timer = setTimeout(() => controller.abort(), 4000);
     try {
       const res = await fetch(`${baseUrl}/api/tags`, { signal: controller.signal });
       clearTimeout(timer);
@@ -97,18 +100,18 @@ async function listOllamaModels(customBaseUrl) {
     reachable: false,
     base_url: resolveOllamaBaseUrl(customBaseUrl),
     models: [],
-    hint: 'تأكد من تشغيل خدمة Ollama وتفعيل OLLAMA_HOST=0.0.0.0:11434 ليتمكن Docker من الوصول إليها.'
+    hint: 'تأكد من تشغيل حاوية أو خدمة Ollama والسماح لجسر Docker بالوصول إلى المنفذ 11434.'
   };
 }
 
 /**
- * فحص استجابة موديل Ollama فعلياً
+ * فحص استجابة موديل Ollama فعلياً (مُحسّن لبيئات CPU و GPU معاً)
  */
 async function testOllamaModel({ baseUrl, model }) {
   const url = resolveOllamaBaseUrl(baseUrl);
   const start = Date.now();
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), 35000);
+  const timer = setTimeout(() => controller.abort(), 120000);
   try {
     const res = await fetch(`${url}/api/chat`, {
       method: 'POST',
@@ -116,12 +119,14 @@ async function testOllamaModel({ baseUrl, model }) {
       body: JSON.stringify({
         model,
         stream: false,
+        think: false,
         format: 'json',
-        options: { temperature: 0.1 },
+        keep_alive: '30m',
+        options: { temperature: 0.1, num_ctx: 2048, num_predict: 200 },
         messages: [
           {
             role: 'user',
-            content: 'أجب بصيغة JSON فقط تحتوي على المفتاح status وقيمته "جاهز للعمل بالعربية" والمفتاح engine وقيمته اسم الموديل.'
+            content: 'أجب بصيغة JSON فقط تحتوي على المفتاح status وقيمته "جاهز للعمل بالعربية" والمفتاح engine وقيمته اسم الموديل. /no_think'
           }
         ]
       }),
@@ -144,7 +149,7 @@ async function testOllamaModel({ baseUrl, model }) {
 }
 
 /**
- * حساب نسبة مطابقة السيرة الذاتية والخبرة لمتطلبات الوظيفة
+ * حساب نسبة مطابقة السيرة الذاتية والمؤهل والتخصص لمتطلبات الوظيفة
  */
 function computeCvMatchScore(job, candidate) {
   let score = 50;
@@ -154,17 +159,19 @@ function computeCvMatchScore(job, candidate) {
   else if (exp >= 1) score += 8;
 
   const qual = String(candidate.qualification || '');
-  if (/ماجستير|دكتوراه|مهندس|بكالوريوس/i.test(qual)) score += 12;
+  const spec = String(candidate.specialization || '');
+  if (/ماجستير|دكتوراه|مهندس|بكالوريوس|عالي/i.test(qual)) score += 12;
   else if (/دبلوم/i.test(qual)) score += 8;
+  else if (/ثانوي/i.test(qual)) score += 4;
 
   if (candidate.cv_filename || candidate.cv_stored_path) score += 8;
   if (candidate.portfolio_url) score += 4;
 
-  const cvText = `${candidate.cv_extracted_text || ''} ${qual}`.toLowerCase();
+  const cvText = `${candidate.cv_extracted_text || ''} ${qual} ${spec}`.toLowerCase();
   const jobContext = `${job.title} ${job.department} ${(job.requirements || []).join(' ')}`.toLowerCase();
   const domainTerms = [
-    'دهان', 'طلاء', 'مبيعات', 'مشاريع', 'جودة', 'مختبر', 'إنتاج', 'مستودع',
-    'كيميائ', 'تغطية', 'استشاري', 'مقاولات', 'saso', 'astm', 'iso', 'erp', 'wms', 'b2b'
+    'دهان', 'طلاء', 'مبيعات', 'تسويق', 'مشاريع', 'جودة', 'مختبر', 'إنتاج', 'مستودع',
+    'كيميائ', 'هندس', 'إدارة', 'سلاسل', 'تغطية', 'استشاري', 'مقاولات', 'saso', 'astm', 'iso', 'erp', 'wms', 'b2b'
   ];
   let matchedTerms = 0;
   for (const term of domainTerms) {
@@ -317,27 +324,33 @@ function gradeQuestionsDeterministically(jobQuestions, submittedAnswers) {
 }
 
 /**
- * استدعاء مزود ذكاء اصطناعي (يدعم Ollama المحلي + OpenAI + Gemini + Claude + DeepSeek)
+ * استدعاء مزود ذكاء اصطناعي خارجي أو محلي (Ollama)
  */
 async function callExternalAIProvider(provider, config, systemPrompt, userPayload) {
-  const timeoutMs = provider === 'ollama' ? 45000 : 12000;
+  const timeoutMs = provider === 'ollama' ? 120000 : 15000;
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
 
   try {
     if (provider === 'ollama') {
       const baseUrl = resolveOllamaBaseUrl(config.ollama_base_url);
-      const model = config.model_name || process.env.OLLAMA_MODEL || 'qwen2.5:7b';
+      const model = config.model_name || process.env.OLLAMA_MODEL || 'qwen3:4b';
       const res = await fetch(`${baseUrl}/api/chat`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           model,
           stream: false,
+          think: false,
           format: 'json',
-          options: { temperature: Number(config.temperature ?? 0.2) },
+          keep_alive: '30m',
+          options: {
+            temperature: Number(config.temperature ?? 0.2),
+            num_ctx: 2048,
+            num_predict: 450
+          },
           messages: [
-            { role: 'system', content: systemPrompt },
+            { role: 'system', content: `${systemPrompt} /no_think` },
             { role: 'user', content: JSON.stringify(userPayload) }
           ]
         }),
@@ -432,7 +445,7 @@ async function callExternalAIProvider(provider, config, systemPrompt, userPayloa
       }
     }
   } catch (err) {
-    console.warn(`[AI Provider Fallback] تعذر الاتصال بالمزود (${provider})، تم التبديل لمحرك التقييم المدمج:`, err.message);
+    console.warn(`[AI Provider Fallback] تعذر الاتصال بالمزود (${provider})، استمرار التقرير المدمج:`, err.message);
   } finally {
     clearTimeout(timer);
   }
@@ -440,9 +453,9 @@ async function callExternalAIProvider(provider, config, systemPrompt, userPayloa
 }
 
 /**
- * التقييم الشامل للطلب (تقييم الأسئلة + مطابقة السيرة + النزاهة + التقرير الأعمى)
+ * المرحلة 1 الفورية (< 10ms): تصحيح الأسئلة وحساب الدرجات فوراً لضمان عدم تعليق المتصفح أبداً
  */
-async function evaluateSubmission({ job, candidate, answers, telemetry = {}, aiConfig = {} }) {
+function evaluateDeterministicInstant({ job, candidate, answers, telemetry = {}, aiConfig = {} }) {
   const { gradedItems, assessmentScore } = gradeQuestionsDeterministically(job.questions || [], answers);
   const cvMatchScore = computeCvMatchScore(job, candidate);
 
@@ -485,46 +498,11 @@ async function evaluateSubmission({ job, candidate, answers, telemetry = {}, aiC
   const passingThreshold = Number(job.passing_score || 60);
   const passed = assessmentScore >= passingThreshold;
 
-  let recommendation = passed
+  const recommendation = passed
     ? (aiOverallScore >= 82 ? 'توصية قوية بالمقابلة (Strong Shortlist)' : 'مؤهل للمقابلة الشخصية ومراجعة اللجنة')
     : 'لم يجتز الحد الأدنى لاختبار الجدارة (60%)';
 
-  let blindSummary = `تقييم مؤتمت بنظام الفحص الأعمى (${blindCode}) لوظيفة (${job.title} - ${job.code}): حقق المتقدم درجة ${assessmentScore}% في اختبار الجدارة و${cvMatchScore}% في مطابقة الخبرة، بمتوسط ذكاء اصطناعي مرجح قدره ${aiOverallScore}% ومؤشر نزاهة ${integrityScore}%.`;
-
-  let providerUsed = 'smart-rubric';
-  const requestedProvider = aiConfig.active_provider || process.env.AI_DEFAULT_PROVIDER || 'smart-rubric';
-
-  if (requestedProvider !== 'smart-rubric') {
-    const anonymizedPayload = {
-      blind_code: blindCode,
-      job_code: job.code,
-      job_title: job.title,
-      years_experience: candidate.years_experience,
-      qualification: candidate.qualification,
-      cv_excerpt: anonymizeText(candidate.cv_extracted_text, candidate),
-      assessment_score: assessmentScore,
-      integrity_score: integrityScore,
-      answers: gradedItems.map((g) => ({
-        q: g.question_text,
-        a: anonymizeText(g.answer_value, candidate),
-        score: `${g.awarded_points}/${g.max_points}`
-      }))
-    };
-
-    const sysPrompt = `${job.ai_prompt}\nأعد النتيجة بصيغة JSON فقط تحتوي على المفاتيح: blind_summary (نص عربي موجز)، strengths (مصفوفة نصوص عربية)، gaps (مصفوفة نصوص عربية)، recommendation (نص عربي). لا تذكر أي أسماء شخصية.`;
-    const extResult = await callExternalAIProvider(requestedProvider, aiConfig, sysPrompt, anonymizedPayload);
-    if (extResult && extResult.blind_summary) {
-      providerUsed = requestedProvider === 'ollama' ? `ollama:${aiConfig.model_name || process.env.OLLAMA_MODEL || 'local'}` : requestedProvider;
-      blindSummary = extResult.blind_summary;
-      if (Array.isArray(extResult.strengths) && extResult.strengths.length) {
-        strengths.splice(0, strengths.length, ...extResult.strengths.slice(0, 4));
-      }
-      if (Array.isArray(extResult.gaps) && extResult.gaps.length) {
-        gaps.splice(0, gaps.length, ...extResult.gaps.slice(0, 3));
-      }
-      if (extResult.recommendation) recommendation = extResult.recommendation;
-    }
-  }
+  const blindSummary = `تقييم مؤتمت بنظام الفحص الأعمى (${blindCode}) لوظيفة (${job.title} - ${job.code}): حقق المتقدم درجة ${assessmentScore}% في اختبار الجدارة و${cvMatchScore}% في مطابقة المؤهل والخبرة، بمتوسط ذكاء اصطناعي مرجح قدره ${aiOverallScore}% ومؤشر نزاهة ${integrityScore}%.`;
 
   return {
     gradedItems,
@@ -534,7 +512,7 @@ async function evaluateSubmission({ job, candidate, answers, telemetry = {}, aiC
     integrityScore,
     passed,
     aiReport: {
-      provider_used: providerUsed,
+      provider_used: 'smart-rubric',
       blind_code: blindCode,
       blind_summary: blindSummary,
       strengths,
@@ -545,13 +523,68 @@ async function evaluateSubmission({ job, candidate, answers, telemetry = {}, aiC
 }
 
 /**
- * فحص حالة مزودي الذكاء الاصطناعي بما فيها Ollama المحلي
+ * المرحلة 2 في الخلفية: إثراء التقرير عبر موديل Ollama أو المزود الخارجي دون تعطيل المتقدم
  */
+async function enrichReportWithExternalAI({ job, candidate, baseEval, aiConfig = {} }) {
+  const requestedProvider = aiConfig.active_provider || process.env.AI_DEFAULT_PROVIDER || 'smart-rubric';
+  if (requestedProvider === 'smart-rubric') {
+    return baseEval.aiReport;
+  }
+
+  const anonymizedPayload = {
+    blind_code: baseEval.aiReport.blind_code,
+    job_code: job.code,
+    job_title: job.title,
+    years_experience: candidate.years_experience,
+    qualification: candidate.qualification,
+    specialization: candidate.specialization || '',
+    cv_excerpt: anonymizeText(candidate.cv_extracted_text, candidate).slice(0, 500),
+    assessment_score: baseEval.assessmentScore,
+    integrity_score: baseEval.integrityScore,
+    answers: baseEval.gradedItems.map((g) => ({
+      q: g.question_text.slice(0, 120),
+      a: anonymizeText(g.answer_value, candidate).slice(0, 200),
+      score: `${g.awarded_points}/${g.max_points}`
+    }))
+  };
+
+  const sysPrompt = `${job.ai_prompt}\nأعد النتيجة بصيغة JSON فقط تحتوي على المفاتيح: blind_summary (نص عربي موجز)، strengths (مصفوفة نصوص عربية)، gaps (مصفوفة نصوص عربية)، recommendation (نص عربي). لا تذكر أي أسماء شخصية.`;
+  const extResult = await callExternalAIProvider(requestedProvider, aiConfig, sysPrompt, anonymizedPayload);
+
+  if (extResult && extResult.blind_summary) {
+    return {
+      provider_used: requestedProvider === 'ollama'
+        ? `ollama:${aiConfig.model_name || process.env.OLLAMA_MODEL || 'local'}`
+        : requestedProvider,
+      blind_code: baseEval.aiReport.blind_code,
+      blind_summary: extResult.blind_summary,
+      strengths: Array.isArray(extResult.strengths) && extResult.strengths.length
+        ? extResult.strengths.slice(0, 4)
+        : baseEval.aiReport.strengths,
+      gaps: Array.isArray(extResult.gaps) && extResult.gaps.length
+        ? extResult.gaps.slice(0, 3)
+        : baseEval.aiReport.gaps,
+      recommendation: extResult.recommendation || baseEval.aiReport.recommendation
+    };
+  }
+
+  return baseEval.aiReport;
+}
+
+/**
+ * دالة التقييم المتزامن (تُستخدم في محاكي الاختبار /api/ai/simulate)
+ */
+async function evaluateSubmission({ job, candidate, answers, telemetry = {}, aiConfig = {} }) {
+  const baseEval = evaluateDeterministicInstant({ job, candidate, answers, telemetry, aiConfig });
+  const enrichedReport = await enrichReportWithExternalAI({ job, candidate, baseEval, aiConfig });
+  return { ...baseEval, aiReport: enrichedReport };
+}
+
 function getProvidersEnvStatus() {
   return {
     ollama: {
       configured: true,
-      model: process.env.OLLAMA_MODEL || 'qwen2.5:7b',
+      model: process.env.OLLAMA_MODEL || 'qwen3:4b',
       base_url: resolveOllamaBaseUrl(),
       label: 'Ollama Local LLM (موديلات محلية على خادمك)'
     },
@@ -585,6 +618,8 @@ function getProvidersEnvStatus() {
 
 module.exports = {
   evaluateSubmission,
+  evaluateDeterministicInstant,
+  enrichReportWithExternalAI,
   anonymizeText,
   computeCvMatchScore,
   getProvidersEnvStatus,

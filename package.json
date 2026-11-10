@@ -1,6 +1,6 @@
 {
   "name": "jpf-job",
-  "version": "1.0.0",
+  "version": "2.1.0",
   "description": "منصة التوظيف الذكية المتكاملة — بوابة المتقدمين، اختبار الجدارة التفاعلي، محرك التحليل بالذكاء الاصطناعي، ولوحة لجنة التوظيف",
   "repository": {
     "type": "git",
@@ -14,7 +14,8 @@
   "scripts": {
     "start": "node server.js",
     "dev": "node --watch server.js",
-    "db:init": "node scripts/init-db.js"
+    "db:init": "node scripts/init-db.js",
+    "verify:v21": "node scripts/verify-v21-drills.js"
   },
   "keywords": [
     "hr-tech",
@@ -33,5 +34,8 @@
     "express-rate-limit": "^7.5.0",
     "multer": "^2.5.0",
     "pg": "^8.13.3"
+  },
+  "devDependencies": {
+    "playwright": "^1.65.0"
   }
 }

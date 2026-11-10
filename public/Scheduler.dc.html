@@ -89,9 +89,18 @@
               </div>
             </div>
 
-            <div class="form-group">
-              <label class="form-label">أعضاء لجنة المقابلة</label>
-              <input type="text" id="sc-panel" class="form-control" value="لجنة التوظيف والاختيار المركزية" required />
+            <div class="grid-2">
+              <div class="form-group">
+                <label class="form-label">نوع المقابلات</label>
+                <select id="sc-mode" class="form-select">
+                  <option value="remote">🎥 عن بُعد (قاعة افتراضية)</option>
+                  <option value="in_person">🏢 حضوري في المقر (بطاقة الموقع)</option>
+                </select>
+              </div>
+              <div class="form-group">
+                <label class="form-label">أعضاء لجنة المقابلة</label>
+                <input type="text" id="sc-panel" class="form-control" value="لجنة التوظيف والاختيار المركزية" required />
+              </div>
             </div>
 
             <div style="margin-bottom:16px;">
@@ -176,18 +185,24 @@
             </td>
             <td><span class="code-chip">${SmartHR.escapeHtml(i.job_code)}</span></td>
             <td>
-              <a href="${SmartHR.escapeHtml(i.meeting_url)}" target="_blank" rel="noopener" class="btn btn-outline btn-sm mono" style="font-size:12px;">
-                🎥 فتح القاعة ↗
-              </a>
+              ${
+                i.interview_mode === 'in_person'
+                  ? `<a href="${SmartHR.escapeHtml(i.visit_url || '#')}" target="_blank" rel="noopener" class="btn btn-terracotta btn-sm" style="font-size:12px;">🏢 بطاقة الموقع ↗</a>`
+                  : `<a href="${SmartHR.escapeHtml(i.meeting_url)}" target="_blank" rel="noopener" class="btn btn-outline btn-sm mono" style="font-size:12px;">🎥 فتح القاعة ↗</a>`
+              }
             </td>
             <td>${SmartHR.bookingBadge(i.booking_status)}</td>
             <td>
-              <select class="form-select int-status-sel" data-id="${i.id}" style="padding:6px 10px;font-size:12px;min-width:130px;">
-                <option value="scheduled" ${i.booking_status==='scheduled'?'selected':''}>مجدولة</option>
-                <option value="invitation_sent" ${i.booking_status==='invitation_sent'?'selected':''}>أُرسلت الدعوة</option>
-                <option value="confirmed" ${i.booking_status==='confirmed'?'selected':''}>مؤكدة الحضور</option>
-                <option value="completed" ${i.booking_status==='completed'?'selected':''}>تمت المقابلة</option>
-                <option value="cancelled" ${i.booking_status==='cancelled'?'selected':''}>ملغاة</option>
+              <select class="form-select int-status-sel" data-id="${i.id}" style="padding:6px 10px;font-size:12px;min-width:130px;" ${i.booking_status==='completed'?'disabled':''}>
+                <option value="scheduled" disabled ${i.booking_status==='scheduled'?'selected':''}>مجدولة</option>
+                <option value="rescheduled" disabled ${i.booking_status==='rescheduled'?'selected':''}>مُعاد جدولتها (بانتظار الإرسال)</option>
+                <option value="invitation_sent" disabled ${i.booking_status==='invitation_sent'?'selected':''}>أُرسلت الدعوة (من واتساب)</option>
+                <option value="confirmed" disabled ${i.booking_status==='confirmed'?'selected':''}>مؤكدة الحضور (عبر الرابط)</option>
+                <option value="completed" ${!['invitation_sent','confirmed','completed','no_show'].includes(i.booking_status)?'disabled':''} ${i.booking_status==='completed'?'selected':''}>تمت المقابلة</option>
+                <option value="no_show" ${!['invitation_sent','confirmed','completed','no_show'].includes(i.booking_status)?'disabled':''} ${i.booking_status==='no_show'?'selected':''}>لم يحضر</option>
+                ${(!window.__CURRENT_USER || window.__CURRENT_USER.role !== 'committee_member')
+                  ? `<option value="cancelled" ${i.booking_status==='cancelled'?'selected':''}>ملغاة</option>`
+                  : `<option value="cancelled" disabled ${i.booking_status==='cancelled'?'selected':''}>ملغاة</option>`}
               </select>
             </td>
           </tr>
@@ -205,6 +220,7 @@
               loadSchedulerData();
             } catch (err) {
               SmartHR.showToast(err.message, 'error');
+              loadSchedulerData();
             }
           });
         });
@@ -232,6 +248,7 @@
             exclude_dhuhr: document.getElementById('sc-exclude-dhuhr').checked,
             dhuhr_start: document.getElementById('sc-dhuhr-start').value,
             dhuhr_end: document.getElementById('sc-dhuhr-end').value,
+            interview_mode: document.getElementById('sc-mode').value,
             interviewer_panel: document.getElementById('sc-panel').value.trim(),
             application_ids: selectedIds
           })
@@ -244,7 +261,18 @@
       }
     });
 
-    loadSchedulerData().catch((err) => SmartHR.showToast(err.message, 'error'));
+    SmartHR.getCurrentUser()
+      .then((user) => {
+        if (user && user.role === 'committee_member') {
+          const autoFormCard = document.getElementById('auto-schedule-form');
+          if (autoFormCard) {
+            const submitBtn = autoFormCard.querySelector('button[type="submit"]');
+            if (submitBtn) submitBtn.style.display = 'none';
+          }
+        }
+        return loadSchedulerData();
+      })
+      .catch((err) => SmartHR.showToast(err.message, 'error'));
   </script>
 </body>
 </html>

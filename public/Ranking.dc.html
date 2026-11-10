@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>الترتيب الموزون للمرشحين | رُواء للتوظيف الذكي</title>
+  <title>الترتيب الموزون للمرشحين ودعوات المقابلة | رُواء للتوظيف الذكي</title>
   <link rel="stylesheet" href="css/design-system.css" />
   <style>
     .podium-grid {
@@ -29,12 +29,8 @@
       padding: 32px 24px;
       box-shadow: var(--shadow-lg);
     }
-    .podium-card.rank-2 {
-      border-top: 6px solid #8A93A2;
-    }
-    .podium-card.rank-3 {
-      border-top: 6px solid var(--terracotta);
-    }
+    .podium-card.rank-2 { border-top: 6px solid #8A93A2; }
+    .podium-card.rank-3 { border-top: 6px solid var(--terracotta); }
     .medal-badge {
       width: 44px;
       height: 44px;
@@ -46,6 +42,49 @@
       font-weight: 800;
       font-size: 18px;
       margin-bottom: 10px;
+    }
+    .modal-backdrop {
+      position: fixed;
+      inset: 0;
+      background: rgba(23, 25, 28, 0.65);
+      display: none;
+      align-items: center;
+      justify-content: center;
+      padding: 20px;
+      z-index: 999;
+    }
+    .modal-backdrop.open { display: flex; }
+    .modal-card {
+      width: 100%;
+      max-width: 620px;
+      background: #FFFFFF;
+      border-radius: 22px;
+      padding: 28px;
+      box-shadow: var(--shadow-lg);
+      border-top: 6px solid var(--terracotta);
+      max-height: 92vh;
+      overflow-y: auto;
+    }
+    .mode-switch {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 10px;
+      margin-bottom: 16px;
+    }
+    .mode-option {
+      padding: 12px;
+      border-radius: 12px;
+      border: 1.5px solid var(--border-strong);
+      cursor: pointer;
+      text-align: center;
+      font-weight: 700;
+      font-size: 13.5px;
+      background: #FFF;
+    }
+    .mode-option.active {
+      background: var(--charcoal);
+      color: #FFF;
+      border-color: var(--charcoal);
     }
     @media (max-width: 920px) {
       .podium-grid { grid-template-columns: 1fr; }
@@ -59,24 +98,28 @@
     <main class="admin-main">
       <div class="admin-topbar">
         <div>
-          <div class="page-eyebrow">خوارزمية المفاضلة المعيارية</div>
-          <h1 class="page-title">ترتيب المرشحين الموزون (AI + اللجنة)</h1>
-          <p class="page-subtitle">مفاضلة شفافة تجمع بين التحليل الموضوعي للذكاء الاصطناعي (40%) والحكم المهني للجنة التوظيف (60%).</p>
+          <div class="page-eyebrow">خوارزمية المفاضلة المعيارية ودعوات المقابلة الفورية</div>
+          <h1 class="page-title">ترتيب المرشحين الموزون وإرسال دعوات واتساب</h1>
+          <p class="page-subtitle">رتّب المجتازين للمرحلة الأولى، وحدّد موعد المقابلة (عن بُعد أو حضوري مع بطاقة المدخل والخريطة) وأرسل دعوة واتساب بضغطة واحدة.</p>
         </div>
         <div style="display:flex;gap:10px;flex-wrap:wrap;">
-          <button id="export-excel-btn" class="btn btn-olive">📥 تصدير جدول الترتيب (Excel / CSV)</button>
-          <a href="Scheduler.dc.html" class="btn btn-primary">جدولة المرشحين الأعلى ترتيباً ←</a>
+          <button id="export-excel-btn" class="btn btn-olive">📥 تصدير Excel / CSV</button>
+          <a href="Interviews.dc.html" class="btn btn-primary">💬 قوالب وطابور رسائل واتساب ←</a>
         </div>
       </div>
 
       <!-- شريط التحكم بالأوزان والفلترة -->
       <section class="card" style="margin-bottom:24px;">
-        <div style="display:grid;grid-template-columns:280px 1fr auto;gap:24px;align-items:center;" class="weights-bar">
+        <div style="display:grid;grid-template-columns:250px 1fr auto;gap:22px;align-items:center;" class="weights-bar">
           <div>
-            <label class="form-label" for="rank-job-filter">تصفية الترتيب حسب الوظيفة:</label>
+            <label class="form-label" for="rank-job-filter">تصفية حسب الوظيفة:</label>
             <select id="rank-job-filter" class="form-select">
               <option value="all">جميع الوظائف النشطة</option>
             </select>
+            <label style="display:flex;align-items:center;gap:8px;font-size:12.5px;font-weight:700;margin-top:10px;cursor:pointer;">
+              <input type="checkbox" id="passed-only-chk" checked style="width:16px;height:16px;accent-color:var(--olive);" />
+              <span>المجتازون للمرحلة الأولى فقط (≥60%)</span>
+            </label>
           </div>
 
           <div>
@@ -89,7 +132,7 @@
 
           <div style="display:flex;gap:8px;">
             <button id="reset-40-60-btn" class="btn btn-outline btn-sm">إعادة 40/60</button>
-            <button id="save-weights-btn" class="btn btn-terracotta btn-sm">اعتماد الوزن في النظام ✓</button>
+            <button id="save-weights-btn" class="btn btn-terracotta btn-sm">اعتماد الوزن ✓</button>
           </div>
         </div>
       </section>
@@ -97,22 +140,22 @@
       <!-- منصة التتويج للمراكز الثلاثة الأولى -->
       <section id="podium-mount" class="podium-grid"></section>
 
-      <!-- جدول الترتيب التفصيلي -->
+      <!-- جدول الترتيب التفصيلي مع زر تحديد الموعد وإرسال واتساب -->
       <section class="card">
-        <h2 style="font-size:18px;margin-bottom:14px;">الجدول التفصيلي للمفاضلة النهائية</h2>
+        <h2 style="font-size:18px;margin-bottom:14px;">قائمة المرشحين المرتبة وإرسال دعوات المقابلة</h2>
         <div class="table-wrap">
           <table class="data-table">
             <thead>
               <tr>
                 <th>المركز</th>
-                <th>المرشح</th>
+                <th>المرشح والمؤهل</th>
                 <th>الوظيفة</th>
-                <th>اختبار الجدارة</th>
-                <th>درجة الـ AI</th>
-                <th>متوسط اللجنة</th>
-                <th>النزاهة</th>
+                <th>الجدارة</th>
+                <th>AI</th>
+                <th>اللجنة</th>
                 <th>الدرجة الموزونة</th>
-                <th>الحالة</th>
+                <th>الموعد والنوع</th>
+                <th>دعوة واتساب للمقابلة</th>
                 <th>الملف</th>
               </tr>
             </thead>
@@ -123,12 +166,116 @@
     </main>
   </div>
 
+  <!-- نافذة تحديد الموعد (عن بُعد / حضوري) وإرسال رسالة واتساب الفورية -->
+  <div id="schedule-wa-modal" class="modal-backdrop">
+    <div class="modal-card">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;">
+        <h2 style="font-size:19px;" id="modal-cand-title">تحديد موعد المقابلة وإرسال واتساب</h2>
+        <button type="button" onclick="closeScheduleModal()" class="btn btn-outline btn-sm">✕ إغلاق</button>
+      </div>
+
+      <form id="quick-schedule-form">
+        <input type="hidden" id="md-app-id" />
+
+        <label class="form-label">اختر نوع المقابلة *</label>
+        <div class="mode-switch">
+          <div id="mode-remote-btn" class="mode-option active" onclick="setModalMode('remote')">🎥 عن بُعد (قاعة افتراضية أونلاين)</div>
+          <div id="mode-inperson-btn" class="mode-option" onclick="setModalMode('in_person')">🏢 حضوري (بطاقة المدخل والخريطة)</div>
+        </div>
+
+        <div class="grid-3">
+          <div class="form-group">
+            <label class="form-label">تاريخ المقابلة *</label>
+            <input type="date" id="md-date" class="form-control mono" required />
+          </div>
+          <div class="form-group">
+            <label class="form-label">وقت البدء *</label>
+            <input type="time" id="md-time" class="form-control mono" value="10:30" required />
+          </div>
+          <div class="form-group">
+            <label class="form-label">المدة (دقيقة)</label>
+            <input type="number" id="md-dur" class="form-control mono" value="30" min="15" max="90" />
+          </div>
+        </div>
+
+        <!-- خيارات المقابلة عن بُعد -->
+        <div id="remote-fields-box" class="card-subtle" style="margin-bottom:16px;">
+          <label class="form-label">رابط القاعة الافتراضية (يُولّد تلقائياً أو الصق رابط Google Meet / Zoom / Jitsi خاص بك)</label>
+          <input type="url" id="md-meet-url" class="form-control mono" placeholder="اتركه فارغاً لتوليد قاعة افتراضية جاهزة تلقائياً" />
+        </div>
+
+        <!-- خيارات المقابلة الحضورية (بطاقة الوصول وصورة المدخل والدور والمكتب) -->
+        <div id="inperson-fields-box" class="card-subtle" style="display:none;margin-bottom:16px;border-right:4px solid var(--terracotta);">
+          <div style="font-size:12.5px;font-weight:700;margin-bottom:10px;color:var(--terracotta);">
+            📍 سيتم إرسال رابط بطاقة زيارة تفاعلية للمرشح تتضمن صورة المدخل، الدور، رقم المكتب، ورابط Google Maps:
+          </div>
+          <div class="form-group" style="margin-bottom:10px;">
+            <label class="form-label" style="font-size:12px;">اسم المبنى / المقر</label>
+            <input type="text" id="md-building" class="form-control" />
+          </div>
+          <div class="grid-2">
+            <div class="form-group" style="margin-bottom:10px;">
+              <label class="form-label" style="font-size:12px;">الدور / الطابق</label>
+              <input type="text" id="md-floor" class="form-control" />
+            </div>
+            <div class="form-group" style="margin-bottom:10px;">
+              <label class="form-label" style="font-size:12px;">رقم المكتب / القاعة</label>
+              <input type="text" id="md-office" class="form-control" />
+            </div>
+          </div>
+          <div class="form-group" style="margin-bottom:6px;">
+            <label class="form-label" style="font-size:12px;">رابط قوقل ماب (Google Maps)</label>
+            <input type="url" id="md-maps" class="form-control mono" />
+          </div>
+        </div>
+
+        <button type="submit" id="md-submit-btn" class="btn btn-olive btn-lg" style="width:100%;">
+          📲 اعتماد الموعد وفتح رسالة واتساب جاهزة للإرسال
+        </button>
+      </form>
+    </div>
+  </div>
+
   <script src="js/common.js"></script>
   <script>
     SmartHR.renderAdminSidebar('ranking');
 
     let latestRanked = [];
     let currentAiWeight = 40;
+    let defaultLocation = {};
+    let modalMode = 'remote';
+
+    function setModalMode(mode) {
+      modalMode = mode;
+      document.getElementById('mode-remote-btn').classList.toggle('active', mode === 'remote');
+      document.getElementById('mode-inperson-btn').classList.toggle('active', mode === 'in_person');
+      document.getElementById('remote-fields-box').style.display = mode === 'remote' ? 'block' : 'none';
+      document.getElementById('inperson-fields-box').style.display = mode === 'in_person' ? 'block' : 'none';
+    }
+
+    function openScheduleModal(appId) {
+      const c = latestRanked.find((x) => x.id === appId);
+      if (!c) return;
+      document.getElementById('md-app-id').value = c.id;
+      document.getElementById('modal-cand-title').textContent = `موعد ودعوة واتساب: ${c.full_name}`;
+
+      const tomorrow = new Date(Date.now() + 86400000).toISOString().slice(0, 10);
+      document.getElementById('md-date').value = c.scheduled_date ? String(c.scheduled_date).slice(0, 10) : tomorrow;
+      document.getElementById('md-time').value = c.start_time ? String(c.start_time).slice(0, 5) : '10:30';
+      document.getElementById('md-meet-url').value = (c.interview_mode === 'remote' && c.meeting_url) ? c.meeting_url : '';
+
+      document.getElementById('md-building').value = defaultLocation.building_name || '';
+      document.getElementById('md-floor').value = defaultLocation.floor_number || '';
+      document.getElementById('md-office').value = defaultLocation.office_number || '';
+      document.getElementById('md-maps').value = defaultLocation.google_maps_url || '';
+
+      setModalMode(c.interview_mode === 'in_person' ? 'in_person' : 'remote');
+      document.getElementById('schedule-wa-modal').classList.add('open');
+    }
+
+    function closeScheduleModal() {
+      document.getElementById('schedule-wa-modal').classList.remove('open');
+    }
 
     function renderPodium(list) {
       const mount = document.getElementById('podium-mount');
@@ -153,7 +300,10 @@
             <div style="font-size:12px;color:${isDark ? '#B8BCC4' : 'var(--text-secondary)'};margin:6px 0 14px;">
               AI: <span class="mono">${c.ai_overall_score}%</span> • اللجنة: <span class="mono">${c.committee_avg_score}%</span>
             </div>
-            <a href="CandidateProfile.dc.html?app_id=${c.id}" class="btn ${isDark ? 'btn-saffron' : 'btn-outline'} btn-sm" style="width:100%;">فتح الملف والتقييم</a>
+            <div style="display:flex;gap:8px;">
+              <button type="button" onclick="openScheduleModal(${c.id})" class="btn ${isDark ? 'btn-saffron' : 'btn-terracotta'} btn-sm" style="flex:1;">📲 موعد + واتساب</button>
+              <a href="CandidateProfile.dc.html?app_id=${c.id}" class="btn btn-outline btn-sm" style="${isDark ? 'color:#FFF;border-color:rgba(255,255,255,0.28);' : ''}">الملف</a>
+            </div>
           </div>
         `;
       };
@@ -166,12 +316,15 @@
 
     async function loadRanking(customAiWeight = null) {
       const jobId = document.getElementById('rank-job-filter').value;
+      const passedOnly = document.getElementById('passed-only-chk').checked;
       const qs = new URLSearchParams();
       if (jobId !== 'all') qs.set('job_id', jobId);
+      if (passedOnly) qs.set('passed_only', '1');
       if (customAiWeight !== null) qs.set('ai_weight', String(customAiWeight));
 
       const data = await SmartHR.apiFetch(`/api/ranking?${qs.toString()}`);
       currentAiWeight = data.weights.ai_weight;
+      defaultLocation = data.company_location || {};
       document.getElementById('weight-slider').value = currentAiWeight;
       document.getElementById('lbl-ai-w').textContent = `${currentAiWeight}%`;
       document.getElementById('lbl-comm-w').textContent = `${data.weights.committee_weight}%`;
@@ -180,25 +333,121 @@
       renderPodium(latestRanked);
 
       const tbody = document.getElementById('ranking-tbody');
-      tbody.innerHTML = latestRanked.map((c) => `
-        <tr>
-          <td><strong class="mono" style="font-size:15px;">#${c.rank}</strong></td>
-          <td>
-            <div style="font-weight:700;">${SmartHR.escapeHtml(c.full_name)}</div>
-            <div class="mono" style="font-size:11px;color:var(--text-muted);">${SmartHR.escapeHtml(c.reference_no)}</div>
-          </td>
-          <td><span class="code-chip">${SmartHR.escapeHtml(c.job_code)}</span></td>
-          <td class="mono">${c.assessment_score}%</td>
-          <td class="mono" style="font-weight:600;">${c.ai_overall_score}%</td>
-          <td class="mono" style="font-weight:600;color:${c.evaluations_count > 0 ? 'var(--charcoal)' : 'var(--text-muted)'};">
-            ${c.evaluations_count > 0 ? `${c.committee_avg_score}%` : 'بانتظار اللجنة'}
-          </td>
-          <td class="mono">${c.integrity_score}%</td>
-          <td><strong class="mono" style="font-size:16px;color:var(--olive);">${c.computed_weighted_score}%</strong></td>
-          <td>${SmartHR.statusBadge(c.status)}</td>
-          <td><a href="CandidateProfile.dc.html?app_id=${c.id}" class="btn btn-outline btn-sm">عرض / تقييم</a></td>
-        </tr>
-      `).join('');
+      if (!latestRanked.length) {
+        tbody.innerHTML = `<tr><td colspan="10" style="text-align:center;padding:34px;color:var(--text-muted);">لا يوجد مرشحون مطابقون للفلتر المحدد حالياً.</td></tr>`;
+        return;
+      }
+
+      tbody.innerHTML = latestRanked.map((c) => {
+        const qualText = [c.qualification, c.specialization].filter(Boolean).join(' — ');
+        const hasInt = Boolean(c.scheduled_date);
+        const modeTag = c.interview_mode === 'in_person' ? '🏢 حضوري' : '🎥 عن بُعد';
+        let waStateBadge = '';
+        if (c.wa_queue_status === 'confirmed') {
+          waStateBadge = '<div style="margin-top:4px;"><span class="badge badge-olive" style="font-size:10.5px;">مؤكد الحضور ✓</span></div>';
+        } else if (c.wa_queue_status === 'sent') {
+          waStateBadge = '<div style="margin-top:4px;"><span class="badge badge-olive" style="font-size:10.5px;">تأكد إرسالها ✓</span></div>';
+        } else if (c.wa_queue_status === 'queued' && c.wa_prepared_at) {
+          waStateBadge = '<div style="margin-top:4px;"><span class="badge badge-saffron" style="font-size:10.5px;">فُتح الرابط — بانتظار التأكيد</span></div>';
+        } else if (c.wa_queue_status === 'queued') {
+          waStateBadge = '<div style="margin-top:4px;"><span class="badge badge-charcoal" style="font-size:10.5px;">جاهزة للإرسال</span></div>';
+        }
+
+        return `
+          <tr>
+            <td><strong class="mono" style="font-size:15px;">#${c.rank}</strong></td>
+            <td>
+              <div style="font-weight:700;">${SmartHR.escapeHtml(c.full_name)}</div>
+              <div style="font-size:11.5px;color:var(--text-secondary);">${SmartHR.escapeHtml(qualText)}</div>
+              <div class="mono" style="font-size:11px;color:var(--text-muted);">${SmartHR.escapeHtml(c.reference_no)}</div>
+            </td>
+            <td><span class="code-chip">${SmartHR.escapeHtml(c.job_code)}</span></td>
+            <td class="mono">${c.assessment_score}%</td>
+            <td class="mono" style="font-weight:600;">${c.ai_overall_score}%</td>
+            <td class="mono" style="font-weight:600;color:${c.evaluations_count > 0 ? 'var(--charcoal)' : 'var(--text-muted)'};">
+              ${c.evaluations_count > 0 ? `${c.committee_avg_score}%` : 'بانتظار اللجنة'}
+            </td>
+            <td><strong class="mono" style="font-size:16px;color:var(--olive);">${c.computed_weighted_score}%</strong></td>
+            <td style="font-size:12px;">
+              ${
+                hasInt
+                  ? `<div><strong>${modeTag}</strong></div><div class="mono" style="font-size:11px;">${SmartHR.formatDate(c.scheduled_date)} · ${String(c.start_time).slice(0,5)}</div>${waStateBadge}`
+                  : '<span style="color:var(--text-muted);">لم يُجدول بعد</span>'
+              }
+            </td>
+            <td>
+              ${
+                c.booking_status === 'completed'
+                  ? '<span class="badge badge-olive">مقابلة مكتملة ✓</span>'
+                  : !['passed_assessment', 'under_review', 'interview_scheduled', 'interviewed'].includes(c.status)
+                    ? SmartHR.statusBadge(c.status)
+                    : (window.__CURRENT_USER && ['super_admin', 'hr_coordinator'].includes(window.__CURRENT_USER.role))
+                      ? `<div style="display:flex;gap:6px;flex-wrap:wrap;">
+                          <button type="button" onclick="openScheduleModal(${c.id})" class="btn ${hasInt ? 'btn-outline' : 'btn-terracotta'} btn-sm">
+                            ${hasInt ? '💬 فتح مسودة / تعديل' : '📲 تحديد موعد + مسودة'}
+                          </button>
+                          ${
+                            c.wa_message_id && c.wa_queue_status === 'queued'
+                              ? `<button type="button" onclick="confirmInviteSent(${c.wa_message_id})" class="btn btn-olive btn-sm">✓ تأكيد الإرسال</button>`
+                              : ''
+                          }
+                        </div>`
+                      : '<span style="font-size:12px;color:var(--text-muted);">مختص الموارد البشرية</span>'
+              }
+            </td>
+            <td><a href="CandidateProfile.dc.html?app_id=${c.id}" class="btn btn-outline btn-sm">الملف</a></td>
+          </tr>
+        `;
+      }).join('');
+    }
+
+    document.getElementById('quick-schedule-form').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const btn = document.getElementById('md-submit-btn');
+      btn.disabled = true;
+      btn.textContent = 'جاري حفظ الموعد وتجهيز رسالة واتساب...';
+
+      try {
+        const res = await SmartHR.apiFetch('/api/interviews/schedule-single', {
+          method: 'POST',
+          body: JSON.stringify({
+            application_id: Number(document.getElementById('md-app-id').value),
+            scheduled_date: document.getElementById('md-date').value,
+            start_time: document.getElementById('md-time').value,
+            duration_minutes: Number(document.getElementById('md-dur').value || 30),
+            interview_mode: modalMode,
+            meeting_url: document.getElementById('md-meet-url').value.trim(),
+            location_building: document.getElementById('md-building').value.trim(),
+            location_floor: document.getElementById('md-floor').value.trim(),
+            location_office: document.getElementById('md-office').value.trim(),
+            location_maps_url: document.getElementById('md-maps').value.trim(),
+            open_draft: true
+          })
+        });
+
+        closeScheduleModal();
+        SmartHR.showToast(res.message, 'success');
+        window.open(res.wa_link, '_blank', 'noopener');
+        await loadRanking(currentAiWeight);
+      } catch (err) {
+        SmartHR.showToast(err.message, 'error');
+      } finally {
+        btn.disabled = false;
+        btn.textContent = '📲 اعتماد الموعد وفتح مسودة واتساب للإرسال';
+      }
+    });
+
+    async function confirmInviteSent(waMsgId) {
+      try {
+        await SmartHR.apiFetch(`/api/wa-messages/${waMsgId}`, {
+          method: 'PATCH',
+          body: JSON.stringify({ action: 'confirm_sent' })
+        });
+        SmartHR.showToast('✓ تم توثيق تأكيد إرسال الدعوة بنجاح', 'success');
+        await loadRanking(currentAiWeight);
+      } catch (err) {
+        SmartHR.showToast(err.message, 'error');
+      }
     }
 
     async function initRankingPage() {
@@ -212,6 +461,7 @@
       });
 
       sel.addEventListener('change', () => loadRanking(currentAiWeight));
+      document.getElementById('passed-only-chk').addEventListener('change', () => loadRanking(currentAiWeight));
 
       const slider = document.getElementById('weight-slider');
       slider.addEventListener('input', () => {
@@ -228,7 +478,6 @@
           const w = Number(document.getElementById('weight-slider').value);
           const res = await SmartHR.apiFetch('/api/ranking/weights', {
             method: 'PUT',
-            headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ ai_weight: w })
           });
           SmartHR.showToast(res.message, 'success');
@@ -243,22 +492,22 @@
           SmartHR.showToast('لا توجد بيانات لتصديرها حالياً', 'error');
           return;
         }
-        const headers = ['الترتيب', 'الرقم المرجعي', 'اسم المرشح', 'كود الوظيفة', 'المسمى الوظيفي', 'درجة الاختبار %', 'درجة AI %', 'متوسط اللجنة %', 'الدرجة الموزونة النهائية %', 'مؤشر النزاهة %', 'الحالة'];
+        const headers = ['الترتيب', 'الرقم المرجعي', 'اسم المرشح', 'المؤهل', 'التخصص', 'كود الوظيفة', 'درجة الاختبار %', 'درجة AI %', 'متوسط اللجنة %', 'الدرجة الموزونة %', 'نوع المقابلة', 'الحالة'];
         const rows = latestRanked.map((r) => [
           r.rank,
           r.reference_no,
           `"${String(r.full_name).replace(/"/g, '""')}"`,
+          `"${String(r.qualification || '').replace(/"/g, '""')}"`,
+          `"${String(r.specialization || '').replace(/"/g, '""')}"`,
           r.job_code,
-          `"${String(r.job_title).replace(/"/g, '""')}"`,
           r.assessment_score,
           r.ai_overall_score,
           r.committee_avg_score,
           r.computed_weighted_score,
-          r.integrity_score,
+          r.interview_mode || '—',
           r.status
         ].join(','));
 
-        // إضافة UTF-8 BOM لضمان فتح العربية بشكل سليم في Microsoft Excel
         const csvContent = '\uFEFF' + [headers.join(','), ...rows].join('\n');
         const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
         const url = URL.createObjectURL(blob);
@@ -269,9 +518,14 @@
         a.click();
         a.remove();
         URL.revokeObjectURL(url);
-        SmartHR.showToast('تم تصدير ملف الترتيب الموزون المتوافق مع Excel بنجاح!', 'success');
+        SmartHR.showToast('تم تصدير جدول الترتيب بنجاح!', 'success');
       });
 
+      await SmartHR.getCurrentUser().catch(() => null);
+      if (!window.__CURRENT_USER || window.__CURRENT_USER.role !== 'super_admin') {
+        const saveWeightsBtn = document.getElementById('save-weights-btn');
+        if (saveWeightsBtn) saveWeightsBtn.style.display = 'none';
+      }
       await loadRanking();
     }
 

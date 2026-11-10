@@ -95,9 +95,18 @@ const SmartHR = (() => {
   }
 
   async function apiFetch(url, options = {}) {
+    const extraHeaders = { ...(options.headers || {}) };
+    try {
+      const urlParams = new URLSearchParams(window.location.search);
+      const ctFromUrl = urlParams.get('ct');
+      if (ctFromUrl && !extraHeaders['x-candidate-token']) {
+        extraHeaders['x-candidate-token'] = ctFromUrl;
+      }
+    } catch (_e) {}
+
     const headers = options.body instanceof FormData
-      ? { ...(options.headers || {}) }
-      : { 'Content-Type': 'application/json', ...(options.headers || {}) };
+      ? extraHeaders
+      : { 'Content-Type': 'application/json', ...extraHeaders };
     const res = await fetch(url, { ...options, headers });
     const contentType = res.headers.get('content-type') || '';
     const data = contentType.includes('application/json') ? await res.json() : { error: await res.text() };
@@ -109,9 +118,85 @@ const SmartHR = (() => {
     }
 
     if (!res.ok) {
-      throw new Error(data.error || `خطأ في الاتصال بالخادم (${res.status})`);
+      const err = new Error(data.error || `خطأ في الاتصال بالخادم (${res.status})`);
+      err.status = res.status;
+      err.code = data.code;
+      err.data = data;
+      throw err;
     }
+
+    // إزالة رمز الاستعادة من شريط العنوان بعد تثبيت كوكي الجلسة الآمن HttpOnly
+    try {
+      const currentUrl = new URL(window.location.href);
+      if (currentUrl.searchParams.has('ct')) {
+        currentUrl.searchParams.delete('ct');
+        window.history.replaceState({}, '', currentUrl.pathname + currentUrl.search);
+      }
+    } catch (_e) {}
+
     return data;
+  }
+
+  function renderCandidateVerifyCard(mountEl, initialRef = '', onVerified, hrPhone = '966550000000') {
+    if (!mountEl) return;
+    const cleanHr = String(hrPhone || '966550000000').replace(/\D/g, '');
+    const waHelpText = encodeURIComponent(
+      `السلام عليكم فريق التوظيف، أرغب في استعادة رابط الدخول لطلبي رقم (${initialRef || 'APP-2026-XXXX'}) من رقمي المسجل لديكم.`
+    );
+    mountEl.innerHTML = `
+      <div class="card" style="max-width:560px;margin:20px auto;text-align:center;padding:34px;">
+        <div style="font-size:34px;margin-bottom:8px;">🔑</div>
+        <h2 style="font-size:21px;margin-bottom:8px;">إثبات ملكية طلب التوظيف</h2>
+        <p style="color:var(--text-secondary);font-size:13.5px;margin-bottom:20px;line-height:1.75;">
+          حفاظاً على سرية الطلبات ومنع انتحال الهوية، يرجى إدخال الرقم المرجعي مع <strong>مفتاح الدخول السري (Access Key)</strong> الصادر لك عند التقديم.
+        </p>
+        <form id="cand-verify-form" style="text-align:right;max-width:420px;margin:0 auto;">
+          <div class="form-group" style="margin-bottom:12px;">
+            <label class="form-label">الرقم المرجعي للطلب *</label>
+            <input type="text" id="cvf-ref" class="form-control mono" placeholder="APP-2026-1001" value="${escapeHtml(initialRef)}" required />
+          </div>
+          <div class="form-group" style="margin-bottom:16px;">
+            <label class="form-label">مفتاح الدخول السري (Access Key) *</label>
+            <input type="text" id="cvf-key" class="form-control mono" dir="ltr" placeholder="JPFK-XXXX-XXXX-XXXX-XXXX" autocomplete="off" required />
+          </div>
+          <button type="submit" id="cvf-submit" class="btn btn-primary" style="width:100%;">تحقق من المفتاح ومتابعة ←</button>
+        </form>
+        <div style="margin-top:16px;padding-top:14px;border-top:1px solid var(--border);font-size:12.5px;color:var(--text-secondary);">
+          فقدت مفتاح الدخول السري؟
+          <a href="https://wa.me/${cleanHr}?text=${waHelpText}" target="_blank" rel="noopener" style="color:var(--olive);font-weight:700;text-decoration:underline;">
+            اطلب إرسال رابط استعادة لجوالك المسجل عبر واتساب ↗
+          </a>
+        </div>
+      </div>
+    `;
+    const form = mountEl.querySelector('#cand-verify-form');
+    form.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const btn = mountEl.querySelector('#cvf-submit');
+      const refVal = mountEl.querySelector('#cvf-ref').value.trim();
+      const keyVal = mountEl.querySelector('#cvf-key').value.trim();
+      btn.disabled = true;
+      btn.textContent = 'جاري التحقق التشفيري...';
+      try {
+        const vRes = await apiFetch('/api/public/candidate-verify', {
+          method: 'POST',
+          body: JSON.stringify({ reference_no: refVal, access_key: keyVal })
+        });
+        try {
+          sessionStorage.setItem('jpf_access_key_' + vRes.reference_no, keyVal.toUpperCase());
+        } catch (_e) {}
+        showToast('✓ تم إثبات ملكية الطلب بنجاح', 'success');
+        if (typeof onVerified === 'function') {
+          onVerified(vRes.reference_no);
+        } else {
+          window.location.search = `?ref=${encodeURIComponent(vRes.reference_no)}`;
+        }
+      } catch (err) {
+        btn.disabled = false;
+        btn.textContent = 'تحقق من المفتاح ومتابعة ←';
+        showToast(err.message, 'error');
+      }
+    });
   }
 
   async function logout() {
@@ -209,7 +294,7 @@ const SmartHR = (() => {
           <div class="brand-swatch">ر</div>
           <div>
             <div style="font-family:var(--font-heading);font-weight:700;font-size:15px;color:#FFF;">لجنة التوظيف المركزية</div>
-            <div class="mono" style="font-size:11px;color:#E0A21B;">RBAC + Ollama v2.0</div>
+            <div class="mono" style="font-size:11px;color:#E0A21B;">RBAC + Ollama v2.1</div>
           </div>
         </a>
 
@@ -238,18 +323,34 @@ const SmartHR = (() => {
 
     draw();
 
-    fetch('/api/auth/me')
-      .then((r) => (r.ok ? r.json() : Promise.reject()))
-      .then((res) => {
-        if (res && res.user) {
-          window.__CURRENT_USER = res.user;
-          draw(res.user.role, res.user);
+    getCurrentUser()
+      .then((user) => {
+        if (user) {
+          draw(user.role, user);
+          window.dispatchEvent(new CustomEvent('smarthr:user-ready', { detail: user }));
         }
       })
       .catch(() => {
         const next = encodeURIComponent(window.location.pathname + window.location.search);
         window.location.replace(`Login.dc.html?next=${next}`);
       });
+  }
+
+  let _currentUserPromise = null;
+  function getCurrentUser() {
+    if (window.__CURRENT_USER) return Promise.resolve(window.__CURRENT_USER);
+    if (!_currentUserPromise) {
+      _currentUserPromise = fetch('/api/auth/me')
+        .then((r) => (r.ok ? r.json() : Promise.reject(new Error('AUTH_REQUIRED'))))
+        .then((res) => {
+          if (res && res.user) {
+            window.__CURRENT_USER = res.user;
+            return res.user;
+          }
+          throw new Error('AUTH_REQUIRED');
+        });
+    }
+    return _currentUserPromise;
   }
 
   return {
@@ -261,6 +362,8 @@ const SmartHR = (() => {
     formatTime,
     showToast,
     apiFetch,
+    getCurrentUser,
+    renderCandidateVerifyCard,
     logout,
     renderPortalHeader,
     renderPortalFooter,

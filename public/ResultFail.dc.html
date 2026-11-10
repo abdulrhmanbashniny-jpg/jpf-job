@@ -58,8 +58,15 @@
 
     async function loadFailResult() {
       const params = new URLSearchParams(window.location.search);
-      const ref = params.get('ref') || 'APP-2026-1006';
+      const ref = params.get('ref');
       const mount = document.getElementById('result-fail-mount');
+
+      if (!ref) {
+        SmartHR.renderCandidateVerifyCard(mount, '', (verifiedRef) => {
+          window.location.href = `ResultFail.dc.html?ref=${encodeURIComponent(verifiedRef)}`;
+        });
+        return;
+      }
 
       try {
         const [res, jobsRes] = await Promise.all([
@@ -143,6 +150,10 @@
           }, 80);
         });
       } catch (err) {
+        if (err.code === 'CANDIDATE_VERIFY_REQUIRED' || err.status === 403) {
+          SmartHR.renderCandidateVerifyCard(mount, ref, () => loadFailResult(), err.data?.hr_whatsapp_phone);
+          return;
+        }
         mount.innerHTML = `<div style="color:var(--terracotta);text-align:center;">${SmartHR.escapeHtml(err.message)}</div>`;
       }
     }
