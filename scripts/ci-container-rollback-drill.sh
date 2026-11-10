@@ -50,8 +50,9 @@ trap cleanup EXIT
 mkdir -p "${SIM_APP}" "${SIM_BAK}"
 docker network create "${SIM_ID}_ext_ai_net" >/dev/null
 
-echo "=== [CONTAINER DRILL 1] BOOTING SIMULATED PRODUCTION v2.0 (70be659 + override + hotfix + volumes) ==="
-git -C "${REPO_ROOT}" archive 70be659 | tar -x -C "${SIM_APP}"
+echo "=== [CONTAINER DRILL 1] BOOTING SIMULATED PRODUCTION v2.0 (git clone 70be659 + override + hotfix + volumes) ==="
+git clone --quiet "${REPO_ROOT}" "${SIM_APP}"
+git -C "${SIM_APP}" checkout --quiet 70be659
 
 # محاكاة ملف الترقيع المحلي غير المرفوع على الإنتاج فوق 70be659
 sed -i '1i // PROD_HOTFIX_OLLAMA_LOCAL_KEEP' "${SIM_APP}/services/aiEvaluator.js"
@@ -137,7 +138,9 @@ tar -tzf "${SIM_BAK}/uploads_pre_v21.tar.gz" >/dev/null
 echo "[OK] Pre-upgrade backups verified (db_pre_v21.dump [${TOC_LINES} TOC items] + uploads_pre_v21.tar.gz + hotfix + override)"
 
 echo "=== [CONTAINER DRILL 3] UPGRADING CONTAINER TO v2.1 (${HEAD_SHA:0:7}) ==="
-git -C "${REPO_ROOT}" archive "${HEAD_SHA}" | tar -x -C "${SIM_APP}"
+# بعد أخذ النسخة الاحتياطية من ملف الترقيع المحلي، تتم إعادة ضبط الملف المتتبع فقط لكي يسمح git بالانتقال النظيف دون لمس .env أو override
+git -C "${SIM_APP}" checkout -- services/aiEvaluator.js
+git -C "${SIM_APP}" checkout --quiet "${HEAD_SHA}"
 test -f "${SIM_APP}/docker-compose.override.yml"
 test -f "${SIM_APP}/.env"
 
@@ -192,8 +195,9 @@ test "${RESTORED_CANDS}" = "1"
 echo "[OK] Isolated DB restore check inside db container passed cleanly"
 
 echo "=== [CONTAINER DRILL 5] FULL CONTAINER ROLLBACK TO v2.0 (70be659 + HOTFIX + OVERRIDE + UPLOADS) ==="
-git -C "${REPO_ROOT}" archive 70be659 | tar -x -C "${SIM_APP}"
+git -C "${SIM_APP}" checkout --quiet 70be659
 cp "${SIM_BAK}/aiEvaluator_pre_v21.js" "${SIM_APP}/services/aiEvaluator.js"
+test ! -f "${SIM_APP}/public/Visit.dc.html"
 test -f "${SIM_APP}/docker-compose.override.yml"
 grep "PROD_HOTFIX_OLLAMA_LOCAL_KEEP" "${SIM_APP}/services/aiEvaluator.js" >/dev/null
 

@@ -61,9 +61,20 @@ $DC exec -T db sh -c 'pg_dump -U "$POSTGRES_USER" -d "$POSTGRES_DB" -Fc' \
 $DC exec -T app sh -c 'tar -czf - -C /app/uploads .' \
   > "/root/backups/smarthr/uploads_pre_v21_${TS}.tar.gz"
 
-# 4. التحقق الفوري غير التدميري من سلامة الأرشيفين
-$DC exec -T db pg_restore --list < "/root/backups/smarthr/db_pre_v21_${TS}.dump" | head -n 20
-tar -tzf "/root/backups/smarthr/uploads_pre_v21_${TS}.tar.gz" | head -n 20
+# 4. التحقق الفوري غير التدميري من سلامة الأرشيفين (دون إغلاق مبكر للأنبوب تحت pipefail)
+$DC exec -T db pg_restore --list < "/root/backups/smarthr/db_pre_v21_${TS}.dump" | wc -l
+tar -tzf "/root/backups/smarthr/uploads_pre_v21_${TS}.tar.gz" | wc -l
+```
+
+### أ-2. الترقية النظيفة للكود بعد موافقة عبدالرحمن الصريحة (دون تعارض مع ملف الترقيع المتتبع ودون لمس `override` أو `.env`):
+```bash
+cd /opt/jpf-job
+# بعد حفظ نسخة aiEvaluator_pre_v21_${TS}.js في الخطوة السابقة، يُعاد ضبط الملف المتتبع ليسمح Git بالترقية النظيفة
+git checkout -- services/aiEvaluator.js
+git fetch origin
+git checkout main && git pull --ff-only origin main
+docker compose -f /opt/jpf-job/docker-compose.yml -f /opt/jpf-job/docker-compose.override.yml up -d --build app
+curl -fsS https://hrjpf.tech/api/health
 ```
 
 ### ب. اختبار الاستعادة المعزول داخل حاوية `db` (معاملَا `-c` منفصلان خارج كتلة المعاملة):
