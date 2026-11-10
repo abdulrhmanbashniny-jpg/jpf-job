@@ -4,7 +4,7 @@ on:
   push:
     branches: [ "main", "release/**" ]
   pull_request:
-    branches: [ "main" ]
+    branches: [ "main", "release/**" ]
 
 jobs:
   verify-platform:
@@ -106,6 +106,10 @@ jobs:
       - name: Run Isolated v2.2a Smart QR Reception Security, Concurrency & Chromium E2E Suite (verify:v22a)
         run: |
           ALLOW_ISOLATED_DRILL=1 DRILL_PG_ADMIN_URL="postgresql://postgres:postgres_ci_password@127.0.0.1:5432/postgres" npm run verify:v22a
+
+      - name: Run Isolated v2.2b Voice Pitch Governance, Retention Auto-Purge & Chromium E2E Suite (verify:v22b)
+        run: |
+          ALLOW_ISOLATED_DRILL=1 DRILL_PG_ADMIN_URL="postgresql://postgres:postgres_ci_password@127.0.0.1:5432/postgres" npm run verify:v22b
 
   container-upgrade-rollback-drill:
     name: Docker Compose Upgrade, Override, Uploads Backup & Rollback Drill

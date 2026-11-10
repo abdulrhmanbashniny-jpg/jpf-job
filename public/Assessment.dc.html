@@ -251,6 +251,7 @@
                 إنهاء الاختبار واعتماد الإجابات ✓
               </button>
             </div>
+            <div id="voice-pitch-mount"></div>
           </aside>
 
           <section class="card" id="question-stage" style="min-height:430px;display:flex;flex-direction:column;justify-content:space-between;"></section>
@@ -258,6 +259,7 @@
       `;
 
       document.getElementById('finish-exam-sidebar-btn').addEventListener('click', () => confirmAndSubmit(false));
+      SmartHR.renderCandidateVoicePitchWidget(document.getElementById('voice-pitch-mount'), appData);
       renderCurrentQuestion();
     }
 

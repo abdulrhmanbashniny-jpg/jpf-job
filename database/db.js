@@ -180,6 +180,59 @@ async function ensureDatabaseInitialized() {
             CHECK (lobby_status IN ('not_arrived', 'checked_in', 'in_room', 'completed'));
         END IF;
       END $$;
+
+      -- v2.2b: السؤال الصوتي الاختياري (60 ثانية) مع حوكمة الموافقة والمراجعة البشرية والحذف التلقائي بعد 30 يوماً
+      ALTER TABLE applications
+        ADD COLUMN IF NOT EXISTS voice_pitch_path VARCHAR(350),
+        ADD COLUMN IF NOT EXISTS voice_mime_type VARCHAR(80),
+        ADD COLUMN IF NOT EXISTS voice_duration_sec INTEGER,
+        ADD COLUMN IF NOT EXISTS voice_recorded_at TIMESTAMPTZ,
+        ADD COLUMN IF NOT EXISTS voice_consent_at TIMESTAMPTZ,
+        ADD COLUMN IF NOT EXISTS voice_retention_expires_at TIMESTAMPTZ,
+        ADD COLUMN IF NOT EXISTS voice_purged_at TIMESTAMPTZ,
+        ADD COLUMN IF NOT EXISTS voice_purge_reason VARCHAR(60),
+        ADD COLUMN IF NOT EXISTS voice_bonus_score NUMERIC(4,2) NOT NULL DEFAULT 0.00,
+        ADD COLUMN IF NOT EXISTS voice_review_notes TEXT,
+        ADD COLUMN IF NOT EXISTS voice_reviewed_by VARCHAR(140),
+        ADD COLUMN IF NOT EXISTS voice_reviewed_at TIMESTAMPTZ;
+      UPDATE applications SET voice_bonus_score = 0.00 WHERE voice_bonus_score IS NULL;
+      ALTER TABLE applications
+        ALTER COLUMN voice_pitch_path TYPE VARCHAR(350),
+        ALTER COLUMN voice_mime_type TYPE VARCHAR(80),
+        ALTER COLUMN voice_purge_reason TYPE VARCHAR(60),
+        ALTER COLUMN voice_bonus_score TYPE NUMERIC(4,2),
+        ALTER COLUMN voice_bonus_score SET DEFAULT 0.00,
+        ALTER COLUMN voice_bonus_score SET NOT NULL,
+        ALTER COLUMN voice_reviewed_by TYPE VARCHAR(140);
+      DO $$
+      BEGIN
+        IF NOT EXISTS (
+          SELECT 1 FROM pg_constraint WHERE conname = 'chk_applications_voice_duration'
+        ) AND NOT EXISTS (
+          SELECT 1 FROM pg_constraint
+          WHERE conrelid = 'applications'::regclass
+            AND pg_get_constraintdef(oid) LIKE '%voice_duration_sec%'
+        ) THEN
+          ALTER TABLE applications
+            ADD CONSTRAINT chk_applications_voice_duration
+            CHECK (voice_duration_sec IS NULL OR (voice_duration_sec BETWEEN 1 AND 65));
+        END IF;
+
+        IF NOT EXISTS (
+          SELECT 1 FROM pg_constraint WHERE conname = 'chk_applications_voice_bonus'
+        ) AND NOT EXISTS (
+          SELECT 1 FROM pg_constraint
+          WHERE conrelid = 'applications'::regclass
+            AND pg_get_constraintdef(oid) LIKE '%voice_bonus_score%'
+        ) THEN
+          ALTER TABLE applications
+            ADD CONSTRAINT chk_applications_voice_bonus
+            CHECK (voice_bonus_score BETWEEN 0 AND 5);
+        END IF;
+      END $$;
+      CREATE INDEX IF NOT EXISTS idx_applications_voice_retention
+        ON applications (voice_retention_expires_at)
+        WHERE voice_pitch_path IS NOT NULL;
     `);
 
     // 3. إعداد افتراضي لبطاقة المقر الحضوري دون الكتابة فوق أي قيمة موجودة

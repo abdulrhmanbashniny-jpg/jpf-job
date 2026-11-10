@@ -413,6 +413,188 @@ const SmartHR = (() => {
     return _currentUserPromise;
   }
 
+  function renderCandidateVoicePitchWidget(mountEl, appObj) {
+    if (!mountEl || !appObj || !appObj.reference_no) return;
+    let mediaRec = null;
+    let recStream = null;
+    let chunks = [];
+    let pendingBlob = null;
+    let recSecs = 0;
+    let recTimer = null;
+
+    function stopTracks() {
+      if (recTimer) { clearInterval(recTimer); recTimer = null; }
+      if (recStream) { recStream.getTracks().forEach((t) => t.stop()); recStream = null; }
+    }
+
+    function draw() {
+      const hasSaved = Boolean(appObj.has_voice_pitch);
+      mountEl.innerHTML = `
+        <div class="card" id="voice-pitch-card" style="padding:16px;margin-top:14px;border:1.5px dashed var(--olive);">
+          <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;margin-bottom:6px;flex-wrap:wrap;">
+            <strong style="font-size:13.5px;color:var(--olive);">🎙️ تعريف صوتي اختياري (60 ثانية)</strong>
+            <span class="badge badge-olive" style="font-size:10.5px;">اختياري — مكافأة تميز فقط</span>
+          </div>
+          <p style="font-size:12px;color:var(--text-secondary);line-height:1.65;margin-bottom:10px;">
+            عرّف بنفسك وأبرز خبراتك صوتياً خلال دقيقة واحدة (تتم مراجعته بشرياً فقط من اللجنة ولا يؤثر عدم تسجيله سلباً على درجتك).
+          </p>
+
+          ${
+            hasSaved
+              ? `
+                <div id="voice-saved-banner" style="background:var(--olive-soft);border:1px solid var(--olive);border-radius:10px;padding:10px 12px;font-size:12px;display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap;">
+                  <span>✓ تم حفظ تعريفك الصوتي (${escapeHtml(String(appObj.voice_duration_sec || 30))} ثانية) للمراجعة البشرية.</span>
+                  <button type="button" id="voice-self-delete-btn" class="btn btn-outline btn-sm" style="color:var(--terracotta);border-color:var(--terracotta);">حذف التسجيل</button>
+                </div>
+              `
+              : `
+                <label style="display:flex;align-items:flex-start;gap:8px;font-size:11.5px;color:var(--charcoal);margin-bottom:10px;cursor:pointer;">
+                  <input type="checkbox" id="voice-consent-chk" style="margin-top:3px;accent-color:var(--olive);" />
+                  <span>أوافق على تسجيل مقطعي الصوتي لمراجعته بشرياً من لجنة التوظيف فقط، مع حذفه تلقائياً بعد 30 يوماً في حال عدم الاختيار النهائي.</span>
+                </label>
+
+                <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:8px;">
+                  <button type="button" id="voice-record-btn" class="btn btn-outline btn-sm">🔴 بدء التسجيل (حتى 60 ث)</button>
+                  <button type="button" id="voice-stop-btn" class="btn btn-terracotta btn-sm" style="display:none;">⏹ إيقاف (<span id="voice-sec-lbl">0</span>/60ث)</button>
+                  <label class="btn btn-outline btn-sm" style="cursor:pointer;margin:0;">
+                    📎 أو إرفاق ملف صوتي
+                    <input type="file" id="voice-file-input" accept="audio/webm,audio/ogg,audio/mp4,audio/mpeg,audio/wav,.webm,.ogg,.m4a,.mp3,.wav" style="display:none;" />
+                  </label>
+                </div>
+
+                <div id="voice-preview-box" style="display:none;margin-top:8px;">
+                  <audio id="voice-local-preview" controls style="width:100%;height:34px;margin-bottom:8px;"></audio>
+                  <button type="button" id="voice-upload-btn" class="btn btn-olive btn-sm" style="width:100%;">حفظ التعريف الصوتي الاختياري ✓</button>
+                </div>
+              `
+          }
+        </div>
+      `;
+
+      const delBtn = mountEl.querySelector('#voice-self-delete-btn');
+      if (delBtn) {
+        delBtn.addEventListener('click', async () => {
+          try {
+            let savedKey = '';
+            try { savedKey = sessionStorage.getItem('jpf_access_key_' + appObj.reference_no) || ''; } catch (_e) {}
+            const r = await fetch(`/api/applications/${encodeURIComponent(appObj.reference_no)}/voice-pitch`, {
+              method: 'DELETE',
+              headers: savedKey ? { 'X-Candidate-Key': savedKey } : {}
+            });
+            const d = await r.json();
+            if (!r.ok) throw new Error(d.error || 'تعذر حذف المقطع الصوتي');
+            appObj.has_voice_pitch = false;
+            showToast(d.message, 'info');
+            draw();
+          } catch (err) {
+            showToast(err.message, 'error');
+          }
+        });
+        return;
+      }
+
+      const recBtn = mountEl.querySelector('#voice-record-btn');
+      const stopBtn = mountEl.querySelector('#voice-stop-btn');
+      const fileInp = mountEl.querySelector('#voice-file-input');
+      const previewBox = mountEl.querySelector('#voice-preview-box');
+      const previewAudio = mountEl.querySelector('#voice-local-preview');
+      const uploadBtn = mountEl.querySelector('#voice-upload-btn');
+
+      if (recBtn) {
+        recBtn.addEventListener('click', async () => {
+          if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia || typeof window.MediaRecorder === 'undefined') {
+            showToast('التسجيل المباشر غير مدعوم هنا؛ استخدم زر إرفاق ملف صوتي.', 'error');
+            return;
+          }
+          try {
+            recStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+            chunks = [];
+            recSecs = 0;
+            mediaRec = new MediaRecorder(recStream);
+            mediaRec.ondataavailable = (ev) => { if (ev.data && ev.data.size > 0) chunks.push(ev.data); };
+            mediaRec.onstop = () => {
+              stopTracks();
+              pendingBlob = new Blob(chunks, { type: mediaRec.mimeType || 'audio/webm' });
+              previewAudio.src = URL.createObjectURL(pendingBlob);
+              previewBox.style.display = 'block';
+              recBtn.style.display = '';
+              stopBtn.style.display = 'none';
+            };
+            mediaRec.start();
+            recBtn.style.display = 'none';
+            stopBtn.style.display = '';
+            recTimer = setInterval(() => {
+              recSecs += 1;
+              const lbl = mountEl.querySelector('#voice-sec-lbl');
+              if (lbl) lbl.textContent = String(recSecs);
+              if (recSecs >= 60 && mediaRec && mediaRec.state === 'recording') mediaRec.stop();
+            }, 1000);
+          } catch (_e) {
+            showToast('تعذر الوصول للميكروفون؛ يمكنك رفع ملف صوتي مسجل.', 'error');
+          }
+        });
+      }
+
+      if (stopBtn) {
+        stopBtn.addEventListener('click', () => {
+          if (mediaRec && mediaRec.state === 'recording') mediaRec.stop();
+        });
+      }
+
+      if (fileInp) {
+        fileInp.addEventListener('change', () => {
+          const f = fileInp.files && fileInp.files[0];
+          if (!f) return;
+          pendingBlob = f;
+          recSecs = 30;
+          previewAudio.src = URL.createObjectURL(f);
+          previewBox.style.display = 'block';
+        });
+      }
+
+      if (uploadBtn) {
+        uploadBtn.addEventListener('click', async () => {
+          const consentChk = mountEl.querySelector('#voice-consent-chk');
+          if (!consentChk || !consentChk.checked) {
+            showToast('يرجى تحديد مربع الموافقة الصريحة قبل حفظ التسجيل الصوتي.', 'error');
+            return;
+          }
+          if (!pendingBlob) {
+            showToast('يرجى تسجيل أو اختيار ملف صوتي أولاً.', 'error');
+            return;
+          }
+          uploadBtn.disabled = true;
+          try {
+            let savedKey = '';
+            try { savedKey = sessionStorage.getItem('jpf_access_key_' + appObj.reference_no) || ''; } catch (_e) {}
+            const fd = new FormData();
+            fd.append('voice_consent', 'true');
+            fd.append('duration_sec', String(Math.max(1, Math.min(60, recSecs || 30))));
+            if (savedKey) fd.append('access_key', savedKey);
+            fd.append('voice_file', pendingBlob, pendingBlob.name || 'voice-pitch.webm');
+
+            const r = await fetch(`/api/applications/${encodeURIComponent(appObj.reference_no)}/voice-pitch`, {
+              method: 'POST',
+              headers: savedKey ? { 'X-Candidate-Key': savedKey } : {},
+              body: fd
+            });
+            const d = await r.json();
+            if (!r.ok) throw new Error(d.error || 'تعذر حفظ التسجيل الصوتي');
+            appObj.has_voice_pitch = true;
+            appObj.voice_duration_sec = d.voice_pitch.duration_sec;
+            showToast(d.message, 'success');
+            draw();
+          } catch (err) {
+            uploadBtn.disabled = false;
+            showToast(err.message, 'error');
+          }
+        });
+      }
+    }
+
+    draw();
+  }
+
   return {
     escapeHtml,
     deptColor,
@@ -425,6 +607,7 @@ const SmartHR = (() => {
     apiFetch,
     getCurrentUser,
     refreshLobbyArrivalBanner,
+    renderCandidateVoicePitchWidget,
     renderCandidateVerifyCard,
     logout,
     renderPortalHeader,

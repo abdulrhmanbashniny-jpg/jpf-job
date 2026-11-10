@@ -56,8 +56,58 @@ const MAX_UPLOAD_MB = parseInt(process.env.MAX_UPLOAD_MB || '10', 10);
 
 const uploadsDir = process.env.UPLOAD_DIR ? path.resolve(process.env.UPLOAD_DIR) : path.join(__dirname, 'uploads');
 const publicUploadsDir = path.join(uploadsDir, 'public');
+const voiceUploadsDir = path.join(uploadsDir, 'voice_pitches');
 if (!fs.existsSync(publicUploadsDir)) {
   fs.mkdirSync(publicUploadsDir, { recursive: true });
+}
+if (!fs.existsSync(voiceUploadsDir)) {
+  fs.mkdirSync(voiceUploadsDir, { recursive: true });
+}
+
+const MAX_VOICE_BYTES = Math.round(2.5 * 1024 * 1024);
+const uploadVoiceMem = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: MAX_VOICE_BYTES }
+});
+
+function detectSafeAudioContainer(buf) {
+  if (!Buffer.isBuffer(buf) || buf.length < 16) return null;
+  // WebM / Matroska EBML: 1A 45 DF A3
+  if (buf[0] === 0x1a && buf[1] === 0x45 && buf[2] === 0xdf && buf[3] === 0xa3) {
+    return { mime: 'audio/webm', ext: '.webm' };
+  }
+  // Ogg Opus/Vorbis: "OggS"
+  if (buf[0] === 0x4f && buf[1] === 0x67 && buf[2] === 0x67 && buf[3] === 0x53) {
+    return { mime: 'audio/ogg', ext: '.ogg' };
+  }
+  // MP4 / M4A: bytes 4..7 == "ftyp"
+  if (buf[4] === 0x66 && buf[5] === 0x74 && buf[6] === 0x79 && buf[7] === 0x70) {
+    return { mime: 'audio/mp4', ext: '.m4a' };
+  }
+  // WAV: "RIFF" + bytes 8..11 == "WAVE"
+  if (
+    buf[0] === 0x52 && buf[1] === 0x49 && buf[2] === 0x46 && buf[3] === 0x46 &&
+    buf[8] === 0x57 && buf[9] === 0x41 && buf[10] === 0x56 && buf[11] === 0x45
+  ) {
+    return { mime: 'audio/wav', ext: '.wav' };
+  }
+  // MP3: "ID3" header or valid MPEG Audio frame sync
+  if (
+    (buf[0] === 0x49 && buf[1] === 0x44 && buf[2] === 0x33) ||
+    (buf[0] === 0xff && (buf[1] & 0xe0) === 0xe0 && (buf[1] & 0x06) !== 0x00)
+  ) {
+    return { mime: 'audio/mpeg', ext: '.mp3' };
+  }
+  return null;
+}
+
+function resolveSafeVoiceDiskPath(storedRelName) {
+  if (!storedRelName) return null;
+  const baseName = path.basename(String(storedRelName));
+  if (!baseName || baseName.includes('..')) return null;
+  const full = path.resolve(voiceUploadsDir, baseName);
+  if (!full.startsWith(voiceUploadsDir + path.sep)) return null;
+  return full;
 }
 
 function safeUnlink(filePath) {
@@ -220,6 +270,12 @@ app.use('/uploads/public', express.static(publicUploadsDir));
 
 app.use('/uploads', async (req, res, next) => {
   try {
+    if (req.path === '/voice_pitches' || req.path.startsWith('/voice_pitches/')) {
+      return res.status(403).json({
+        error: 'يُمنع الوصول المباشر للمقاطع الصوتية؛ يتم الاستماع حصراً عبر واجهة البث المسجّلة في سجل التدقيق.',
+        code: 'DIRECT_VOICE_ACCESS_FORBIDDEN'
+      });
+    }
     const session = await resolveActiveStaffSession(req, query);
     if (!session) {
       clearSessionCookie(res);
@@ -1261,7 +1317,11 @@ app.get('/api/applications', requireAuth(), async (req, res) => {
       params
     );
 
-    const safeApplications = rows.map(({ candidate_access_token: _cat, ...row }) => row);
+    const safeApplications = rows.map(({ candidate_access_token: _cat, voice_pitch_path: vp, ...row }) => ({
+      ...row,
+      has_voice_pitch: Boolean(vp),
+      voice_stream_url: vp ? `/api/applications/${row.id}/voice-stream` : null
+    }));
     res.json({ applications: safeApplications });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -1500,6 +1560,11 @@ app.get('/api/applications/:idOrRef', async (req, res) => {
           ai_overall_score: application.ai_overall_score,
           integrity_score: application.integrity_score,
           assessed_at: application.assessed_at,
+          has_voice_pitch: Boolean(application.voice_pitch_path),
+          voice_duration_sec: application.voice_duration_sec || null,
+          voice_recorded_at: application.voice_recorded_at || null,
+          voice_retention_expires_at: application.voice_retention_expires_at || null,
+          voice_purged_at: application.voice_purged_at || null,
           ai_report: sanitizeReportForCandidate(application.ai_report),
           job_questions: application.status === 'assessment_pending'
             ? sanitizeQuestionsForCandidate(application.job_questions)
@@ -1525,7 +1590,7 @@ app.get('/api/applications/:idOrRef', async (req, res) => {
       query('SELECT * FROM interviews WHERE application_id = $1', [application.id])
     ]);
 
-    const { candidate_access_token: _staffHiddenCat, ...safeStaffApp } = application;
+    const { candidate_access_token: _staffHiddenCat, voice_pitch_path: rawVp, ...safeStaffApp } = application;
     const rawInt = interviewRes.rows[0] || null;
     let safeStaffInt = null;
     if (rawInt) {
@@ -1539,6 +1604,8 @@ app.get('/api/applications/:idOrRef', async (req, res) => {
     res.json({
       application: {
         ...safeStaffApp,
+        has_voice_pitch: Boolean(rawVp),
+        voice_stream_url: rawVp ? `/api/applications/${application.id}/voice-stream` : null,
         job_questions: isCommittee
           ? application.job_questions
           : sanitizeQuestionsForCandidate(application.job_questions)
@@ -1775,7 +1842,17 @@ app.patch('/api/applications/:id/status', requireAuth(['super_admin', 'hr_coordi
     }
 
     const { rows } = await client.query(
-      `UPDATE applications SET status = $1, updated_at = NOW() WHERE id = $2 RETURNING *`,
+      `UPDATE applications
+       SET status = $1::varchar,
+           voice_retention_expires_at = CASE
+             WHEN $1::varchar = 'offered' THEN NULL
+             WHEN voice_pitch_path IS NOT NULL AND voice_retention_expires_at IS NULL
+               THEN COALESCE(voice_recorded_at, NOW()) + INTERVAL '30 days'
+             ELSE voice_retention_expires_at
+           END,
+           updated_at = NOW()
+       WHERE id = $2
+       RETURNING *`,
       [status, appId]
     );
 
@@ -2364,6 +2441,7 @@ app.get('/api/ranking', requireAuth(), async (req, res) => {
       `SELECT
         a.id, a.reference_no, a.status, a.cv_match_score, a.assessment_score,
         a.ai_overall_score, a.committee_avg_score, a.final_weighted_score, a.integrity_score,
+        a.voice_bonus_score, (a.voice_pitch_path IS NOT NULL) AS has_voice_pitch,
         c.full_name, c.email, c.phone, c.city, c.years_experience, c.qualification, c.specialization,
         j.id AS job_id, j.code AS job_code, j.title AS job_title, j.department, j.accent_color, j.passing_score,
         (SELECT COUNT(*)::int FROM committee_evaluations ce WHERE ce.application_id = a.id) AS evaluations_count,
@@ -4182,9 +4260,390 @@ app.get('/api/reception/arrivals', requireAuth(), async (_req, res) => {
   }
 });
 
-app.use((err, _req, res, _next) => {
+// =================================================================================
+// 12. السؤال الصوتي الاختياري 60 ثانية (v2.2b — تخزين معزول + مراجعة بشرية + حذف 30 يوماً)
+// =================================================================================
+async function runExpiredVoiceRetentionPurge(actorLabel = 'system:retention-janitor', actorRole = 'system', ipAddress = '127.0.0.1') {
+  const client = await pool.connect();
+  const purgedRefs = [];
+  const filesToRemove = [];
+  try {
+    await client.query('BEGIN');
+    const dueRes = await client.query(
+      `SELECT id, reference_no, voice_pitch_path
+       FROM applications
+       WHERE voice_pitch_path IS NOT NULL
+         AND status <> 'offered'
+         AND voice_retention_expires_at IS NOT NULL
+         AND voice_retention_expires_at <= NOW()
+       FOR UPDATE SKIP LOCKED`
+    );
+
+    for (const row of dueRes.rows) {
+      const diskPath = resolveSafeVoiceDiskPath(row.voice_pitch_path);
+      if (diskPath) filesToRemove.push(diskPath);
+      await client.query(
+        `UPDATE applications
+         SET voice_pitch_path = NULL,
+             voice_mime_type = NULL,
+             voice_purged_at = NOW(),
+             voice_purge_reason = 'retention_30d_expired',
+             updated_at = NOW()
+         WHERE id = $1`,
+        [row.id]
+      );
+      purgedRefs.push(row.reference_no);
+    }
+    await client.query('COMMIT');
+  } catch (err) {
+    await client.query('ROLLBACK').catch(() => {});
+    throw err;
+  } finally {
+    client.release();
+  }
+
+  for (const fp of filesToRemove) {
+    safeUnlink(fp);
+  }
+  for (const refNo of purgedRefs) {
+    await logAudit({
+      actor: actorLabel,
+      actorRole,
+      action: 'VOICE_RETENTION_AUTO_PURGED',
+      entityType: 'application',
+      entityId: refNo,
+      metadata: { reason: 'retention_30d_expired' },
+      ipAddress
+    });
+  }
+  return { purged_count: purgedRefs.length, purged_references: purgedRefs };
+}
+
+app.post('/api/applications/:idOrRef/voice-pitch', uploadVoiceMem.single('voice_file'), async (req, res) => {
+  const client = await pool.connect();
+  let newlyWrittenPath = null;
+  try {
+    const { idOrRef } = req.params;
+    const isNum = /^\d+$/.test(idOrRef);
+    const consentRaw = String(req.body?.voice_consent || '').trim().toLowerCase();
+    if (consentRaw !== 'true' && consentRaw !== '1') {
+      return res.status(400).json({
+        error: 'يلزم الإقرار بالموافقة الصريحة على تسجيل المقطع الصوتي وسياسة الحذف التلقائي بعد 30 يوماً قبل الحفظ.',
+        code: 'VOICE_CONSENT_REQUIRED'
+      });
+    }
+
+    if (!req.file || !req.file.buffer) {
+      return res.status(400).json({ error: 'يرجى تسجيل أو إرفاق ملف صوتي صالح.', code: 'MISSING_VOICE_FILE' });
+    }
+
+    const detected = detectSafeAudioContainer(req.file.buffer);
+    if (!detected) {
+      return res.status(400).json({
+        error: 'صيغة الملف الثنائية غير مدعومة أو غير صالحة؛ يُسمح فقط بملفات الصوت الحقيقية (WebM, OGG, M4A/MP4, WAV, MP3).',
+        code: 'UNSUPPORTED_AUDIO_BINARY'
+      });
+    }
+
+    const durSec = Math.max(1, Math.min(65, Math.round(Number(req.body?.duration_sec) || 30)));
+    if (Number(req.body?.duration_sec) > 65) {
+      return res.status(400).json({
+        error: 'يتجاوز طول التسجيل الحد الأقصى المسموح (60 ثانية).',
+        code: 'VOICE_DURATION_EXCEEDED'
+      });
+    }
+
+    await client.query('BEGIN');
+    const appRes = await client.query(
+      `SELECT id, reference_no, status, candidate_access_token, voice_pitch_path
+       FROM applications
+       WHERE ${isNum ? 'id = $1' : 'UPPER(reference_no) = UPPER($1)'}
+       FOR UPDATE`,
+      [isNum ? parseInt(idOrRef, 10) : idOrRef]
+    );
+    if (!appRes.rows.length) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({ error: 'الطلب غير موجود.' });
+    }
+    const appRow = appRes.rows[0];
+
+    // التحقق التشفيري الصارم من ملكية المتقدم للطلب (Candidate PoP)
+    const rawAccessKey = req.body?.access_key || req.headers['x-candidate-key'] || '';
+    if (!hasCandidateOwnershipProof(req, [appRow], rawAccessKey)) {
+      await client.query('ROLLBACK');
+      return res.status(403).json({
+        error: 'يلزم إثبات ملكية الطلب عبر مفتاح الدخول السري للمتقدم قبل رفع التعريف الصوتي.',
+        code: 'CANDIDATE_OWNERSHIP_REQUIRED'
+      });
+    }
+
+    if (appRow.status === 'rejected') {
+      await client.query('ROLLBACK');
+      return res.status(400).json({ error: 'تم إغلاق هذا الطلب ولا يمكن رفع مرفقات جديدة عليه.', code: 'APPLICATION_CLOSED' });
+    }
+
+    const safeFileName = `voice-${appRow.id}-${Date.now()}-${crypto.randomBytes(8).toString('hex')}${detected.ext}`;
+    newlyWrittenPath = path.join(voiceUploadsDir, safeFileName);
+    fs.writeFileSync(newlyWrittenPath, req.file.buffer, { mode: 0o600 });
+
+    const oldDiskPath = resolveSafeVoiceDiskPath(appRow.voice_pitch_path);
+
+    const updRes = await client.query(
+      `UPDATE applications
+       SET voice_pitch_path = $1,
+           voice_mime_type = $2,
+           voice_duration_sec = $3,
+           voice_recorded_at = NOW(),
+           voice_consent_at = NOW(),
+           voice_retention_expires_at = CASE WHEN status = 'offered' THEN NULL ELSE NOW() + INTERVAL '30 days' END,
+           voice_purged_at = NULL,
+           voice_purge_reason = NULL,
+           updated_at = NOW()
+       WHERE id = $4
+       RETURNING id, reference_no, voice_duration_sec, voice_recorded_at, voice_retention_expires_at`,
+      [safeFileName, detected.mime, durSec, appRow.id]
+    );
+
+    await client.query('COMMIT');
+    if (oldDiskPath && oldDiskPath !== newlyWrittenPath) safeUnlink(oldDiskPath);
+
+    await logAudit({
+      actor: `candidate:${appRow.reference_no}`,
+      actorRole: 'candidate',
+      action: 'VOICE_PITCH_UPLOADED',
+      entityType: 'application',
+      entityId: appRow.reference_no,
+      metadata: { mime: detected.mime, duration_sec: durSec, bytes: req.file.buffer.length },
+      ipAddress: req.ip
+    });
+
+    res.status(201).json({
+      message: 'تم حفظ تعريفك الصوتي الاختياري بنجاح وسيُعرض للمراجعة البشرية من قِبل لجنة التوظيف ✓',
+      voice_pitch: {
+        has_voice_pitch: true,
+        duration_sec: updRes.rows[0].voice_duration_sec,
+        recorded_at: updRes.rows[0].voice_recorded_at,
+        retention_expires_at: updRes.rows[0].voice_retention_expires_at
+      }
+    });
+  } catch (err) {
+    await client.query('ROLLBACK').catch(() => {});
+    if (newlyWrittenPath) safeUnlink(newlyWrittenPath);
+    res.status(500).json({ error: err.message });
+  } finally {
+    client.release();
+  }
+});
+
+app.delete('/api/applications/:idOrRef/voice-pitch', async (req, res) => {
+  const client = await pool.connect();
+  try {
+    const { idOrRef } = req.params;
+    const isNum = /^\d+$/.test(idOrRef);
+    const staffSession = await resolveActiveStaffSession(req, query);
+
+    await client.query('BEGIN');
+    const appRes = await client.query(
+      `SELECT id, reference_no, candidate_access_token, voice_pitch_path
+       FROM applications
+       WHERE ${isNum ? 'id = $1' : 'UPPER(reference_no) = UPPER($1)'}
+       FOR UPDATE`,
+      [isNum ? parseInt(idOrRef, 10) : idOrRef]
+    );
+    if (!appRes.rows.length) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({ error: 'الطلب غير موجود.' });
+    }
+    const appRow = appRes.rows[0];
+
+    const isAllowedStaff = staffSession && ['super_admin', 'hr_coordinator'].includes(staffSession.role);
+    const rawAccessKey = req.body?.access_key || req.headers['x-candidate-key'] || '';
+    const isOwnerCandidate = hasCandidateOwnershipProof(req, [appRow], rawAccessKey);
+
+    if (!isAllowedStaff && !isOwnerCandidate) {
+      await client.query('ROLLBACK');
+      return res.status(403).json({
+        error: 'غير مصرح بحذف المقطع الصوتي إلا للمتقدم صاحب الطلب أو مسؤول الموارد البشرية.',
+        code: 'VOICE_DELETE_FORBIDDEN'
+      });
+    }
+
+    const oldDiskPath = resolveSafeVoiceDiskPath(appRow.voice_pitch_path);
+    const reason = isAllowedStaff ? 'staff_deleted' : 'candidate_withdrawn';
+
+    await client.query(
+      `UPDATE applications
+       SET voice_pitch_path = NULL,
+           voice_mime_type = NULL,
+           voice_duration_sec = NULL,
+           voice_retention_expires_at = NULL,
+           voice_purged_at = NOW(),
+           voice_purge_reason = $1,
+           updated_at = NOW()
+       WHERE id = $2`,
+      [reason, appRow.id]
+    );
+    await client.query('COMMIT');
+
+    if (oldDiskPath) safeUnlink(oldDiskPath);
+
+    await logAudit({
+      actor: isAllowedStaff ? staffSession.full_name : `candidate:${appRow.reference_no}`,
+      actorRole: isAllowedStaff ? staffSession.role : 'candidate',
+      action: 'VOICE_PITCH_DELETED',
+      entityType: 'application',
+      entityId: appRow.reference_no,
+      metadata: { reason },
+      ipAddress: req.ip
+    });
+
+    res.json({ message: 'تم حذف المقطع الصوتي بنجاح وتوثيق العملية في سجل التدقيق.' });
+  } catch (err) {
+    await client.query('ROLLBACK').catch(() => {});
+    res.status(500).json({ error: err.message });
+  } finally {
+    client.release();
+  }
+});
+
+app.get('/api/applications/:idOrRef/voice-stream', requireAuth(['super_admin', 'hr_coordinator', 'committee_member']), async (req, res) => {
+  try {
+    const { idOrRef } = req.params;
+    const isNum = /^\d+$/.test(idOrRef);
+    const { rows } = await query(
+      `SELECT id, reference_no, voice_pitch_path, voice_mime_type
+       FROM applications
+       WHERE ${isNum ? 'id = $1' : 'UPPER(reference_no) = UPPER($1)'}`,
+      [isNum ? parseInt(idOrRef, 10) : idOrRef]
+    );
+    if (!rows.length || !rows[0].voice_pitch_path) {
+      return res.status(404).json({ error: 'لا يوجد مقطع صوتي متاح لهذا الطلب أو انتهت مدة الاحتفاظ به.' });
+    }
+
+    const diskPath = resolveSafeVoiceDiskPath(rows[0].voice_pitch_path);
+    if (!diskPath || !fs.existsSync(diskPath)) {
+      return res.status(404).json({ error: 'ملف التسجيل الصوتي غير موجود على الخادم.' });
+    }
+
+    const stat = fs.statSync(diskPath);
+    const totalSize = stat.size;
+    const mimeType = rows[0].voice_mime_type || 'audio/webm';
+    const rangeHeader = req.headers.range;
+
+    res.setHeader('Cache-Control', 'private, no-store');
+    res.setHeader('Accept-Ranges', 'bytes');
+    res.setHeader('X-Content-Type-Options', 'nosniff');
+
+    // توثيق الاستماع البشري في سجل التدقيق عند بداية البث (بدون تكرار مفرط لطلبات الـ Range اللاحقة)
+    if (!rangeHeader || rangeHeader.startsWith('bytes=0-')) {
+      await logAudit({
+        actor: req.user.full_name,
+        actorRole: req.user.role,
+        action: 'VOICE_PITCH_PLAYED',
+        entityType: 'application',
+        entityId: rows[0].reference_no,
+        metadata: { mime: mimeType, size_bytes: totalSize },
+        ipAddress: req.ip
+      });
+    }
+
+    if (rangeHeader) {
+      const m = /^bytes=(\d*)-(\d*)$/.exec(rangeHeader);
+      if (!m) {
+        res.setHeader('Content-Range', `bytes */${totalSize}`);
+        return res.status(416).end();
+      }
+      const start = m[1] ? parseInt(m[1], 10) : 0;
+      const end = m[2] ? Math.min(parseInt(m[2], 10), totalSize - 1) : totalSize - 1;
+      if (start >= totalSize || start > end) {
+        res.setHeader('Content-Range', `bytes */${totalSize}`);
+        return res.status(416).end();
+      }
+      res.status(206);
+      res.setHeader('Content-Range', `bytes ${start}-${end}/${totalSize}`);
+      res.setHeader('Content-Length', end - start + 1);
+      res.setHeader('Content-Type', mimeType);
+      return fs.createReadStream(diskPath, { start, end }).pipe(res);
+    }
+
+    res.status(200);
+    res.setHeader('Content-Length', totalSize);
+    res.setHeader('Content-Type', mimeType);
+    return fs.createReadStream(diskPath).pipe(res);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/applications/:idOrRef/voice-review', requireAuth(['super_admin', 'hr_coordinator', 'committee_member']), async (req, res) => {
+  try {
+    const { idOrRef } = req.params;
+    const isNum = /^\d+$/.test(idOrRef);
+    const bonusRaw = Number(req.body?.voice_bonus_score);
+    const reviewNotes = String(req.body?.voice_review_notes || '').trim();
+
+    if (Number.isNaN(bonusRaw) || bonusRaw < 0 || bonusRaw > 5) {
+      return res.status(400).json({
+        error: 'درجة التميز الإضافية للتعريف الصوتي يجب أن تكون بين 0 و 5 درجات كحد أقصى (بدون أي خصم).',
+        code: 'INVALID_VOICE_BONUS_SCORE'
+      });
+    }
+
+    const { rows } = await query(
+      `UPDATE applications
+       SET voice_bonus_score = $1,
+           voice_review_notes = $2,
+           voice_reviewed_by = $3,
+           voice_reviewed_at = NOW(),
+           updated_at = NOW()
+       WHERE ${isNum ? 'id = $4' : 'UPPER(reference_no) = UPPER($4)'}
+       RETURNING id, reference_no, voice_bonus_score, voice_review_notes, voice_reviewed_by, voice_reviewed_at`,
+      [Number(bonusRaw.toFixed(2)), reviewNotes || null, req.user.full_name, isNum ? parseInt(idOrRef, 10) : idOrRef]
+    );
+    if (!rows.length) {
+      return res.status(404).json({ error: 'الطلب غير موجود.' });
+    }
+
+    await logAudit({
+      actor: req.user.full_name,
+      actorRole: req.user.role,
+      action: 'VOICE_PITCH_REVIEWED',
+      entityType: 'application',
+      entityId: rows[0].reference_no,
+      metadata: {
+        voice_bonus_score: Number(rows[0].voice_bonus_score),
+        has_notes: Boolean(reviewNotes)
+      },
+      ipAddress: req.ip
+    });
+
+    res.json({
+      message: 'تم اعتماد تقييم التعريف الصوتي البشري بنجاح ✓',
+      voice_review: rows[0]
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/system/purge-expired-voice', requireAuth(['super_admin', 'hr_coordinator']), async (req, res) => {
+  try {
+    const result = await runExpiredVoiceRetentionPurge(req.user.full_name, req.user.role, req.ip);
+    res.json({
+      message: `اكتملت دورة التطهير التلقائي للمقاطع الصوتية المنتهية (${result.purged_count} ملف).`,
+      ...result
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.use((err, req, res, _next) => {
   if (err instanceof multer.MulterError) {
     if (err.code === 'LIMIT_FILE_SIZE') {
+      if (req && req.path && req.path.endsWith('/voice-pitch')) {
+        return res.status(400).json({ error: 'يتجاوز حجم الملف الصوتي الحد الأقصى المسموح (2.5 ميجابايت).', code: 'VOICE_FILE_TOO_LARGE' });
+      }
       return res.status(400).json({ error: `يتجاوز حجم الملف الحد الأقصى المسموح (${MAX_UPLOAD_MB} ميجابايت).` });
     }
     return res.status(400).json({ error: err.message });
@@ -4197,10 +4656,16 @@ app.use((err, _req, res, _next) => {
 
 ensureDatabaseInitialized()
   .then(() => {
+    runExpiredVoiceRetentionPurge().catch((e) => console.error('[Voice Janitor] Startup purge error:', e.message));
+    const voicePurgeTimer = setInterval(() => {
+      runExpiredVoiceRetentionPurge().catch((e) => console.error('[Voice Janitor] Periodic purge error:', e.message));
+    }, 6 * 60 * 60 * 1000);
+    if (typeof voicePurgeTimer.unref === 'function') voicePurgeTimer.unref();
+
     app.listen(PORT, HOST, () => {
       console.log(`=============================================================`);
       console.log(`🚀 منصة التوظيف الذكية v${APP_VERSION} تعمل الآن على http://${HOST}:${PORT}`);
-      console.log(`🔒 نظام الصلاحيات + استقبال QR الذكي + بطاقة الزيارة مفعّلة`);
+      console.log(`🔒 نظام الصلاحيات + استقبال QR + التعريف الصوتي الاختياري مفعّلة`);
       console.log(`=============================================================`);
     });
   })
