@@ -342,6 +342,16 @@
         const qualText = [c.qualification, c.specialization].filter(Boolean).join(' — ');
         const hasInt = Boolean(c.scheduled_date);
         const modeTag = c.interview_mode === 'in_person' ? '🏢 حضوري' : '🎥 عن بُعد';
+        let waStateBadge = '';
+        if (c.wa_queue_status === 'confirmed') {
+          waStateBadge = '<div style="margin-top:4px;"><span class="badge badge-olive" style="font-size:10.5px;">مؤكد الحضور ✓</span></div>';
+        } else if (c.wa_queue_status === 'sent') {
+          waStateBadge = '<div style="margin-top:4px;"><span class="badge badge-olive" style="font-size:10.5px;">تأكد إرسالها ✓</span></div>';
+        } else if (c.wa_queue_status === 'queued' && c.wa_prepared_at) {
+          waStateBadge = '<div style="margin-top:4px;"><span class="badge badge-saffron" style="font-size:10.5px;">فُتح الرابط — بانتظار التأكيد</span></div>';
+        } else if (c.wa_queue_status === 'queued') {
+          waStateBadge = '<div style="margin-top:4px;"><span class="badge badge-charcoal" style="font-size:10.5px;">جاهزة للإرسال</span></div>';
+        }
 
         return `
           <tr>
@@ -361,14 +371,21 @@
             <td style="font-size:12px;">
               ${
                 hasInt
-                  ? `<div><strong>${modeTag}</strong></div><div class="mono" style="font-size:11px;">${SmartHR.formatDate(c.scheduled_date)} · ${String(c.start_time).slice(0,5)}</div>`
+                  ? `<div><strong>${modeTag}</strong></div><div class="mono" style="font-size:11px;">${SmartHR.formatDate(c.scheduled_date)} · ${String(c.start_time).slice(0,5)}</div>${waStateBadge}`
                   : '<span style="color:var(--text-muted);">لم يُجدول بعد</span>'
               }
             </td>
             <td>
-              <button type="button" onclick="openScheduleModal(${c.id})" class="btn ${hasInt ? 'btn-olive' : 'btn-terracotta'} btn-sm">
-                ${hasInt ? '💬 إرسال واتساب / تعديل' : '📲 تحديد موعد + واتساب'}
-              </button>
+              <div style="display:flex;gap:6px;flex-wrap:wrap;">
+                <button type="button" onclick="openScheduleModal(${c.id})" class="btn ${hasInt ? 'btn-outline' : 'btn-terracotta'} btn-sm">
+                  ${hasInt ? '💬 فتح مسودة / تعديل' : '📲 تحديد موعد + مسودة'}
+                </button>
+                ${
+                  c.wa_message_id && c.wa_queue_status === 'queued'
+                    ? `<button type="button" onclick="confirmInviteSent(${c.wa_message_id})" class="btn btn-olive btn-sm">✓ تأكيد الإرسال</button>`
+                    : ''
+                }
+              </div>
             </td>
             <td><a href="CandidateProfile.dc.html?app_id=${c.id}" class="btn btn-outline btn-sm">الملف</a></td>
           </tr>
@@ -396,7 +413,7 @@
             location_floor: document.getElementById('md-floor').value.trim(),
             location_office: document.getElementById('md-office').value.trim(),
             location_maps_url: document.getElementById('md-maps').value.trim(),
-            mark_sent: true
+            open_draft: true
           })
         });
 
@@ -408,9 +425,22 @@
         SmartHR.showToast(err.message, 'error');
       } finally {
         btn.disabled = false;
-        btn.textContent = '📲 اعتماد الموعد وفتح رسالة واتساب جاهزة للإرسال';
+        btn.textContent = '📲 اعتماد الموعد وفتح مسودة واتساب للإرسال';
       }
     });
+
+    async function confirmInviteSent(waMsgId) {
+      try {
+        await SmartHR.apiFetch(`/api/wa-messages/${waMsgId}`, {
+          method: 'PATCH',
+          body: JSON.stringify({ action: 'confirm_sent' })
+        });
+        SmartHR.showToast('✓ تم توثيق تأكيد إرسال الدعوة بنجاح', 'success');
+        await loadRanking(currentAiWeight);
+      } catch (err) {
+        SmartHR.showToast(err.message, 'error');
+      }
+    }
 
     async function initRankingPage() {
       const jobsRes = await SmartHR.apiFetch('/api/jobs?include_inactive=1');

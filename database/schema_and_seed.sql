@@ -111,7 +111,7 @@ CREATE TABLE IF NOT EXISTS candidates (
     city                VARCHAR(100) NOT NULL DEFAULT 'جدة',
     years_experience    NUMERIC(4,1) NOT NULL DEFAULT 0 CHECK (years_experience >= 0 AND years_experience <= 50),
     qualification       VARCHAR(120) NOT NULL DEFAULT 'بكالوريوس',
-    specialization      VARCHAR(140) NOT NULL DEFAULT 'تخصص عام',
+    specialization      VARCHAR(150) NOT NULL DEFAULT '',
     portfolio_url       TEXT,
     cv_filename         VARCHAR(255),
     cv_stored_path      TEXT,
@@ -151,7 +151,8 @@ CREATE TABLE IF NOT EXISTS applications (
     paste_attempts          INTEGER NOT NULL DEFAULT 0 CHECK (paste_attempts >= 0),
     time_spent_seconds      INTEGER NOT NULL DEFAULT 0 CHECK (time_spent_seconds >= 0),
     ai_report               JSONB NOT NULL DEFAULT '{}'::jsonb,
-    ai_analysis_status      VARCHAR(24) NOT NULL DEFAULT 'completed',
+    ai_analysis_status      VARCHAR(30) NOT NULL DEFAULT 'completed',
+    candidate_access_token  VARCHAR(64) NOT NULL DEFAULT (replace(gen_random_uuid()::text, '-', '') || replace(gen_random_uuid()::text, '-', '')),
     privacy_consent         BOOLEAN NOT NULL DEFAULT TRUE CHECK (privacy_consent = TRUE),
     submitted_at            TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     assessed_at             TIMESTAMPTZ,
@@ -235,7 +236,8 @@ CREATE TABLE IF NOT EXISTS interviews (
     meeting_platform    VARCHAR(50) NOT NULL DEFAULT 'Google Meet',
     meeting_url         TEXT NOT NULL,
     interview_mode      VARCHAR(24) NOT NULL DEFAULT 'remote',
-    location_building   VARCHAR(180),
+    visit_token         VARCHAR(64) NOT NULL DEFAULT (replace(gen_random_uuid()::text, '-', '') || replace(gen_random_uuid()::text, '-', '')),
+    location_building   VARCHAR(220),
     location_floor      VARCHAR(80),
     location_office     VARCHAR(80),
     location_maps_url   TEXT,
@@ -258,6 +260,7 @@ CREATE TABLE IF NOT EXISTS interviews (
 );
 
 CREATE INDEX IF NOT EXISTS idx_interviews_date_time ON interviews (scheduled_date, start_time);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_interviews_visit_token ON interviews (visit_token);
 
 -- ---------------------------------------------------------------------------------
 -- 9. جدول طابور رسائل واتساب الهجينة (wa_messages)
@@ -279,6 +282,7 @@ CREATE TABLE IF NOT EXISTS wa_messages (
                             'cancelled'
                         )),
     sent_by             VARCHAR(120),
+    prepared_at         TIMESTAMPTZ,
     sent_at             TIMESTAMPTZ,
     created_at          TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );

@@ -633,20 +633,9 @@
       const root = document.getElementById('assessment-root');
 
       if (!refOrId) {
-        root.innerHTML = `
-          <div class="card" style="max-width:640px;margin:20px auto;text-align:center;padding:38px;">
-            <div style="font-size:38px;margin-bottom:10px;">🧭</div>
-            <h2 style="margin-bottom:8px;">بدء جلسة اختبار الجدارة</h2>
-            <p style="color:var(--text-secondary);font-size:14px;margin-bottom:22px;">
-              يرجى إدخال الرقم المرجعي لطلبك المسجل لبدء الاختبار، أو التقديم أولاً عبر نموذج الوظيفة للحصول على رقم طلب فوري.
-            </p>
-            <div style="display:flex;gap:10px;justify-content:center;max-width:420px;margin:0 auto 18px;">
-              <input id="manual-ref" class="form-control mono" placeholder="APP-2026-1001" />
-              <button class="btn btn-primary" onclick="const v=document.getElementById('manual-ref').value.trim(); if(v) location.href='Assessment.dc.html?ref='+encodeURIComponent(v);">دخول</button>
-            </div>
-            <a href="Apply.dc.html?job_id=1" class="btn btn-terracotta">تسجيل طلب جديد وبدء الاختبار فوراً ←</a>
-          </div>
-        `;
+        SmartHR.renderCandidateVerifyCard(root, '', (verifiedRef) => {
+          window.location.href = `Assessment.dc.html?ref=${encodeURIComponent(verifiedRef)}`;
+        });
         return;
       }
 
@@ -678,6 +667,10 @@
         renderShell();
         startMonitoringAndTimer();
       } catch (err) {
+        if (err.code === 'CANDIDATE_VERIFY_REQUIRED' || err.status === 403) {
+          SmartHR.renderCandidateVerifyCard(root, refOrId, () => initAssessment());
+          return;
+        }
         root.innerHTML = `<div class="card" style="color:var(--terracotta);text-align:center;padding:36px;">${SmartHR.escapeHtml(err.message)}</div>`;
       }
     }

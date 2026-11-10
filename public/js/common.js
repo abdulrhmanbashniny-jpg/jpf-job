@@ -109,9 +109,62 @@ const SmartHR = (() => {
     }
 
     if (!res.ok) {
-      throw new Error(data.error || `خطأ في الاتصال بالخادم (${res.status})`);
+      const err = new Error(data.error || `خطأ في الاتصال بالخادم (${res.status})`);
+      err.status = res.status;
+      err.code = data.code;
+      err.data = data;
+      throw err;
     }
     return data;
+  }
+
+  function renderCandidateVerifyCard(mountEl, initialRef = '', onVerified) {
+    if (!mountEl) return;
+    mountEl.innerHTML = `
+      <div class="card" style="max-width:560px;margin:20px auto;text-align:center;padding:34px;">
+        <div style="font-size:34px;margin-bottom:8px;">🔒</div>
+        <h2 style="font-size:21px;margin-bottom:8px;">تأكيد ملكية طلب التوظيف</h2>
+        <p style="color:var(--text-secondary);font-size:13.5px;margin-bottom:20px;line-height:1.75;">
+          حفاظاً على سرية بيانات المتقدمين وتقارير التقييم، يرجى إدخال الرقم المرجعي مع رقم الجوال أو البريد الإلكتروني المسجل في الطلب.
+        </p>
+        <form id="cand-verify-form" style="text-align:right;max-width:420px;margin:0 auto;">
+          <div class="form-group" style="margin-bottom:12px;">
+            <label class="form-label">الرقم المرجعي للطلب *</label>
+            <input type="text" id="cvf-ref" class="form-control mono" placeholder="APP-2026-1001" value="${escapeHtml(initialRef)}" required />
+          </div>
+          <div class="form-group" style="margin-bottom:16px;">
+            <label class="form-label">رقم الجوال أو البريد الإلكتروني المسجل *</label>
+            <input type="text" id="cvf-contact" class="form-control mono" placeholder="0551234567 أو name@domain.com" required />
+          </div>
+          <button type="submit" id="cvf-submit" class="btn btn-primary" style="width:100%;">تحقق ومتابعة ←</button>
+        </form>
+      </div>
+    `;
+    const form = mountEl.querySelector('#cand-verify-form');
+    form.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const btn = mountEl.querySelector('#cvf-submit');
+      const refVal = mountEl.querySelector('#cvf-ref').value.trim();
+      const contactVal = mountEl.querySelector('#cvf-contact').value.trim();
+      btn.disabled = true;
+      btn.textContent = 'جاري التحقق...';
+      try {
+        const vRes = await apiFetch('/api/public/candidate-verify', {
+          method: 'POST',
+          body: JSON.stringify({ reference_no: refVal, contact: contactVal })
+        });
+        showToast('✓ تم التحقق من ملكية الطلب بنجاح', 'success');
+        if (typeof onVerified === 'function') {
+          onVerified(vRes.reference_no);
+        } else {
+          window.location.search = `?ref=${encodeURIComponent(vRes.reference_no)}`;
+        }
+      } catch (err) {
+        btn.disabled = false;
+        btn.textContent = 'تحقق ومتابعة ←';
+        showToast(err.message, 'error');
+      }
+    });
   }
 
   async function logout() {
@@ -209,7 +262,7 @@ const SmartHR = (() => {
           <div class="brand-swatch">ر</div>
           <div>
             <div style="font-family:var(--font-heading);font-weight:700;font-size:15px;color:#FFF;">لجنة التوظيف المركزية</div>
-            <div class="mono" style="font-size:11px;color:#E0A21B;">RBAC + Ollama v2.0</div>
+            <div class="mono" style="font-size:11px;color:#E0A21B;">RBAC + Ollama v2.1</div>
           </div>
         </a>
 
@@ -261,6 +314,7 @@ const SmartHR = (() => {
     formatTime,
     showToast,
     apiFetch,
+    renderCandidateVerifyCard,
     logout,
     renderPortalHeader,
     renderPortalFooter,

@@ -62,11 +62,15 @@ jobs:
           curl -fsS http://127.0.0.1:3000/img/hq-entrance.svg >/dev/null
           curl -fsS http://127.0.0.1:3000/Login.dc.html >/dev/null
 
-          # 2. التأكد من منع الزوار غير المسجلين من دخول صفحات اللجنة (302 Redirect) و API (401)
+          # 2. التأكد من منع الزوار غير المسجلين من دخول صفحات اللجنة (302) و API (401) ومنع التعداد التسلسلي للطلبات والبطاقات (403)
           DASH_CODE=$(curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:3000/Dashboard.dc.html)
           test "$DASH_CODE" = "302"
           API_CODE=$(curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:3000/api/stats)
           test "$API_CODE" = "401"
+          APP_ENUM_CODE=$(curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:3000/api/applications/APP-2026-1001)
+          test "$APP_ENUM_CODE" = "403"
+          VISIT_ENUM_CODE=$(curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:3000/api/public/visit/APP-2026-1001)
+          test "$VISIT_ENUM_CODE" = "403"
 
           # 3. تسجيل الدخول بحساب المدير وفحص صفحات اللجنة وموديلات Ollama
           curl -fsS -c /tmp/cookies.txt -X POST http://127.0.0.1:3000/api/auth/login \

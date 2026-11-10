@@ -187,7 +187,7 @@
             <td>
               ${
                 i.interview_mode === 'in_person'
-                  ? `<a href="Visit.dc.html?ref=${encodeURIComponent(i.reference_no)}" target="_blank" rel="noopener" class="btn btn-terracotta btn-sm" style="font-size:12px;">🏢 بطاقة الموقع ↗</a>`
+                  ? `<a href="${SmartHR.escapeHtml(i.visit_url || '#')}" target="_blank" rel="noopener" class="btn btn-terracotta btn-sm" style="font-size:12px;">🏢 بطاقة الموقع ↗</a>`
                   : `<a href="${SmartHR.escapeHtml(i.meeting_url)}" target="_blank" rel="noopener" class="btn btn-outline btn-sm mono" style="font-size:12px;">🎥 فتح القاعة ↗</a>`
               }
             </td>

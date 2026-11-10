@@ -60,19 +60,19 @@
 
     async function loadVisitPass() {
       const params = new URLSearchParams(window.location.search);
-      const ref = params.get('ref');
+      const vt = params.get('vt') || params.get('token');
       const mount = document.getElementById('visit-pass-mount');
 
-      if (!ref) {
-        mount.innerHTML = `<div style="padding:44px;text-align:center;color:var(--terracotta);">الرابط غير مكتمل — يرجى فتح الرابط المرسل إليك في رسالة واتساب.</div>`;
+      if (!vt) {
+        mount.innerHTML = `<div style="padding:44px;text-align:center;color:var(--terracotta);">الرابط غير مكتمل أو يفتقر إلى رمز التحقق الآمن — يرجى فتح الرابط الرسمي الكامل المرسل إليك في رسالة الدعوة عبر واتساب.</div>`;
         return;
       }
 
       try {
-        const res = await SmartHR.apiFetch(`/api/public/visit/${encodeURIComponent(ref)}`);
+        const res = await SmartHR.apiFetch(`/api/public/visit/${encodeURIComponent(vt)}`);
         const cand = res.candidate;
         const intv = res.interview;
-        const hrPhone = String(res.company_location?.hr_whatsapp_phone || '966550000000').replace(/\D/g, '');
+        const hrPhone = String(res.hr_whatsapp_phone || '966550000000').replace(/\D/g, '');
 
         if (!intv) {
           mount.innerHTML = `
@@ -194,7 +194,7 @@
             confBtn.disabled = true;
             confBtn.textContent = 'جاري تسجيل التأكيد...';
             try {
-              const r = await SmartHR.apiFetch(`/api/public/visit/${encodeURIComponent(cand.reference_no)}/confirm`, { method: 'POST' });
+              const r = await SmartHR.apiFetch(`/api/public/visit/${encodeURIComponent(vt)}/confirm`, { method: 'POST' });
               SmartHR.showToast(r.message, 'success');
               loadVisitPass();
             } catch (err) {

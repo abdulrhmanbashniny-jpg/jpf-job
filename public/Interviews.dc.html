@@ -234,12 +234,14 @@
           <div style="display:flex;gap:10px;align-items:center;">
             <select id="queue-filter" class="form-select" style="width:auto;padding:7px 12px;font-size:12.5px;">
               <option value="all">جميع الرسائل</option>
-              <option value="queued">بانتظار الإرسال فقط</option>
-              <option value="sent">أُرسلت</option>
-              <option value="confirmed">مؤكدة الحضور</option>
+              <option value="queued">غير المرسلة (الإجمالي)</option>
+              <option value="ready">جاهزة للإرسال (لم تُفتح)</option>
+              <option value="draft_opened">فُتح الرابط — بانتظار تأكيد الإرسال</option>
+              <option value="sent">تأكد إرسالها ✓</option>
+              <option value="confirmed">مؤكدة الحضور ✓</option>
             </select>
             <button type="button" id="open-next-wa-btn" class="btn btn-terracotta btn-sm">
-              فتح التالي في واتساب 📲
+              فتح المسودة التالية في واتساب 📲
             </button>
           </div>
         </div>
@@ -298,7 +300,7 @@
         scheduled_date: new Date().toISOString().slice(0, 10),
         start_time: '10:30',
         meeting_url: 'https://meet.jit.si/JPF-SL204-1001',
-        visit_url: `${window.location.origin}/Visit.dc.html?ref=APP-2026-1001`,
+        visit_url: `${window.location.origin}/Visit.dc.html?vt=eyJwIjoidmlzaXRfcGFzcyIsInN1YiI6IjEi...`,
         location_building: locationState.building_name || 'المقر الرئيسي',
         location_floor: locationState.floor_number || 'الدور الثالث',
         location_office: locationState.office_number || 'مكتب 304',
@@ -400,7 +402,7 @@
 
       const next = interviews[0];
       const isInPerson = next.interview_mode === 'in_person';
-      const visitUrl = `${window.location.origin}/Visit.dc.html?ref=${encodeURIComponent(next.reference_no)}`;
+      const visitUrl = next.visit_url || `${window.location.origin}/Visit.dc.html`;
       eyebrowEl.textContent = `أقرب مقابلة قادمة · ${SmartHR.formatDate(next.scheduled_date)} الساعة ${String(next.start_time).slice(0,5)}`;
       titleEl.textContent = `${next.full_name} — ${next.job_title}`;
       subEl.innerHTML = isInPerson
@@ -433,7 +435,7 @@
 
     function VisitUrlSafe(u) { return SmartHR.escapeHtml(u); }
 
-    async function sendQueueRow(msgId, stageKeyOverride) {
+    async function openDraftInWhatsApp(msgId, stageKeyOverride) {
       const item = queueList.find((x) => x.id === msgId);
       if (!item) return;
 
@@ -448,9 +450,22 @@
       try {
         await SmartHR.apiFetch(`/api/wa-messages/${msgId}`, {
           method: 'PATCH',
-          body: JSON.stringify({ queue_status: 'sent', message_body: bodyToSend })
+          body: JSON.stringify({ action: 'open_draft', message_body: bodyToSend })
         });
-        SmartHR.showToast(`✓ تم فتح واتساب وتسجيل إرسال الرسالة لـ ${item.recipient_name}`, 'success');
+        SmartHR.showToast(`تم فتح مسودة الرسالة لـ ${item.recipient_name} — اضغط «تأكيد الإرسال ✓» بعد إرسالها فعلياً.`, 'info');
+        loadAllData();
+      } catch (err) {
+        SmartHR.showToast(err.message, 'error');
+      }
+    }
+
+    async function confirmMessageSent(msgId) {
+      try {
+        await SmartHR.apiFetch(`/api/wa-messages/${msgId}`, {
+          method: 'PATCH',
+          body: JSON.stringify({ action: 'confirm_sent' })
+        });
+        SmartHR.showToast('✓ تم توثيق تأكيد إرسال الرسالة فعلياً', 'success');
         loadAllData();
       } catch (err) {
         SmartHR.showToast(err.message, 'error');
@@ -469,11 +484,14 @@
 
       tbody.innerHTML = queueList.map((q) => {
         const isInPerson = q.interview_mode === 'in_person';
-        const statusHtml = q.queue_status === 'confirmed'
-          ? '<span class="badge badge-olive">مؤكد الحضور ✓</span>'
-          : q.queue_status === 'sent'
-            ? '<span class="badge badge-olive">أُرسلت ✓</span>'
-            : '<span class="badge badge-saffron">بانتظار الإرسال</span>';
+        let statusHtml = '<span class="badge badge-charcoal">جاهزة للإرسال</span>';
+        if (q.queue_status === 'confirmed') {
+          statusHtml = '<span class="badge badge-olive">مؤكد الحضور ✓</span>';
+        } else if (q.queue_status === 'sent') {
+          statusHtml = '<span class="badge badge-olive">تأكد إرسالها ✓</span>';
+        } else if (q.queue_status === 'queued' && q.prepared_at) {
+          statusHtml = '<span class="badge badge-saffron">فُتح الرابط — بانتظار التأكيد</span>';
+        }
 
         return `
           <tr style="cursor:pointer;" onclick="selectCandidateForPreview(${q.id})">
@@ -494,12 +512,19 @@
               ${q.scheduled_date ? `${SmartHR.formatDate(q.scheduled_date)}<br/><span class="mono">${String(q.start_time || '').slice(0,5)}</span>` : '—'}
             </td>
             <td onclick="event.stopPropagation()">
-              ${q.reference_no ? `<a href="Visit.dc.html?ref=${encodeURIComponent(q.reference_no)}" target="_blank" class="btn btn-outline btn-sm">معاينة البطاقة ↗</a>` : '—'}
+              ${q.visit_url && q.visit_url.includes('vt=') ? `<a href="${SmartHR.escapeHtml(q.visit_url)}" target="_blank" rel="noopener" class="btn btn-outline btn-sm">معاينة البطاقة ↗</a>` : '—'}
             </td>
             <td onclick="event.stopPropagation()">
-              <button type="button" class="wa-btn-inline" onclick="triggerRowSend(${q.id}, this)">
-                💬 فتح واتساب
-              </button>
+              <div style="display:flex;gap:6px;flex-wrap:wrap;">
+                <button type="button" class="wa-btn-inline" onclick="triggerRowSend(${q.id}, this)">
+                  💬 فتح مسودة
+                </button>
+                ${
+                  q.queue_status === 'queued'
+                    ? `<button type="button" class="btn btn-olive btn-sm" onclick="confirmRowSent(${q.id})">✓ تأكيد الإرسال</button>`
+                    : ''
+                }
+              </div>
             </td>
             <td>${statusHtml}</td>
           </tr>
@@ -515,7 +540,11 @@
     window.triggerRowSend = function(id, btnEl) {
       const row = btnEl.closest('tr');
       const sel = row ? row.querySelector('.row-tpl-sel') : null;
-      sendQueueRow(id, sel ? sel.value : null);
+      openDraftInWhatsApp(id, sel ? sel.value : null);
+    };
+
+    window.confirmRowSent = function(id) {
+      confirmMessageSent(id);
     };
 
     async function loadAllData() {
@@ -567,7 +596,7 @@
         SmartHR.showToast('لا توجد رسائل معلّقة في الطابور حالياً ✓', 'info');
         return;
       }
-      sendQueueRow(nextPending.id, nextPending.template_key);
+      openDraftInWhatsApp(nextPending.id, nextPending.template_key);
     });
 
     document.getElementById('loc-img-file').addEventListener('change', async (e) => {

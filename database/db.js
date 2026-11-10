@@ -21,8 +21,31 @@ pool.on('error', (err) => {
   console.error('[PostgreSQL Unexpected Pool Error]:', err.message);
 });
 
+const DEFAULT_COMPANY_LOCATION = {
+  hr_whatsapp_phone: '966550000000',
+  building_name: 'المقر الرئيسي — شركة رُواء للدهانات والحلول الهندسية',
+  address_line: 'طريق الملك عبدالعزيز، حي الشاطئ، جدة',
+  floor_number: 'الدور الثالث (3)',
+  office_number: 'قاعة الاجتماعات التنفيذية — مكتب 304',
+  google_maps_url: 'https://maps.google.com/?q=21.5800,39.1300',
+  entrance_image_url: '/img/hq-entrance.svg',
+  arrival_instructions: 'يرجى الحضور قبل الموعد بـ 10 دقائق، إبراز بطاقة المقابلة أو الرقم المرجعي لمكتب الاستقبال في الدور الأرضي، علماً بأن مواقف الزوار متاحة أمام البوابة الشمالية.'
+};
+
+const DEFAULT_WHATSAPP_TEMPLATES = {
+  interview_invite: 'مرحباً {{name}}،\nيسعدنا إبلاغك باجتيازك المرحلة الأولى وتأهلك لمقابلة وظيفة ({{job_title}} - {{job_code}}).\n📅 الموعد: {{date}} الساعة {{time}}\n🎥 نوع المقابلة: عن بُعد (أونلاين)\nرابط بطاقة الموعد والقاعة وتأكيد الحضور:\n{{visit_url}}',
+  interview_inperson: 'مرحباً {{name}}،\nيسعدنا إبلاغك باجتيازك المرحلة الأولى وتأهلك لمقابلة حضورية لوظيفة ({{job_title}} - {{job_code}}).\n📅 الموعد: {{date}} الساعة {{time}}\n🏢 المقر: {{building}} — {{floor}} — {{office}}\n📍 بطاقة الوصول وصورة المدخل وموقع قوقل ماب وتأكيد الحضور:\n{{visit_url}}',
+  confirm_booking: 'تم تأكيد موعد مقابلتك بنجاح يا {{name}} ✓\nالوظيفة: {{job_title}}\nالموعد: {{date}} الساعة {{time}}\nبطاقة التفاصيل والوصول: {{visit_url}}',
+  reminder_day_before: 'تذكير ودي يا {{name}}:\nمقابلتك لوظيفة ({{job_title}}) غداً بتاريخ {{date}} الساعة {{time}}.\nتفاصيل الموعد ورابط الدخول/الموقع: {{visit_url}}\nنتطلع للقائك.',
+  send_room_now: 'حان موعد مقابلتك الآن يا {{name}} لوظيفة ({{job_title}}).\nاللجنة بانتظارك عبر الرابط التالي:\n{{meet_url}}',
+  thank_followup: 'شكراً لحضورك مقابلة وظيفة ({{job_title}}) يا {{name}}.\nسعدنا بلقائك، وسنوافيك بالقرار النهائي خلال 5 إلى 7 أيام عمل بإذن الله.',
+  pass_notification: 'مرحباً أ. {{name}}، تهانينا باجتياز اختبار الجدارة لوظيفة ({{job_title}}) بنسبة {{score}}%. رقم طلبك المرجعي هو {{ref_no}}. سيتواصل معك فريق التوظيف قريباً لتحديد موعد المقابلة.',
+  reschedule_notice: 'مرحباً أ. {{name}}، تم تحديث موعد مقابلتك لوظيفة ({{job_title}}) ليصبح يوم {{date}} الساعة {{time}} عبر البطاقة: {{visit_url}}.'
+};
+
 /**
- * التحقق من وجود الجداول وتنفيذ الترقيات التلقائية السلسة (v2.1) دون مسح أي بيانات حالية
+ * التحقق من وجود الجداول وتنفيذ الترقيات التلقائية السلسة (v2.1)
+ * متطابقة 100% في تعريفات الأعمدة مع database/schema_and_seed.sql وتحافظ على كافة البيانات السابقة
  */
 async function ensureDatabaseInitialized() {
   const client = await pool.connect();
@@ -43,7 +66,7 @@ async function ensureDatabaseInitialized() {
       console.log('[DB Init] تمت تهيئة قاعدة البيانات smart_hr_db بنجاح.');
     }
 
-    // 1. جدول حسابات اللجنة والصلاحيات (RBAC)
+    // 1. جدول حسابات اللجنة والصلاحيات (RBAC) مطابق تماماً لـ schema_and_seed.sql
     await client.query(`
       CREATE TABLE IF NOT EXISTS staff_users (
         id              SERIAL PRIMARY KEY,
@@ -75,61 +98,89 @@ async function ensureDatabaseInitialized() {
       console.log('[RBAC Init] تم تفعيل حساب المدير الافتراضي (username: admin)');
     }
 
-    // 2. ترقية v2.1: فصل المؤهل العلمي عن التخصص + حالة التحليل الذكي غير المتزامن + بيانات المقابلة الحضورية
+    // 2. ترقية الأعمدة التراكمية v2.1 وتوحيد تعريفاتها تماماً مع schema_and_seed.sql
     await client.query(`
+      -- candidates.specialization: VARCHAR(150) NOT NULL DEFAULT ''
       ALTER TABLE candidates
         ADD COLUMN IF NOT EXISTS specialization VARCHAR(150) NOT NULL DEFAULT '';
+      UPDATE candidates SET specialization = '' WHERE specialization IS NULL;
+      ALTER TABLE candidates
+        ALTER COLUMN specialization TYPE VARCHAR(150),
+        ALTER COLUMN specialization SET DEFAULT '',
+        ALTER COLUMN specialization SET NOT NULL;
 
+      -- applications.ai_analysis_status & candidate_access_token
       ALTER TABLE applications
-        ADD COLUMN IF NOT EXISTS ai_analysis_status VARCHAR(30) NOT NULL DEFAULT 'completed';
+        ADD COLUMN IF NOT EXISTS ai_analysis_status VARCHAR(30) NOT NULL DEFAULT 'completed',
+        ADD COLUMN IF NOT EXISTS candidate_access_token VARCHAR(64) NOT NULL DEFAULT (replace(gen_random_uuid()::text, '-', '') || replace(gen_random_uuid()::text, '-', ''));
+      UPDATE applications SET ai_analysis_status = 'completed' WHERE ai_analysis_status IS NULL;
+      UPDATE applications
+        SET candidate_access_token = (replace(gen_random_uuid()::text, '-', '') || replace(gen_random_uuid()::text, '-', ''))
+        WHERE candidate_access_token IS NULL OR LENGTH(candidate_access_token) < 32;
+      ALTER TABLE applications
+        ALTER COLUMN ai_analysis_status TYPE VARCHAR(30),
+        ALTER COLUMN ai_analysis_status SET DEFAULT 'completed',
+        ALTER COLUMN ai_analysis_status SET NOT NULL,
+        ALTER COLUMN candidate_access_token TYPE VARCHAR(64),
+        ALTER COLUMN candidate_access_token SET DEFAULT (replace(gen_random_uuid()::text, '-', '') || replace(gen_random_uuid()::text, '-', '')),
+        ALTER COLUMN candidate_access_token SET NOT NULL;
 
+      -- interviews: بيانات المقابلة الحضورية + visit_token غير القابل للتخمين
       ALTER TABLE interviews
-        ADD COLUMN IF NOT EXISTS interview_mode VARCHAR(20) NOT NULL DEFAULT 'remote',
+        ADD COLUMN IF NOT EXISTS interview_mode VARCHAR(24) NOT NULL DEFAULT 'remote',
+        ADD COLUMN IF NOT EXISTS visit_token VARCHAR(64) NOT NULL DEFAULT (replace(gen_random_uuid()::text, '-', '') || replace(gen_random_uuid()::text, '-', '')),
         ADD COLUMN IF NOT EXISTS location_building VARCHAR(220),
         ADD COLUMN IF NOT EXISTS location_floor VARCHAR(80),
         ADD COLUMN IF NOT EXISTS location_office VARCHAR(80),
         ADD COLUMN IF NOT EXISTS location_maps_url TEXT,
         ADD COLUMN IF NOT EXISTS location_image_url TEXT,
         ADD COLUMN IF NOT EXISTS location_notes TEXT;
+      UPDATE interviews SET interview_mode = 'remote' WHERE interview_mode IS NULL;
+      UPDATE interviews
+        SET visit_token = (replace(gen_random_uuid()::text, '-', '') || replace(gen_random_uuid()::text, '-', ''))
+        WHERE visit_token IS NULL OR LENGTH(visit_token) < 32;
+      ALTER TABLE interviews
+        ALTER COLUMN interview_mode TYPE VARCHAR(24),
+        ALTER COLUMN interview_mode SET DEFAULT 'remote',
+        ALTER COLUMN interview_mode SET NOT NULL,
+        ALTER COLUMN visit_token TYPE VARCHAR(64),
+        ALTER COLUMN visit_token SET DEFAULT (replace(gen_random_uuid()::text, '-', '') || replace(gen_random_uuid()::text, '-', '')),
+        ALTER COLUMN visit_token SET NOT NULL,
+        ALTER COLUMN location_building TYPE VARCHAR(220),
+        ALTER COLUMN location_floor TYPE VARCHAR(80),
+        ALTER COLUMN location_office TYPE VARCHAR(80);
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_interviews_visit_token ON interviews (visit_token);
+
+      -- wa_messages.prepared_at: للتمييز بين جاهزة للإرسال / فُتح الرابط كمسودة / تأكد إرسالها فعلياً
+      ALTER TABLE wa_messages
+        ADD COLUMN IF NOT EXISTS prepared_at TIMESTAMPTZ;
     `);
 
-    // 3. إعداد افتراضي لبطاقة المقر الحضوري ورقم واتساب الموارد البشرية (للطلبات الفورية)
+    // 3. إعداد افتراضي لبطاقة المقر الحضوري دون الكتابة فوق أي قيمة موجودة
     await client.query(
-      `INSERT INTO system_settings (setting_key, setting_value, category, description)
-       VALUES ($1, $2::jsonb, 'scheduler', 'بيانات مقر المقابلات الحضورية ورقم تواصل واتساب الموارد البشرية')
+      `INSERT INTO system_settings (setting_key, setting_value, category, description, updated_by)
+       VALUES ('company_location', $1::jsonb, 'scheduler', 'بيانات مقر المقابلات الحضورية ورقم تواصل واتساب الموارد البشرية', 'system')
        ON CONFLICT (setting_key) DO NOTHING`,
-      [
-        'company_location',
-        JSON.stringify({
-          hr_whatsapp_phone: '966550000000',
-          building_name: 'المقر الرئيسي — شركة رُواء للدهانات والحلول الهندسية',
-          address_line: 'طريق الملك عبدالعزيز، حي الشاطئ، جدة',
-          floor_number: 'الدور الثالث (3)',
-          office_number: 'قاعة الاجتماعات التنفيذية — مكتب 304',
-          google_maps_url: 'https://maps.google.com/?q=21.5800,39.1300',
-          entrance_image_url: '/img/hq-entrance.svg',
-          arrival_instructions: 'يرجى الحضور قبل الموعد بـ 10 دقائق، إبراز بطاقة المقابلة أو الرقم المرجعي لمكتب الاستقبال في الدور الأرضي، علماً بأن مواقف الزوار متاحة أمام البوابة الشمالية.'
-        })
-      ]
+      [JSON.stringify(DEFAULT_COMPANY_LOCATION)]
     );
 
-    // 4. ترقية قوالب واتساب الخمسة (عن بُعد + حضوري + تأكيد + تذكير + قاعة/شكر) مع الحفاظ على التعديلات السابقة
-    const tplRes = await client.query("SELECT setting_value FROM system_settings WHERE setting_key = 'whatsapp_templates'");
-    const currTpl = tplRes.rows[0]?.setting_value || {};
-    const upgradedTemplates = {
-      interview_invite: currTpl.interview_invite || 'مرحباً {{name}}،\nيسعدنا إبلاغك باجتيازك المرحلة الأولى وتأهلك لمقابلة وظيفة ({{job_title}} - {{job_code}}).\n📅 الموعد: {{date}} الساعة {{time}}\n🎥 نوع المقابلة: عن بُعد (أونلاين)\nرابط القاعة الافتراضية وتأكيد الحضور:\n{{visit_url}}',
-      interview_inperson: currTpl.interview_inperson || 'مرحباً {{name}}،\nيسعدنا إبلاغك باجتيازك المرحلة الأولى وتأهلك لمقابلة حضورية لوظيفة ({{job_title}} - {{job_code}}).\n📅 الموعد: {{date}} الساعة {{time}}\n🏢 المقر: {{building}} — {{floor}} — {{office}}\n📍 بطاقة الوصول وصورة المدخل وموقع قوقل ماب وتأكيد الحضور:\n{{visit_url}}',
-      confirm_booking: currTpl.confirm_booking || 'تم تأكيد موعد مقابلتك بنجاح يا {{name}} ✓\nالوظيفة: {{job_title}}\nالموعد: {{date}} الساعة {{time}}\nبطاقة التفاصيل والوصول: {{visit_url}}',
-      reminder_day_before: currTpl.reminder_day_before || 'تذكير ودي يا {{name}}:\nمقابلتك لوظيفة ({{job_title}}) غداً بتاريخ {{date}} الساعة {{time}}.\nتفاصيل الموعد ورابط الدخول/الموقع: {{visit_url}}\nنتطلع للقائك.',
-      send_room_now: currTpl.send_room_now || 'حان موعد مقابلتك الآن يا {{name}} لوظيفة ({{job_title}}).\nاللجنة بانتظارك عبر الرابط التالي:\n{{meet_url}}',
-      thank_followup: currTpl.thank_followup || 'شكراً لحضورك مقابلة وظيفة ({{job_title}}) يا {{name}}.\nسعدنا بلقائك، وسنوافيك بالقرار النهائي خلال 5 إلى 7 أيام عمل بإذن الله.'
-    };
-
+    // 4. ترقية قوالب واتساب بالدمج الآمن ($1::jsonb || setting_value) بحيث تحتفظ بجميع المفاتيح والقيم الحالية دون حذف أو استبدال
     await client.query(
-      `INSERT INTO system_settings (setting_key, setting_value, category, description)
-       VALUES ('whatsapp_templates', $1::jsonb, 'whatsapp_templates', 'قوالب رسائل واتساب الهجينة للمراحل الخمس')
-       ON CONFLICT (setting_key) DO UPDATE SET setting_value = $1::jsonb`,
-      [JSON.stringify(upgradedTemplates)]
+      `INSERT INTO system_settings (setting_key, setting_value, category, description, updated_by)
+       VALUES ('whatsapp_templates', $1::jsonb, 'whatsapp_templates', 'قوالب رسائل واتساب الهجينة للمراحل المعتمدة', 'system')
+       ON CONFLICT (setting_key) DO UPDATE
+         SET setting_value = $1::jsonb || COALESCE(system_settings.setting_value, '{}'::jsonb)
+         WHERE NOT (COALESCE(system_settings.setting_value, '{}'::jsonb) ?& ARRAY[
+           'interview_invite',
+           'interview_inperson',
+           'confirm_booking',
+           'reminder_day_before',
+           'send_room_now',
+           'thank_followup',
+           'pass_notification',
+           'reschedule_notice'
+         ])`,
+      [JSON.stringify(DEFAULT_WHATSAPP_TEMPLATES)]
     );
   } finally {
     client.release();
@@ -163,5 +214,7 @@ module.exports = {
   pool,
   query: (text, params) => pool.query(text, params),
   ensureDatabaseInitialized,
-  logAudit
+  logAudit,
+  DEFAULT_COMPANY_LOCATION,
+  DEFAULT_WHATSAPP_TEMPLATES
 };
