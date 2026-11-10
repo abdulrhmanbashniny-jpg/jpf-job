@@ -253,6 +253,15 @@ CREATE TABLE IF NOT EXISTS interviews (
                             'cancelled',
                             'no_show'
                         )),
+    lobby_status        VARCHAR(24) NOT NULL DEFAULT 'not_arrived' CHECK (lobby_status IN (
+                            'not_arrived',
+                            'checked_in',
+                            'in_room',
+                            'completed'
+                        )),
+    checked_in_at       TIMESTAMPTZ,
+    checked_in_by       VARCHAR(120),
+    punctuality_minutes INTEGER,
     notes               TEXT,
     created_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),

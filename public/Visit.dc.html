@@ -118,12 +118,35 @@
                 <div class="mono" style="font-size:16px;font-weight:700;margin-top:4px;">${SmartHR.formatTime(intv.start_time)} (${intv.duration_minutes} دقيقة)</div>
               </div>
               <div class="loc-pill">
-                <div style="font-size:12px;color:var(--text-muted);">📌 حالة الموعد</div>
-                <div style="margin-top:6px;" id="confirm-badge-box">
+                <div style="font-size:12px;color:var(--text-muted);">📌 حالة الموعد والاستقبال</div>
+                <div style="margin-top:6px;display:flex;gap:6px;flex-wrap:wrap;" id="confirm-badge-box">
                   ${isConfirmed ? '<span class="badge badge-olive">✓ مؤكد الحضور</span>' : '<span class="badge badge-saffron">بانتظار تأكيد حضورك</span>'}
+                  ${intv.lobby_status === 'checked_in' ? '<span class="badge badge-olive" id="checked-in-pill">🔔 تم تسجيل وصولك في الاستقبال</span>' : ''}
                 </div>
               </div>
             </div>
+
+            ${
+              intv.checkin_qr_svg
+                ? `
+                  <div id="visit-qr-section" class="card-subtle" style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:20px;margin-bottom:24px;padding:18px 22px;border:1.5px dashed var(--olive);background:#FFFFFF;">
+                    <div style="flex:1;min-width:220px;">
+                      <div style="font-size:12px;font-weight:700;color:var(--olive);margin-bottom:4px;">📲 رمز تسجيل الوصول السريع في الاستقبال (Smart QR Pass)</div>
+                      <h3 style="font-size:17px;margin-bottom:6px;">أبرز هذا الرمز لمكتب الاستقبال فور وصولك</h3>
+                      <p style="font-size:13px;color:var(--text-secondary);line-height:1.7;margin-bottom:8px;">
+                        بمجرد مسح الرمز سيتم إشعار لجنة التوظيف بوصولك وتوجيهك مباشرة إلى القاعة المخصصة.
+                      </p>
+                      <div style="font-size:12px;color:var(--text-muted);">
+                        رمز الاستقبال المختصر عند الحاجة: <strong class="mono" style="font-size:15px;color:var(--charcoal);background:var(--bg-subtle);padding:2px 8px;border-radius:6px;">#${SmartHR.escapeHtml(intv.checkin_code_tail || '')}</strong>
+                      </div>
+                    </div>
+                    <div id="visit-qr-svg-mount" style="background:#FFF;padding:10px;border-radius:14px;border:1px solid var(--border-color);box-shadow:0 4px 14px rgba(0,0,0,0.05);width:170px;height:170px;display:flex;align-items:center;justify-content:center;">
+                      ${intv.checkin_qr_svg}
+                    </div>
+                  </div>
+                `
+                : ''
+            }
 
             ${
               isInPerson

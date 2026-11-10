@@ -57,6 +57,14 @@ const SmartHR = (() => {
     return `<span class="badge ${info.cls}">${escapeHtml(info.label)}</span>`;
   }
 
+  function punctualityBadge(minutesVal) {
+    if (minutesVal === null || minutesVal === undefined || Number.isNaN(Number(minutesVal))) return '';
+    const m = Number(minutesVal);
+    if (m > 0) return `<span class="badge badge-olive">⏱ حضر مبكراً بـ ${m} د</span>`;
+    if (m === 0) return `<span class="badge badge-olive">⏱ حضر في الموعد تماماً</span>`;
+    return `<span class="badge badge-terracotta">⏱ تأخر ${Math.abs(m)} د</span>`;
+  }
+
   function formatDate(dateVal) {
     if (!dateVal) return '—';
     const d = new Date(dateVal);
@@ -260,6 +268,7 @@ const SmartHR = (() => {
       { key: 'profile', href: 'CandidateProfile.dc.html', icon: '👤', label: 'ملف المرشح وتقييم اللجنة', roles: ['super_admin', 'committee_member', 'hr_coordinator'] },
       { key: 'ranking', href: 'Ranking.dc.html', icon: '🏆', label: 'الترتيب الموزون (40/60)', roles: ['super_admin', 'committee_member', 'hr_coordinator'] },
       { key: 'scheduler', href: 'Scheduler.dc.html', icon: '📅', label: 'جدولة المقابلات الذكية', section: 'المقابلات والتواصل', roles: ['super_admin', 'hr_coordinator', 'committee_member'] },
+      { key: 'reception', href: 'Reception.dc.html', icon: '🚪', label: 'استقبال المرشحين (QR)', roles: ['super_admin', 'hr_coordinator'] },
       { key: 'interviews', href: 'Interviews.dc.html', icon: '💬', label: 'طابور رسائل واتساب الهجين', roles: ['super_admin', 'hr_coordinator', 'committee_member'] },
       { key: 'aiengine', href: 'AIEngine.dc.html', icon: '🧠', label: 'محرك التحليل والفحص الأعمى', section: 'الحوكمة والتقنية', roles: ['super_admin', 'committee_member', 'hr_coordinator'] },
       { key: 'settings', href: 'Settings.dc.html', icon: '⚙️', label: 'الإعدادات وموديلات Ollama', roles: ['super_admin'] },
@@ -328,12 +337,63 @@ const SmartHR = (() => {
         if (user) {
           draw(user.role, user);
           window.dispatchEvent(new CustomEvent('smarthr:user-ready', { detail: user }));
+          if (['dashboard', 'scheduler', 'profile', 'ranking'].includes(activePage)) {
+            startLobbyArrivalPolling();
+          }
         }
       })
       .catch(() => {
         const next = encodeURIComponent(window.location.pathname + window.location.search);
         window.location.replace(`Login.dc.html?next=${next}`);
       });
+  }
+
+  let _arrivalTimer = null;
+  async function refreshLobbyArrivalBanner() {
+    const mainEl = document.querySelector('.admin-main');
+    if (!mainEl) return;
+    try {
+      const r = await fetch('/api/reception/arrivals');
+      if (!r.ok) return;
+      const data = await r.json();
+      const waiting = data.waiting_candidates || [];
+      let bar = document.getElementById('committee-arrival-alert-bar');
+      if (!waiting.length) {
+        if (bar) bar.remove();
+        return;
+      }
+      if (!bar) {
+        bar = document.createElement('div');
+        bar.id = 'committee-arrival-alert-bar';
+        bar.style.cssText = 'background:#1F3B34;color:#FFF;border-radius:14px;padding:12px 18px;margin-bottom:18px;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:12px;border-right:5px solid #E0A21B;box-shadow:0 6px 18px rgba(31,59,52,0.18);';
+        mainEl.prepend(bar);
+      }
+      const latest = waiting[0];
+      const extraCnt = waiting.length > 1 ? ` (+${waiting.length - 1} آخرين في الانتظار)` : '';
+      bar.innerHTML = `
+        <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
+          <span style="font-size:20px;">🔔</span>
+          <div>
+            <div style="font-weight:700;font-size:14px;">
+              وصل الآن في الاستقبال: <span style="color:#E0A21B;">${escapeHtml(latest.full_name)}</span>${escapeHtml(extraCnt)}
+            </div>
+            <div style="font-size:12px;color:#D6E2DF;">
+              الوظيفة: ${escapeHtml(latest.job_title)} (${escapeHtml(latest.job_code)}) • القاعة/المكتب: ${escapeHtml(latest.office || 'المقر الرئيسي')}
+            </div>
+          </div>
+          ${punctualityBadge(latest.punctuality_minutes)}
+        </div>
+        <a href="CandidateProfile.dc.html?app_id=${encodeURIComponent(latest.application_id)}" class="btn btn-saffron btn-sm" style="font-weight:700;">
+          فتح ملف المرشح واستقباله ←
+        </a>
+      `;
+    } catch (_e) {}
+  }
+
+  function startLobbyArrivalPolling() {
+    refreshLobbyArrivalBanner();
+    if (_arrivalTimer) clearInterval(_arrivalTimer);
+    _arrivalTimer = setInterval(refreshLobbyArrivalBanner, 15000);
   }
 
   let _currentUserPromise = null;
@@ -358,11 +418,13 @@ const SmartHR = (() => {
     deptColor,
     statusBadge,
     bookingBadge,
+    punctualityBadge,
     formatDate,
     formatTime,
     showToast,
     apiFetch,
     getCurrentUser,
+    refreshLobbyArrivalBanner,
     renderCandidateVerifyCard,
     logout,
     renderPortalHeader,

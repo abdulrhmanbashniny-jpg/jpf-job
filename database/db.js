@@ -154,6 +154,32 @@ async function ensureDatabaseInitialized() {
       -- wa_messages.prepared_at: للتمييز بين جاهزة للإرسال / فُتح الرابط كمسودة / تأكد إرسالها فعلياً
       ALTER TABLE wa_messages
         ADD COLUMN IF NOT EXISTS prepared_at TIMESTAMPTZ;
+
+      -- v2.2a: استقبال المرشحين بالـ QR ومؤشر الانضباط الزمني وتنبيه اللجنة اللحظي
+      ALTER TABLE interviews
+        ADD COLUMN IF NOT EXISTS lobby_status VARCHAR(24) NOT NULL DEFAULT 'not_arrived',
+        ADD COLUMN IF NOT EXISTS checked_in_at TIMESTAMPTZ,
+        ADD COLUMN IF NOT EXISTS checked_in_by VARCHAR(120),
+        ADD COLUMN IF NOT EXISTS punctuality_minutes INTEGER;
+      UPDATE interviews SET lobby_status = 'not_arrived' WHERE lobby_status IS NULL;
+      ALTER TABLE interviews
+        ALTER COLUMN lobby_status TYPE VARCHAR(24),
+        ALTER COLUMN lobby_status SET DEFAULT 'not_arrived',
+        ALTER COLUMN lobby_status SET NOT NULL,
+        ALTER COLUMN checked_in_by TYPE VARCHAR(120);
+      DO $$
+      BEGIN
+        IF NOT EXISTS (
+          SELECT 1 FROM pg_constraint WHERE conname = 'chk_interviews_lobby_status'
+        ) AND NOT EXISTS (
+          SELECT 1 FROM pg_constraint
+          WHERE conrelid = 'interviews'::regclass AND pg_get_constraintdef(oid) LIKE '%lobby_status%'
+        ) THEN
+          ALTER TABLE interviews
+            ADD CONSTRAINT chk_interviews_lobby_status
+            CHECK (lobby_status IN ('not_arrived', 'checked_in', 'in_room', 'completed'));
+        END IF;
+      END $$;
     `);
 
     // 3. إعداد افتراضي لبطاقة المقر الحضوري دون الكتابة فوق أي قيمة موجودة

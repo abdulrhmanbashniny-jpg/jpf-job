@@ -1,0 +1,418 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>استقبال المرشحين بالـ QR — منصة رُواء للتوظيف الذكي</title>
+  <link rel="stylesheet" href="css/design-system.css" />
+  <style>
+    .reception-grid {
+      display: grid;
+      grid-template-columns: 1.05fr 0.95fr;
+      gap: 22px;
+      align-items: start;
+    }
+    @media (max-width: 980px) {
+      .reception-grid { grid-template-columns: 1fr; }
+    }
+    .scanner-box {
+      position: relative;
+      background: #141816;
+      border-radius: 16px;
+      overflow: hidden;
+      min-height: 250px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: #D1D5DB;
+      border: 2px solid var(--border-color);
+    }
+    .scanner-box video {
+      width: 100%;
+      max-height: 310px;
+      object-fit: cover;
+      display: block;
+    }
+    .scan-frame {
+      position: absolute;
+      width: 190px;
+      height: 190px;
+      border: 2.5px solid var(--saffron);
+      border-radius: 18px;
+      box-shadow: 0 0 0 9999px rgba(0, 0, 0, 0.35);
+      pointer-events: none;
+    }
+    .arrival-card-active {
+      border-top: 5px solid var(--olive);
+      background: #FFFFFF;
+    }
+    .room-highlight {
+      background: var(--olive-soft);
+      border: 1px solid var(--olive);
+      border-radius: 12px;
+      padding: 14px 16px;
+    }
+  </style>
+</head>
+<body>
+  <div class="admin-shell">
+    <div id="admin-sidebar-mount"></div>
+
+    <main class="admin-main">
+      <header class="admin-header" style="margin-bottom:22px;">
+        <div>
+          <span class="eyebrow">بوابة الاستقبال الذكية (Smart QR Reception v2.2)</span>
+          <h1 style="font-size:26px;margin-top:4px;">مسح بطاقة المرشح وتسجيل الوصول الفوري</h1>
+          <p style="color:var(--text-secondary);font-size:13.5px;margin-top:4px;">
+            امسح رمز الـ QR من جوال المرشح أو أدخل آخر 4 أرقام من الرقم المرجعي لإشعار لجنة التوظيف فوراً.
+          </p>
+        </div>
+        <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;">
+          <span class="badge badge-olive" id="lobby-waiting-counter">0 في قاعة الانتظار حالياً</span>
+          <button type="button" id="refresh-reception-btn" class="btn btn-outline btn-sm">تحديث القائمة ↻</button>
+        </div>
+      </header>
+
+      <div class="reception-grid" style="margin-bottom:24px;">
+        <!-- العمود الأيمن: ماسح الكاميرا + الإدخال السريع -->
+        <section class="card">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;flex-wrap:wrap;gap:8px;">
+            <h2 style="font-size:18px;">📷 ماسح رمز الـ QR أو الرقم المختصر</h2>
+            <div style="display:flex;gap:8px;">
+              <button type="button" id="start-cam-btn" class="btn btn-olive btn-sm">تشغيل الكاميرا</button>
+              <button type="button" id="stop-cam-btn" class="btn btn-outline btn-sm" style="display:none;">إيقاف الكاميرا</button>
+            </div>
+          </div>
+
+          <div class="scanner-box" id="scanner-box">
+            <div id="scanner-placeholder" style="text-align:center;padding:28px;">
+              <div style="font-size:34px;margin-bottom:8px;">📲</div>
+              <div style="font-weight:700;color:#FFF;">اضغط «تشغيل الكاميرا» لمسح بطاقة المرشح تلقائياً</div>
+              <div style="font-size:12px;color:#9CA3AF;margin-top:4px;">أو استخدم البحث الفوري بالرقم المرجعي أدناه</div>
+            </div>
+            <video id="qr-video" playsinline muted style="display:none;"></video>
+            <div class="scan-frame" id="scan-frame" style="display:none;"></div>
+            <canvas id="qr-canvas" style="display:none;"></canvas>
+          </div>
+
+          <form id="manual-lookup-form" style="margin-top:16px;">
+            <label class="form-label" style="font-size:12.5px;">البحث السريع (رمز QR / الرقم المرجعي الكامل / آخر 4 أرقام مثل 1001)</label>
+            <div style="display:flex;gap:10px;">
+              <input
+                type="text"
+                id="qr-manual-input"
+                class="form-control mono"
+                placeholder="مثال: 1001 أو APP-2026-1001 أو JPFQR:..."
+                autocomplete="off"
+              />
+              <button type="submit" id="verify-qr-btn" class="btn btn-terracotta" style="white-space:nowrap;">
+                تحقق وعرض البطاقة ←
+              </button>
+            </div>
+          </form>
+        </section>
+
+        <!-- العمود الأيسر: بطاقة المرشح المتحققة وزر تسجيل الوصول -->
+        <section class="card" id="verified-card-panel">
+          <div id="verified-card-mount" style="padding:26px 12px;text-align:center;color:var(--text-muted);">
+            <div style="font-size:36px;margin-bottom:10px;">🪪</div>
+            <strong style="font-size:15px;color:var(--charcoal);display:block;margin-bottom:4px;">بانتظار مسح بطاقة المرشح</strong>
+            <span style="font-size:13px;">ستظهر هنا تفاصيل الموعد ورقم القاعة/المكتب وأسماء اللجنة فور المسح أو البحث.</span>
+          </div>
+        </section>
+      </div>
+
+      <!-- قائمة المنتظرين حالياً + جدول مواعيد اليوم -->
+      <div class="reception-grid">
+        <section class="card" style="padding:0;overflow:hidden;">
+          <div style="padding:16px 20px;border-bottom:1px solid var(--border-color);display:flex;justify-content:space-between;align-items:center;">
+            <strong style="font-size:16px;">🔔 المرشحون الحاضرون في الاستقبال حالياً</strong>
+            <span class="mono" style="font-size:12px;color:var(--text-muted);" id="today-date-lbl"></span>
+          </div>
+          <div class="table-wrap" style="border:0;border-radius:0;">
+            <table class="data-table">
+              <thead>
+                <tr>
+                  <th>المرشح</th>
+                  <th>الوظيفة</th>
+                  <th>القاعة / المكتب</th>
+                  <th>الانضباط الزمني</th>
+                </tr>
+              </thead>
+              <tbody id="waiting-lobby-tbody"></tbody>
+            </table>
+          </div>
+        </section>
+
+        <section class="card" style="padding:0;overflow:hidden;">
+          <div style="padding:16px 20px;border-bottom:1px solid var(--border-color);">
+            <strong style="font-size:16px;">📅 جدول مقابلات اليوم المتوقعة</strong>
+          </div>
+          <div class="table-wrap" style="border:0;border-radius:0;">
+            <table class="data-table">
+              <thead>
+                <tr>
+                  <th>الوقت</th>
+                  <th>المرشح</th>
+                  <th>الحالة</th>
+                  <th>إجراء سريع</th>
+                </tr>
+              </thead>
+              <tbody id="today-schedule-tbody"></tbody>
+            </table>
+          </div>
+        </section>
+      </div>
+    </main>
+  </div>
+
+  <script src="js/vendor/jsQR.js"></script>
+  <script src="js/common.js"></script>
+  <script>
+    SmartHR.renderAdminSidebar('reception');
+
+    let activeStream = null;
+    let scanLoopActive = false;
+    let verifiedCandidate = null;
+    let lastRawQrPayload = null;
+
+    function stopCamera() {
+      scanLoopActive = false;
+      if (activeStream) {
+        activeStream.getTracks().forEach((t) => t.stop());
+        activeStream = null;
+      }
+      document.getElementById('qr-video').style.display = 'none';
+      document.getElementById('scan-frame').style.display = 'none';
+      document.getElementById('scanner-placeholder').style.display = 'block';
+      document.getElementById('start-cam-btn').style.display = '';
+      document.getElementById('stop-cam-btn').style.display = 'none';
+    }
+
+    async function startCamera() {
+      if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+        SmartHR.showToast('الكاميرا غير مدعومة في هذا المتصفح؛ استخدم خانة البحث السريع.', 'error');
+        return;
+      }
+      try {
+        activeStream = await navigator.mediaDevices.getUserMedia({
+          video: { facingMode: { ideal: 'environment' } },
+          audio: false
+        });
+        const video = document.getElementById('qr-video');
+        video.srcObject = activeStream;
+        await video.play();
+        document.getElementById('scanner-placeholder').style.display = 'none';
+        video.style.display = 'block';
+        document.getElementById('scan-frame').style.display = 'block';
+        document.getElementById('start-cam-btn').style.display = 'none';
+        document.getElementById('stop-cam-btn').style.display = '';
+        scanLoopActive = true;
+        requestAnimationFrame(scanVideoFrame);
+      } catch (err) {
+        SmartHR.showToast('تعذر الوصول للكاميرا — تأكد من منح الإذن أو استخدم الإدخال اليدوي.', 'error');
+      }
+    }
+
+    async function scanVideoFrame() {
+      if (!scanLoopActive) return;
+      const video = document.getElementById('qr-video');
+      if (video.readyState === video.HAVE_ENOUGH_DATA) {
+        try {
+          if ('BarcodeDetector' in window) {
+            const detector = new window.BarcodeDetector({ formats: ['qr_code'] });
+            const codes = await detector.detect(video);
+            if (codes && codes.length && codes[0].rawValue) {
+              stopCamera();
+              await verifyInputValue(codes[0].rawValue);
+              return;
+            }
+          }
+        } catch (_e) {}
+
+        if (typeof window.jsQR === 'function') {
+          const canvas = document.getElementById('qr-canvas');
+          const ctx = canvas.getContext('2d', { willReadFrequently: true });
+          canvas.width = video.videoWidth;
+          canvas.height = video.videoHeight;
+          ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+          const imgData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+          const qr = window.jsQR(imgData.data, imgData.width, imgData.height);
+          if (qr && qr.data) {
+            stopCamera();
+            await verifyInputValue(qr.data);
+            return;
+          }
+        }
+      }
+      requestAnimationFrame(scanVideoFrame);
+    }
+
+    function renderVerifiedCard(c) {
+      verifiedCandidate = c;
+      const panel = document.getElementById('verified-card-panel');
+      const mount = document.getElementById('verified-card-mount');
+      panel.classList.add('arrival-card-active');
+
+      const alreadyArrived = c.lobby_status === 'checked_in';
+      const offDateWarning = !c.is_scheduled_today
+        ? `<div class="card-subtle" style="margin:12px 0;border-right:4px solid var(--saffron);text-align:right;font-size:12.5px;">
+             ⚠️ <strong>تنبيه تاريخ الموعد:</strong> هذا الموعد مجدول ليوم <span class="mono">${SmartHR.escapeHtml(c.scheduled_date)}</span> وليس تاريخ اليوم.
+             <label style="display:flex;align-items:center;gap:8px;margin-top:8px;cursor:pointer;font-weight:700;">
+               <input type="checkbox" id="force-date-chk" />
+               أؤكد تسجيل وصول استثنائي لهذا المرشح في غير يوم الموعد
+             </label>
+           </div>`
+        : '';
+
+      mount.innerHTML = `
+        <div style="text-align:right;">
+          <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;margin-bottom:10px;">
+            <span class="code-chip">${SmartHR.escapeHtml(c.reference_no)}</span>
+            <div style="display:flex;gap:6px;align-items:center;">
+              ${SmartHR.bookingBadge(c.booking_status)}
+              ${alreadyArrived ? '<span class="badge badge-olive">✓ مسجل الوصول في الاستقبال</span>' : ''}
+            </div>
+          </div>
+
+          <h2 style="font-size:22px;margin-bottom:4px;" id="vc-full-name">${SmartHR.escapeHtml(c.full_name)}</h2>
+          <div style="font-size:13.5px;color:var(--text-secondary);margin-bottom:14px;">
+            الوظيفة: <strong>${SmartHR.escapeHtml(c.job_title)}</strong> (<span class="mono">${SmartHR.escapeHtml(c.job_code)}</span> — ${SmartHR.escapeHtml(c.department)})
+          </div>
+
+          <div class="room-highlight" style="margin-bottom:14px;">
+            <div style="font-size:12px;color:var(--olive);font-weight:700;margin-bottom:4px;">📍 التوجيه الفوري للمرشح</div>
+            <div style="font-size:16px;font-weight:800;color:var(--charcoal);">${SmartHR.escapeHtml(c.floor || 'المقر الرئيسي')} — ${SmartHR.escapeHtml(c.office || 'قاعة المقابلات')}</div>
+            <div style="font-size:12.5px;color:var(--text-secondary);margin-top:4px;">
+              ⏰ الموعد: <span class="mono">${SmartHR.escapeHtml(c.scheduled_date)} · ${SmartHR.escapeHtml(c.start_time)}</span> | اللجنة: ${SmartHR.escapeHtml(c.interviewer_panel)}
+            </div>
+          </div>
+
+          ${offDateWarning}
+
+          ${
+            alreadyArrived
+              ? `<div style="display:flex;justify-content:space-between;align-items:center;background:var(--bg-subtle);padding:12px 14px;border-radius:10px;">
+                   <span style="font-weight:700;color:var(--olive);">✓ تم إبلاغ اللجنة بوصول المرشح</span>
+                   ${SmartHR.punctualityBadge(c.punctuality_minutes)}
+                 </div>`
+              : `<button type="button" id="confirm-checkin-btn" class="btn btn-olive btn-lg" style="width:100%;font-weight:700;">
+                   🔔 تسجيل وصول المرشح وإبلاغ اللجنة فوراً
+                 </button>`
+          }
+        </div>
+      `;
+
+      const checkinBtn = document.getElementById('confirm-checkin-btn');
+      if (checkinBtn) {
+        checkinBtn.addEventListener('click', () => executeCheckIn(c.interview_id));
+      }
+    }
+
+    async function verifyInputValue(rawVal) {
+      const val = String(rawVal || '').trim();
+      if (!val) return;
+      const isQrLike = val.startsWith('JPFQR:') || val.includes('vt=') || val.length > 28;
+      lastRawQrPayload = isQrLike ? val : null;
+
+      try {
+        const res = await SmartHR.apiFetch('/api/reception/verify-qr', {
+          method: 'POST',
+          body: JSON.stringify(isQrLike ? { qr_payload: val } : { reference_query: val })
+        });
+        renderVerifiedCard(res.candidate_arrival);
+        SmartHR.showToast(`تم التحقق من بطاقة: ${res.candidate_arrival.full_name}`, 'info');
+      } catch (err) {
+        SmartHR.showToast(err.message, 'error');
+      }
+    }
+
+    async function executeCheckIn(interviewId, forceOverrideArg = false) {
+      const forceChk = document.getElementById('force-date-chk');
+      const forceDateOverride = Boolean(forceOverrideArg || (forceChk && forceChk.checked));
+      const payload = {
+        interview_id: interviewId,
+        force_date_override: forceDateOverride
+      };
+      if (lastRawQrPayload && verifiedCandidate && verifiedCandidate.interview_id === interviewId) {
+        payload.qr_payload = lastRawQrPayload;
+      }
+
+      try {
+        const res = await SmartHR.apiFetch('/api/reception/check-in', {
+          method: 'POST',
+          body: JSON.stringify(payload)
+        });
+        renderVerifiedCard(res.candidate_arrival);
+        SmartHR.showToast(res.message, 'success');
+        await loadArrivalsBoard();
+      } catch (err) {
+        SmartHR.showToast(err.message, 'error');
+      }
+    }
+
+    window.quickVerifyToday = function(refNo) {
+      document.getElementById('qr-manual-input').value = refNo;
+      verifyInputValue(refNo);
+    };
+
+    async function loadArrivalsBoard() {
+      const data = await SmartHR.apiFetch('/api/reception/arrivals');
+      document.getElementById('lobby-waiting-counter').textContent = `${data.waiting_count} في قاعة الانتظار حالياً`;
+      document.getElementById('today-date-lbl').textContent = data.today_riyadh || '';
+
+      const waitingTbody = document.getElementById('waiting-lobby-tbody');
+      const waiting = data.waiting_candidates || [];
+      if (!waiting.length) {
+        waitingTbody.innerHTML = `<tr><td colspan="4" style="text-align:center;padding:24px;color:var(--text-muted);">لا يوجد مرشحون بانتظار الدخول حالياً.</td></tr>`;
+      } else {
+        waitingTbody.innerHTML = waiting.map((w) => `
+          <tr data-waiting-ref="${SmartHR.escapeHtml(w.reference_no)}">
+            <td>
+              <div style="font-weight:700;">${SmartHR.escapeHtml(w.full_name)}</div>
+              <div class="mono" style="font-size:11px;color:var(--text-muted);">${SmartHR.escapeHtml(w.reference_no)}</div>
+            </td>
+            <td><span class="code-chip">${SmartHR.escapeHtml(w.job_code)}</span></td>
+            <td style="font-size:12.5px;">${SmartHR.escapeHtml(w.office || '')}</td>
+            <td>${SmartHR.punctualityBadge(w.punctuality_minutes)}</td>
+          </tr>
+        `).join('');
+      }
+
+      const todayTbody = document.getElementById('today-schedule-tbody');
+      const todayList = data.today_schedule || [];
+      if (!todayList.length) {
+        todayTbody.innerHTML = `<tr><td colspan="4" style="text-align:center;padding:24px;color:var(--text-muted);">لا توجد مقابلات مجدولة لتاريخ اليوم (${SmartHR.escapeHtml(data.today_riyadh || '')}).</td></tr>`;
+      } else {
+        todayTbody.innerHTML = todayList.map((t) => `
+          <tr>
+            <td class="mono" style="font-weight:700;">${SmartHR.escapeHtml(t.start_time)}</td>
+            <td>
+              <div style="font-weight:700;">${SmartHR.escapeHtml(t.full_name)}</div>
+              <div class="mono" style="font-size:11px;color:var(--text-muted);">#${SmartHR.escapeHtml(t.checkin_code_tail)}</div>
+            </td>
+            <td>${t.lobby_status === 'checked_in' ? '<span class="badge badge-olive">حاضر ✓</span>' : SmartHR.bookingBadge(t.booking_status)}</td>
+            <td>
+              <button type="button" class="btn btn-outline btn-sm" onclick="quickVerifyToday('${SmartHR.escapeHtml(t.reference_no)}')">
+                عرض / تحضير
+              </button>
+            </td>
+          </tr>
+        `).join('');
+      }
+    }
+
+    document.getElementById('start-cam-btn').addEventListener('click', startCamera);
+    document.getElementById('stop-cam-btn').addEventListener('click', stopCamera);
+    document.getElementById('refresh-reception-btn').addEventListener('click', loadArrivalsBoard);
+    document.getElementById('manual-lookup-form').addEventListener('submit', (e) => {
+      e.preventDefault();
+      verifyInputValue(document.getElementById('qr-manual-input').value);
+    });
+
+    SmartHR.getCurrentUser()
+      .then(() => loadArrivalsBoard())
+      .catch((err) => SmartHR.showToast(err.message, 'error'));
+  </script>
+</body>
+</html>

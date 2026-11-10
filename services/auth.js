@@ -142,6 +142,14 @@ function verifyVisitPassToken(token) {
   return verifyScopedToken(token, 'visit_pass');
 }
 
+function createReceptionQrToken(interviewId, visitNonce) {
+  return createScopedToken('reception_checkin', interviewId, visitNonce, VISIT_PASS_TTL_MS);
+}
+
+function verifyReceptionQrToken(token) {
+  return verifyScopedToken(token, 'reception_checkin');
+}
+
 function createCandidatePortalToken(referenceNo, candidateAccessNonce) {
   return createScopedToken('candidate_portal', String(referenceNo).toUpperCase(), candidateAccessNonce, CANDIDATE_TTL_MS);
 }
@@ -385,6 +393,8 @@ module.exports = {
   clearSessionCookie,
   createVisitPassToken,
   verifyVisitPassToken,
+  createReceptionQrToken,
+  verifyReceptionQrToken,
   createCandidatePortalToken,
   verifyCandidatePortalToken,
   deriveCandidateAccessKey,
