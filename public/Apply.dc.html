@@ -148,6 +148,14 @@
 
           <div id="form-error-box" style="display:none;background:var(--terracotta-soft);color:var(--terracotta);padding:12px 16px;border-radius:10px;margin-bottom:16px;font-size:14px;font-weight:600;"></div>
 
+          <div id="ownership-key-box" class="card-subtle" style="display:none;margin-bottom:16px;border:1.5px solid var(--saffron);">
+            <label class="form-label" for="access_key_input">🔑 مفتاح الدخول السري للطلب السابق (Access Key)</label>
+            <input type="text" id="access_key_input" name="access_key" class="form-control mono" dir="ltr" placeholder="JPFK-XXXX-XXXX-XXXX-XXXX" autocomplete="off" />
+            <div style="font-size:12px;color:var(--text-secondary);margin-top:6px;">
+              مطلوب فقط إذا سبق لك التسجيل بنفس البريد أو الجوال من متصفح آخر لإثبات ملكية السجل.
+            </div>
+          </div>
+
           <button type="submit" id="submit-apply-btn" class="btn btn-terracotta btn-lg" style="width:100%;">
             حفظ الطلب والانتقال فوراً إلى اختبار الجدارة ←
           </button>
@@ -261,11 +269,24 @@
           body: formData
         });
 
+        if (res.access_key && res.reference_no) {
+          try {
+            sessionStorage.setItem('jpf_access_key_' + res.reference_no, res.access_key);
+          } catch (_e) {}
+        }
+
         SmartHR.showToast(res.message || 'تم تسجيل الطلب بنجاح!', 'success');
         setTimeout(() => {
           window.location.href = `Assessment.dc.html?ref=${encodeURIComponent(res.reference_no)}`;
         }, 400);
       } catch (err) {
+        if (err.code === 'CANDIDATE_OWNERSHIP_PROOF_REQUIRED') {
+          const keyBox = document.getElementById('ownership-key-box');
+          if (keyBox) {
+            keyBox.style.display = 'block';
+            document.getElementById('access_key_input')?.focus();
+          }
+        }
         errBox.textContent = err.message;
         errBox.style.display = 'block';
         submitBtn.disabled = false;

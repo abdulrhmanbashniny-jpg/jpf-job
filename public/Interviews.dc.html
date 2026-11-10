@@ -485,7 +485,9 @@
       tbody.innerHTML = queueList.map((q) => {
         const isInPerson = q.interview_mode === 'in_person';
         let statusHtml = '<span class="badge badge-charcoal">جاهزة للإرسال</span>';
-        if (q.queue_status === 'confirmed') {
+        if (q.queue_status === 'cancelled') {
+          statusHtml = '<span class="badge badge-terracotta">ملغاة (تم تحديث الموعد)</span>';
+        } else if (q.queue_status === 'confirmed') {
           statusHtml = '<span class="badge badge-olive">مؤكد الحضور ✓</span>';
         } else if (q.queue_status === 'sent') {
           statusHtml = '<span class="badge badge-olive">تأكد إرسالها ✓</span>';
@@ -493,8 +495,10 @@
           statusHtml = '<span class="badge badge-saffron">فُتح الرابط — بانتظار التأكيد</span>';
         }
 
+        const isCancelledMsg = q.queue_status === 'cancelled';
+
         return `
-          <tr style="cursor:pointer;" onclick="selectCandidateForPreview(${q.id})">
+          <tr style="cursor:pointer;${isCancelledMsg ? 'opacity:0.62;' : ''}" onclick="selectCandidateForPreview(${q.id})">
             <td>
               <div style="font-weight:700;">${SmartHR.escapeHtml(q.recipient_name)}</div>
               <div style="font-size:11.5px;color:var(--text-muted);">${SmartHR.escapeHtml(q.job_title || '')} ${q.job_code ? `(${SmartHR.escapeHtml(q.job_code)})` : ''}</div>
@@ -504,7 +508,7 @@
               <div style="margin-bottom:4px;">
                 ${isInPerson ? '<span class="badge badge-terracotta">🏢 حضوري</span>' : '<span class="badge badge-charcoal">🎥 عن بُعد</span>'}
               </div>
-              <select class="form-select row-tpl-sel" data-id="${q.id}" style="padding:4px 8px;font-size:11.5px;min-width:150px;">
+              <select class="form-select row-tpl-sel" data-id="${q.id}" style="padding:4px 8px;font-size:11.5px;min-width:150px;" ${isCancelledMsg ? 'disabled' : ''}>
                 ${TEMPLATE_STAGES.map((s) => `<option value="${s.key}" ${q.template_key === s.key ? 'selected' : ''}>${s.title}</option>`).join('')}
               </select>
             </td>
@@ -512,19 +516,23 @@
               ${q.scheduled_date ? `${SmartHR.formatDate(q.scheduled_date)}<br/><span class="mono">${String(q.start_time || '').slice(0,5)}</span>` : '—'}
             </td>
             <td onclick="event.stopPropagation()">
-              ${q.visit_url && q.visit_url.includes('vt=') ? `<a href="${SmartHR.escapeHtml(q.visit_url)}" target="_blank" rel="noopener" class="btn btn-outline btn-sm">معاينة البطاقة ↗</a>` : '—'}
+              ${!isCancelledMsg && q.visit_url && q.visit_url.includes('vt=') ? `<a href="${SmartHR.escapeHtml(q.visit_url)}" target="_blank" rel="noopener" class="btn btn-outline btn-sm">معاينة البطاقة ↗</a>` : '—'}
             </td>
             <td onclick="event.stopPropagation()">
-              <div style="display:flex;gap:6px;flex-wrap:wrap;">
-                <button type="button" class="wa-btn-inline" onclick="triggerRowSend(${q.id}, this)">
-                  💬 فتح مسودة
-                </button>
-                ${
-                  q.queue_status === 'queued'
-                    ? `<button type="button" class="btn btn-olive btn-sm" onclick="confirmRowSent(${q.id})">✓ تأكيد الإرسال</button>`
-                    : ''
-                }
-              </div>
+              ${
+                isCancelledMsg
+                  ? '<span style="font-size:12px;color:var(--text-muted);">تم استبدالها بموعد محدّث</span>'
+                  : `<div style="display:flex;gap:6px;flex-wrap:wrap;">
+                      <button type="button" class="wa-btn-inline" onclick="triggerRowSend(${q.id}, this)">
+                        💬 فتح مسودة
+                      </button>
+                      ${
+                        q.queue_status === 'queued'
+                          ? `<button type="button" class="btn btn-olive btn-sm" onclick="confirmRowSent(${q.id})">✓ تأكيد الإرسال</button>`
+                          : ''
+                      }
+                    </div>`
+              }
             </td>
             <td>${statusHtml}</td>
           </tr>

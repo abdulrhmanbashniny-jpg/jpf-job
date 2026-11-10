@@ -95,9 +95,18 @@ const SmartHR = (() => {
   }
 
   async function apiFetch(url, options = {}) {
+    const extraHeaders = { ...(options.headers || {}) };
+    try {
+      const urlParams = new URLSearchParams(window.location.search);
+      const ctFromUrl = urlParams.get('ct');
+      if (ctFromUrl && !extraHeaders['x-candidate-token']) {
+        extraHeaders['x-candidate-token'] = ctFromUrl;
+      }
+    } catch (_e) {}
+
     const headers = options.body instanceof FormData
-      ? { ...(options.headers || {}) }
-      : { 'Content-Type': 'application/json', ...(options.headers || {}) };
+      ? extraHeaders
+      : { 'Content-Type': 'application/json', ...extraHeaders };
     const res = await fetch(url, { ...options, headers });
     const contentType = res.headers.get('content-type') || '';
     const data = contentType.includes('application/json') ? await res.json() : { error: await res.text() };
@@ -115,17 +124,31 @@ const SmartHR = (() => {
       err.data = data;
       throw err;
     }
+
+    // إزالة رمز الاستعادة من شريط العنوان بعد تثبيت كوكي الجلسة الآمن HttpOnly
+    try {
+      const currentUrl = new URL(window.location.href);
+      if (currentUrl.searchParams.has('ct')) {
+        currentUrl.searchParams.delete('ct');
+        window.history.replaceState({}, '', currentUrl.pathname + currentUrl.search);
+      }
+    } catch (_e) {}
+
     return data;
   }
 
-  function renderCandidateVerifyCard(mountEl, initialRef = '', onVerified) {
+  function renderCandidateVerifyCard(mountEl, initialRef = '', onVerified, hrPhone = '966550000000') {
     if (!mountEl) return;
+    const cleanHr = String(hrPhone || '966550000000').replace(/\D/g, '');
+    const waHelpText = encodeURIComponent(
+      `السلام عليكم فريق التوظيف، أرغب في استعادة رابط الدخول لطلبي رقم (${initialRef || 'APP-2026-XXXX'}) من رقمي المسجل لديكم.`
+    );
     mountEl.innerHTML = `
       <div class="card" style="max-width:560px;margin:20px auto;text-align:center;padding:34px;">
-        <div style="font-size:34px;margin-bottom:8px;">🔒</div>
-        <h2 style="font-size:21px;margin-bottom:8px;">تأكيد ملكية طلب التوظيف</h2>
+        <div style="font-size:34px;margin-bottom:8px;">🔑</div>
+        <h2 style="font-size:21px;margin-bottom:8px;">إثبات ملكية طلب التوظيف</h2>
         <p style="color:var(--text-secondary);font-size:13.5px;margin-bottom:20px;line-height:1.75;">
-          حفاظاً على سرية بيانات المتقدمين وتقارير التقييم، يرجى إدخال الرقم المرجعي مع رقم الجوال أو البريد الإلكتروني المسجل في الطلب.
+          حفاظاً على سرية الطلبات ومنع انتحال الهوية، يرجى إدخال الرقم المرجعي مع <strong>مفتاح الدخول السري (Access Key)</strong> الصادر لك عند التقديم.
         </p>
         <form id="cand-verify-form" style="text-align:right;max-width:420px;margin:0 auto;">
           <div class="form-group" style="margin-bottom:12px;">
@@ -133,11 +156,17 @@ const SmartHR = (() => {
             <input type="text" id="cvf-ref" class="form-control mono" placeholder="APP-2026-1001" value="${escapeHtml(initialRef)}" required />
           </div>
           <div class="form-group" style="margin-bottom:16px;">
-            <label class="form-label">رقم الجوال أو البريد الإلكتروني المسجل *</label>
-            <input type="text" id="cvf-contact" class="form-control mono" placeholder="0551234567 أو name@domain.com" required />
+            <label class="form-label">مفتاح الدخول السري (Access Key) *</label>
+            <input type="text" id="cvf-key" class="form-control mono" dir="ltr" placeholder="JPFK-XXXX-XXXX-XXXX-XXXX" autocomplete="off" required />
           </div>
-          <button type="submit" id="cvf-submit" class="btn btn-primary" style="width:100%;">تحقق ومتابعة ←</button>
+          <button type="submit" id="cvf-submit" class="btn btn-primary" style="width:100%;">تحقق من المفتاح ومتابعة ←</button>
         </form>
+        <div style="margin-top:16px;padding-top:14px;border-top:1px solid var(--border);font-size:12.5px;color:var(--text-secondary);">
+          فقدت مفتاح الدخول السري؟
+          <a href="https://wa.me/${cleanHr}?text=${waHelpText}" target="_blank" rel="noopener" style="color:var(--olive);font-weight:700;text-decoration:underline;">
+            اطلب إرسال رابط استعادة لجوالك المسجل عبر واتساب ↗
+          </a>
+        </div>
       </div>
     `;
     const form = mountEl.querySelector('#cand-verify-form');
@@ -145,15 +174,18 @@ const SmartHR = (() => {
       e.preventDefault();
       const btn = mountEl.querySelector('#cvf-submit');
       const refVal = mountEl.querySelector('#cvf-ref').value.trim();
-      const contactVal = mountEl.querySelector('#cvf-contact').value.trim();
+      const keyVal = mountEl.querySelector('#cvf-key').value.trim();
       btn.disabled = true;
-      btn.textContent = 'جاري التحقق...';
+      btn.textContent = 'جاري التحقق التشفيري...';
       try {
         const vRes = await apiFetch('/api/public/candidate-verify', {
           method: 'POST',
-          body: JSON.stringify({ reference_no: refVal, contact: contactVal })
+          body: JSON.stringify({ reference_no: refVal, access_key: keyVal })
         });
-        showToast('✓ تم التحقق من ملكية الطلب بنجاح', 'success');
+        try {
+          sessionStorage.setItem('jpf_access_key_' + vRes.reference_no, keyVal.toUpperCase());
+        } catch (_e) {}
+        showToast('✓ تم إثبات ملكية الطلب بنجاح', 'success');
         if (typeof onVerified === 'function') {
           onVerified(vRes.reference_no);
         } else {
@@ -161,7 +193,7 @@ const SmartHR = (() => {
         }
       } catch (err) {
         btn.disabled = false;
-        btn.textContent = 'تحقق ومتابعة ←';
+        btn.textContent = 'تحقق من المفتاح ومتابعة ←';
         showToast(err.message, 'error');
       }
     });

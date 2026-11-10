@@ -203,7 +203,24 @@
 
     function renderShell() {
       const root = document.getElementById('assessment-root');
+      let savedKey = '';
+      try {
+        savedKey = sessionStorage.getItem('jpf_access_key_' + appData.reference_no) || '';
+      } catch (_e) {}
+      const keyBannerHtml = savedKey
+        ? `
+          <div class="card-subtle" style="margin-bottom:16px;padding:12px 16px;border:1.5px solid var(--olive);display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px;">
+            <div style="font-size:13px;">
+              <strong>🔑 مفتاح الدخول السري الخاص بطلبك (احتفظ به لمتابعة الطلب من أي جهاز آخر):</strong>
+              <span class="mono" dir="ltr" style="margin-right:8px;font-weight:800;color:var(--olive);">${SmartHR.escapeHtml(savedKey)}</span>
+            </div>
+            <button type="button" class="btn btn-outline btn-sm" onclick="navigator.clipboard.writeText('${SmartHR.escapeHtml(savedKey)}');SmartHR.showToast('تم نسخ مفتاح الدخول السري','success');">نسخ المفتاح</button>
+          </div>
+        `
+        : '';
+
       root.innerHTML = `
+        ${keyBannerHtml}
         <div class="assessment-layout">
           <aside>
             <div class="timer-panel" id="timer-panel">
@@ -668,7 +685,7 @@
         startMonitoringAndTimer();
       } catch (err) {
         if (err.code === 'CANDIDATE_VERIFY_REQUIRED' || err.status === 403) {
-          SmartHR.renderCandidateVerifyCard(root, refOrId, () => initAssessment());
+          SmartHR.renderCandidateVerifyCard(root, refOrId, () => initAssessment(), err.data?.hr_whatsapp_phone);
           return;
         }
         root.innerHTML = `<div class="card" style="color:var(--terracotta);text-align:center;padding:36px;">${SmartHR.escapeHtml(err.message)}</div>`;

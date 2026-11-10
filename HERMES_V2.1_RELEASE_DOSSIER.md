@@ -1,120 +1,122 @@
-# ملف المراجعة الهندسية المحدّث — معالجة ملاحظات المراجعة الأربع للإصدار `v2.1`
+# ملف المراجعة الهندسية والأمنية المحدّث (الجولة الثانية) — الإصدار `v2.1`
 **موجه إلى:** وكيل المراجعة التقنية والبنية التحتية **Hermes** (بقيادة واعتماد **عبدالرحمن**)  
 **المشروع:** منصة التوظيف الذكية (`https://hrjpf.tech` — المسار `/opt/jpf-job` على `srv1924474`)  
 **طلب الدمج المفتوح:** `https://github.com/abdulrhmanbashniny-jpg/jpf-job/pull/1` (`release/v2.1` -> `main`)  
-**حالة النشر:** قيد إعادة المراجعة الفنية — **لا نشر ولا إعادة تشغيل للحاويات قبل موافقة عبدالرحمن الصريحة.**
+**حالة النشر:** قيد إعادة المراجعة النهائية — **لا دمج ولا نشر ولا إعادة تشغيل للحاويات قبل موافقة عبدالرحمن الصريحة.**
 
 ---
 
-## ملخص معالجة النقاط الأربع التي رصدها Hermes
+## ملخص معالجة العوائق الأربعة المرصودة في مراجعة الجولة الثانية
 
-### 1. الحفاظ الكامل على مفاتيح وقيم `whatsapp_templates` الحالية (بدل استبدال الكائن)
-* **المعالجة في `database/db.js`:**
-  * استُبدل بناء الكائن الجزئي بدمج JSONB ذري يحفظ كافة المفاتيح والقيم الموجودة على اليمين (`existing` يغلب `defaults`):
-    ```sql
-    INSERT INTO system_settings (setting_key, setting_value, category, description, updated_by)
-    VALUES ('whatsapp_templates', $1::jsonb, 'whatsapp_templates', 'قوالب رسائل واتساب الهجينة للمراحل المعتمدة', 'system')
-    ON CONFLICT (setting_key) DO UPDATE
-      SET setting_value = $1::jsonb || COALESCE(system_settings.setting_value, '{}'::jsonb)
-      WHERE NOT (COALESCE(system_settings.setting_value, '{}'::jsonb) ?& ARRAY[
-        'interview_invite','interview_inperson','confirm_booking','reminder_day_before',
-        'send_room_now','thank_followup','pass_notification','reschedule_notice'
-      ]);
-    ```
-* **المعالجة في `PUT /api/wa-templates` (`server.js`):**
-  * يحدّث المفتاح المعدّل فقط عبر `COALESCE(system_settings.setting_value, '{}'::jsonb) || $1::jsonb` دون المساس ببقية المفاتيح (`pass_notification`, `reschedule_notice`, أو أي مفاتيح مخصصة في الإنتاج).
+### 1. إغلاق استعادة طلب شخص آخر وإثبات حيازة الطلب تشفيرياً (`Proof-of-Possession`)
+* **أ. إغلاق ثغرة استئناف الطلب أو تعديل سجل مرشح في `POST /api/applications`:**
+  * عند تطابق جزئي للبريد أو الجوال مع سجل مرشح آخر (`email` فقط أو `phone` فقط)، يُرفض الطلب فوراً بكود **`409 Conflict` (`CANDIDATE_CONTACT_CONFLICT`)** مع حذف الملف المؤقت المرفوع دون كشف أي `reference_no` أو إصدار أي كوكي.
+  * حتى عند تطابق البريد والجوال معاً لمرشح مسجل مسبقاً، **لا يُسمح** باستئناف اختبار معلق (`assessment_pending`) ولا بالتقديم على وظيفة ثانية أو تحديث سجل المرشح إلا إذا أثبت المرسل حيازته التشفيرية عبر كوكي الجلسة الأصلي `jpf_cand_session` أو تمرير **مفتاح الدخول السري `access_key` (100-bit HMAC-SHA256، بصيغة `JPFK-XXXX-XXXX-XXXX-XXXX`)**؛ وبدون ذلك يُرفض الطلب بكود **`403 Forbidden` (`CANDIDATE_OWNERSHIP_PROOF_REQUIRED`)** دون إصدار أي توكن أو تسريب الرقم المرجعي.
+* **ب. إغلاق التحقق المعرفي البسيط في `POST /api/public/candidate-verify` + مسار استعادة القناة المسجلة:**
+  * حُذف قبول البريد الإلكتروني أو رقم الجوال في `POST /api/public/candidate-verify` بالكامل (`400 ACCESS_KEY_REQUIRED`)، وأصبح المسار يشترط التحقق الزمني الثابت (`crypto.timingSafeEqual`) من **مفتاح الدخول السري `access_key`** المشتق بمفتاح غرض مستقل `candidate_access_key` من `candidate_access_token` (256-bit).
+  * عند فقدان المتقدم لمفتاحه السري، أُضيف مسار محمي بصلاحيات الموارد البشرية `POST /api/applications/:id/recovery-link` يقوم **بتدويـر `candidate_access_token`** (مما يُبطل فوراً أي مفتاح أو كوكي قديم `403`) ويُدرج مسودة رسالة `queued` في `wa_messages` موجّهة **حصراً إلى رقم الجوال المسجل في جدول `candidates` بقاعدة البيانات** دون قبول أي رقم خارجي.
 
 ---
 
-### 2. حماية بطاقة الزيارة وتأكيد الحضور برمز غير قابل للتخمين ومقيّد بالغرض + إغلاق كشف التقرير في المسار العام الموروث
-* **مفاتيح توقيع مفصولة حسب الغرض (`Purpose-Separated HMAC-SHA256` في `services/auth.js` + `256-bit DB Nonces`):**
-  * يشتق `getPurposeKey(purpose)` مفتاح توقيع مستقلاً لكل غرض (`visit_pass` مقابل `candidate_portal` مقابل `staff_session`) مع مقارنة زمنية ثابتة `crypto.timingSafeEqual`.
-* **أ. حماية بطاقة الزيارة وتأكيد الحضور (`visit_pass`):**
-  * أُضيف عمود `visit_token VARCHAR(64) NOT NULL` بفهرس فريد (`idx_interviews_visit_token`) في جدول `interviews`.
-  * أصبحت الروابط المولّدة للمرشح بصيغة `Visit.dc.html?vt=<HMAC_TOKEN>` (`GET /api/public/visit/:vt` و `POST /api/public/visit/:vt/confirm`).
-  * تمرير الرقم المرجعي المتسلسل `APP-2026-XXXX` أو تمرير رمز من غرض آخر (`candidate_portal`) يُرفض فوراً بكود **`403 Forbidden`**.
-* **ب. إغلاق كشف التقرير والبيانات الشخصية في المسار العام الموروث (`GET /api/applications/:idOrRef`):**
-  * أُضيف عمود `candidate_access_token VARCHAR(64) NOT NULL` في جدول `applications`.
-  * عند تقديم الطلب (`POST /api/applications`) أو التحقق من الملكية عبر المسار المقيّد بمعدل المحاولات `POST /api/public/candidate-verify` (مطابقة الرقم المرجعي + رقم الجوال أو البريد المسجل)، يُصدر الخادم كوكي `HttpOnly; SameSite=Lax` باسم `jpf_cand_session` مقيّداً بغرض `candidate_portal`.
-  * أي استعلام غير موثق من الجمهور على `/api/applications/1` يرجع **`401`**، وعلى `/api/applications/APP-2026-1001` أو `/api/assessments/status/APP-2026-1001` أو `/api/assessments/submit` بدون رمز المتقدم الصالح يرجع **`403`** دون تسريب أي حقل.
-  * **تقليص البيانات (`Data Minimization`) حتى للمتقدم الموثق:** تُحجب تماماً الحقول الداخلية للجنة (`email`, `phone`, `cv_stored_path`, `cv_extracted_text`, `committee_avg_score`, `final_weighted_score`, `tab_switches`, `paste_attempts`, وداخل `ai_report` يُحجب `blind_summary` و `risks` و `cv_breakdown` و `question_breakdown` ويُقتصر العرض على `strengths` و `gaps` الموجهة للمتقدم فقط).
+### 2. اتساق انتقالات حالات واتساب وتدوير رموز الزيارة عند إعادة الجدولة أو الإلغاء
+* **أ. منع انتقال الرسائل غير المرسلة (`queued`) إلى `confirmed`:**
+  * في `POST /api/public/visit/:vt/confirm`: لا يُسمح بتأكيد حضور الموعد إذا لم تُرسل دعوته فعلياً بعد (`booking_status` في حالة `scheduled` أو `rescheduled` يرجع **`409 Conflict` — `INVITATION_NOT_SENT_YET`**)، وعند التأكيد الشرعي تُحدَّث **فقط** الرسائل ذات الحالة `queue_status = 'sent'` إلى `'confirmed'`، بينما تبقى أي رسائل أخرى في حالة `'queued'` كما هي دون مساس.
+  * في `PATCH /api/wa-messages/:id`: يُرفض تحويل أي رسالة ما زالت `queued` مباشرةً إلى `confirmed` بكود **`400` (`CANNOT_CONFIRM_UNSENT_MESSAGE`)**.
+* **ب. تدوير رمز الزيارة وإبطال الدعوات والرسائل السابقة عند إعادة الجدولة أو الإلغاء:**
+  * في المسارات الثلاثة (`POST /api/interviews/schedule-single` عند وجود موعد سابق، و `POST /api/interviews/auto-schedule` عند التعارض، و `PATCH /api/interviews/:id` عند تعديل التاريخ/الوقت/النمط أو الإلغاء):
+    1. يُولَّد **`visit_token` عشوائي جديد (256-bit CSPRNG)** في جدول `interviews`، فيصبح أي رابط زيارة قديم `?vt=...` ملغى فوراً ويرجع **`403 Forbidden` (`REVOKED_VISIT_TOKEN`)** على كلٍّ من العرض وتأكيد الحضور.
+    2. تُبطَل جميع رسائل واتساب السابقة المرتبطة بذلك الموعد (`UPDATE wa_messages SET queue_status = 'cancelled' WHERE interview_id = $1 AND queue_status IN ('queued', 'sent', 'confirmed')`)، ويُمنع إعادة إرسال أي رسالة ملغاة (`400 WA_MESSAGE_CANCELLED`)، وتُنشأ مسودة دعوة جديدة بحالة `'queued'` تحمل الرابط الجديد.
 
 ---
 
-### 3. الفصل الصارم بين «جاهزة للإرسال / فُتح الرابط كمسودة» و«تأكد إرسالها فعلياً»
-* أُضيف عمود `prepared_at TIMESTAMPTZ` إلى جدول `wa_messages` (في كلٍّ من الترحيل ومخطط التأسيس).
-* عند الجدولة من `Ranking.dc.html` (`open_draft: true`) أو النقر على **«💬 فتح مسودة»** في `Interviews.dc.html` (`PATCH /api/wa-messages/:id` بـ `action: 'open_draft'`):
-  * **لا تتحول** `queue_status` إلى `'sent'`، ويبقى `sent_at = NULL`، وتبقى المقابلة في حالة `'scheduled'`، بينما يُسجَّل `prepared_at = NOW()` وتظهر شارة **«فُتح الرابط — بانتظار التأكيد»** مع تسجيل حدث تدقيق `WA_DRAFT_OPENED`.
-* فقط عند ضغط المنسق صراحةً على زر **«✓ تأكيد الإرسال»** (`action: 'confirm_sent'`) بعد إرسال الرسالة فعلياً داخل واتساب:
-  * تتحول `queue_status` إلى `'sent'`، ويُسجَّل `sent_at = NOW()` واسم المرسِل `sent_by`، وتنتقل حالة المقابلة إلى `'invitation_sent'` مع حدث تدقيق `WA_SEND_CONFIRMED`.
+### 3. عزل سكربت الفحص `verify:v21` بحواجز أمان صارمة وتشغيله الفعلي داخل GitHub Actions CI
+* **حواجز الأمان في `scripts/verify-v21-drills.js`:**
+  * أُزيل تحميل `.env` وقراءة `DATABASE_URL` بالكامل من السكربت.
+  * يرفض السكربت التشغيل فوراً (`exit 1`) إذا لم يُمرَّر `ALLOW_ISOLATED_DRILL=1`، أو إذا كانت `NODE_ENV=production`، أو إذا شُغّل داخل `/opt/jpf-job`، أو إذا لم يكن `DRILL_PG_ADMIN_URL` محلياً (`127.0.0.1` / `localhost`) وموجّهاً لقاعدة الصيانة `/postgres`.
+  * ينشئ السكربت قواعد مؤقتة معزولة بلاحقة عشوائية (`jpf_iso_*`) ومجلد مرفقات مؤقت ومنفذين معزولين (`3091` و `3092`) ويزيلها بالكامل في كتلة `finally`.
+* **التشغيل الآلي الموثق داخل `.github/workflows/ci.yml`:**
+  * **المهمة الأولى (`verify-platform`):** تشغّل اختبار حواجز الأمان ثم تشغّل `npm run verify:v21` فعلياً على `PostgreSQL 17` وتطبع سجل الترقية ومطابقة `139/139` عموداً واختبارات الملكية وحالات واتساب والاستعادة في سجل CI العام.
+  * **المهمة الثانية (`container-upgrade-rollback-drill`):** تشغّل `scripts/ci-container-rollback-drill.sh` لبناء حاويات `docker compose` حقيقية تحاكي الإنتاج (`70be659` + `docker-compose.override.yml` + ملف ترقيع `services/aiEvaluator.js` + حجمَي `pgdata` و `uploads_data`) وتنفذ النسخ الاحتياطي والترقية إلى `v2.1` والاستعادة المعزولة والرجوع الكامل للحاويات.
 
 ---
 
-### 4. توحيد تعريفات الأعمدة (100%)، تصحيح `pg_dump` وهوية المستخدم، ونتائج التجارب الفعلية المقاسة
+## 4. خطة النسخ الاحتياطي والاستعادة المعزولة والرجوع الكاملة على الخادم (تشمل القاعدة و `uploads_data` و `override` وملف الترقيع)
 
-#### أ. توحيد الأعمدة بين `database/db.js` و `database/schema_and_seed.sql`:
-تمت مطابقة كافة الأنواع والأطوال والقيود والـ `DEFAULT` حرفياً عبر `139 عموداً` في الجداول الـ 11 (فارق `0` في `information_schema.columns`):
-* `candidates.specialization`: `VARCHAR(150) NOT NULL DEFAULT ''`
-* `applications.ai_analysis_status`: `VARCHAR(30) NOT NULL DEFAULT 'completed'`
-* `applications.candidate_access_token`: `VARCHAR(64) NOT NULL DEFAULT (replace(gen_random_uuid()::text, '-', '') || replace(gen_random_uuid()::text, '-', ''))`
-* `interviews.interview_mode`: `VARCHAR(24) NOT NULL DEFAULT 'remote'`
-* `interviews.visit_token`: `VARCHAR(64) NOT NULL DEFAULT (replace(gen_random_uuid()::text, '-', '') || replace(gen_random_uuid()::text, '-', ''))` (+ `UNIQUE INDEX idx_interviews_visit_token`)
-* `interviews.location_building`: `VARCHAR(220)` | `location_floor`: `VARCHAR(80)` | `location_office`: `VARCHAR(80)` | `location_maps_url`, `location_image_url`, `location_notes`: `TEXT`
-* `wa_messages.prepared_at`: `TIMESTAMPTZ`
-* *ملاحظة هندسية للرجوع:* وجود `DEFAULT` على مستوى PostgreSQL لكل عمود `NOT NULL` جديد يضمن نجاح جمل `INSERT` في كود `v2.0` (`70be659`) حتى على القاعدة المرحّلة دون الحاجة لحذف الأعمدة أو استعادة القاعدة.
-
-#### ب. تصحيح أمر `pg_dump` وهوية مستخدم القاعدة على الخادم:
-في `docker-compose.yml` المستخدم الافتراضي هو `${POSTGRES_USER:-smart_hr_user}` (أو القيمة المحددة في `/opt/jpf-job/.env` والممررة لبيئة حاوية `db` الداخلية). لتفادي خطأ توسعة المتغير في صدفة المضيف (`Host Shell`)، يُقرأ المتغير **من داخل حاوية `db` نفسها**:
+### أ. النسخ الاحتياطي الكامل قبل أي ترقية معتمدة:
 ```bash
 mkdir -p /root/backups/smarthr
 TS=$(date +%F_%H%M%S)
+DC="docker compose -f /opt/jpf-job/docker-compose.yml -f /opt/jpf-job/docker-compose.override.yml"
 
-# قراءة POSTGRES_USER و POSTGRES_DB الفعليين من بيئة حاوية db مباشرة
-docker compose -f /opt/jpf-job/docker-compose.yml -f /opt/jpf-job/docker-compose.override.yml \
-  exec -T db sh -c 'pg_dump -U "$POSTGRES_USER" -d "$POSTGRES_DB" -Fc' \
+# 1. حفظ نسخة من ملف الترقيع المحلي وملف override وملف البيئة
+cp /opt/jpf-job/services/aiEvaluator.js "/root/backups/smarthr/aiEvaluator_pre_v21_${TS}.js"
+cp /opt/jpf-job/docker-compose.override.yml "/root/backups/smarthr/docker-compose.override.pre_v21_${TS}.yml"
+cp /opt/jpf-job/.env "/root/backups/smarthr/env_pre_v21_${TS}.bak"
+
+# 2. نسخ احتياطي مضغوط لقاعدة البيانات باستخدام متغيرات بيئة حاوية db الداخلية
+$DC exec -T db sh -c 'pg_dump -U "$POSTGRES_USER" -d "$POSTGRES_DB" -Fc' \
   > "/root/backups/smarthr/db_pre_v21_${TS}.dump"
 
-# التحقق الفوري من سلامة ملف النسخة الاحتياطية وقائمة محتوياته (بدون تعديل القاعدة)
-docker compose -f /opt/jpf-job/docker-compose.yml -f /opt/jpf-job/docker-compose.override.yml \
-  exec -T db pg_restore --list < "/root/backups/smarthr/db_pre_v21_${TS}.dump" | head -n 25
+# 3. نسخ احتياطي كامل لحجم المرفقات المسمى (uploads_data) من داخل حاوية app مع حفظ البنية
+$DC exec -T app sh -c 'tar -czf - -C /app/uploads .' \
+  > "/root/backups/smarthr/uploads_pre_v21_${TS}.tar.gz"
+
+# 4. التحقق الفوري غير التدميري من سلامة الأرشيفين
+$DC exec -T db pg_restore --list < "/root/backups/smarthr/db_pre_v21_${TS}.dump" | head -n 20
+tar -tzf "/root/backups/smarthr/uploads_pre_v21_${TS}.tar.gz" | head -n 20
 ```
 
-#### ج. نتائج الاختبارات والتجارب الأربع المقاسة فعلياً (`npm run verify:v21` — `scripts/verify-v21-drills.js`):
-أُضيف السكربت القابل لإعادة التشغيل `scripts/verify-v21-drills.js` إلى المستودع، ونُفّذ فعلياً على `PostgreSQL 17.11` + `Node.js 20.20` مسجّلاً القياسات الحقيقية التالية:
+### ب. اختبار الاستعادة المعزول داخل حاوية `db` (معاملَا `-c` منفصلان خارج كتلة المعاملة):
+```bash
+DC="docker compose -f /opt/jpf-job/docker-compose.yml -f /opt/jpf-job/docker-compose.override.yml"
 
-1. **تجربة ترقية قاعدة `v2.0` مأهولة (`70be659 -> v2.1`):**
-   * تهيئة قاعدة من `git show 70be659:database/schema_and_seed.sql` (`5` وظائف، `6` مرشحين، `6` طلبات، `3` مقابلات) مع تعديل مخصص لقالب `interview_invite` وإضافة مفتاح مخصص `custom_hr_special`.
-   * زمن تنفيذ الترحيل المقاس: **`244ms`**.
-   * النتيجة: تطابق كامل في عدد الصفوف، الحفاظ على جميع الـ `9` مفاتيح في `whatsapp_templates` دون استبدال القيم المخصصة، وتطابق **`139 / 139` عموداً (`0` اختلاف)** مع قاعدة `v2.1` مهيأة من الصفر.
-2. **تجربة التحقق الأمني وعزل الأغراض وحالات واتساب:**
-   * رفض `/api/applications/1` (`401`)، ورفض `/api/applications/APP-2026-1001` بدون رمز المتقدم (`403`)، ورفض `/api/public/visit/APP-2026-1001` (`403`)، ورفض تبادل الرموز بين `candidate_portal` و `visit_pass` (`403`).
-   * زمن استجابة إرسال الاختبار (`POST /api/assessments/submit`): **`22ms`**.
-   * ثبوت بقاء الرسالة `queued` مع تعبئة `prepared_at` وبقاء `sent_at = null` عند فتح المسودة، وعدم التحول إلى `sent` و `invitation_sent` إلا بعد استدعاء `confirm_sent`.
-3. **تجربة النسخ الاحتياطي والاستعادة المعزولة (`Isolated Backup & Restore`):**
-   * أخذ `pg_dump -Fc` للقاعدة المأهولة بعد إدراج بيانات `v2.1` جديدة: **`110ms`** (الحجم: `66 KB`).
-   * استعادتها عبر `pg_restore --no-owner --no-privileges` في قاعدة معزولة `drill_restore_isolated`: **`105ms`** مع تطابق تام في كافة السجلات (`7` مرشحين، `7` طلبات، `4` مقابلات).
-4. **تجربة الرجوع الفعلية (`Actual Rollback Drill: v2.1 -> 70be659 v2.0`):**
-   * استخراج كود الإنتاج الحالي `git archive 70be659` وتشغيله مباشرةً على القاعدة المرحّلة إلى `v2.1` والمحتوية على طلب ومقابلة حضورية ومرفقات `uploads` أُنشئت في `v2.1`.
-   * زمن إقلاع خادم `v2.0` Node على القاعدة المرحّلة: **`154ms`**، استجاب `/api/health` بـ `ok`، ونجح كود `v2.0` في تنفيذ `POST /api/applications` جديد (`201 Created`) ورفع ملف سيرة إلى `uploads` دون أي تعارض مع أعمدة `v2.1`.
-   * *(ملاحظة تشغيلية: زمن إعادة بناء وتشغيل حاوية Docker `docker compose up -d --build app` على الخادم `srv1924474` يعتمد على سرعة المعالج وتخزين Docker المؤقت على الخادم نفسه، ويُقاس ميدانياً من قِبل Hermes أثناء التنفيذ المعتمد بدلاً من افتراض زمن ثابت).*
+# ملاحظة مهمة: تمرير -c مرتين منفصلتين يضمن تنفيذ DROP DATABASE و CREATE DATABASE خارج كتلة معاملة (Transaction Block)
+$DC exec -T db sh -c 'psql -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d postgres \
+  -c "DROP DATABASE IF EXISTS smart_hr_restore_verify WITH (FORCE);" \
+  -c "CREATE DATABASE smart_hr_restore_verify;"'
 
----
+$DC exec -T db sh -c 'pg_restore -U "$POSTGRES_USER" -d smart_hr_restore_verify --no-owner --no-privileges' \
+  < "/root/backups/smarthr/db_pre_v21_${TS}.dump"
 
-## 5. خطوات الرجوع المعتمدة للخادم (تراعي القاعدة و `uploads_data` و `override`)
+# حذف القاعدة المؤقتة بعد التحقق من سلامة الصفوف المستعادة
+$DC exec -T db sh -c 'psql -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d postgres \
+  -c "DROP DATABASE IF EXISTS smart_hr_restore_verify WITH (FORCE);"'
+```
 
-1. **الرجوع السريع للكود (دون مساس بالطلبات الجديدة أو ملفات `uploads_data` أو `docker-compose.override.yml`):**
-   ```bash
-   cd /opt/jpf-job
-   git checkout 70be659
-   cp /root/backups/smarthr/aiEvaluator_pre_v21_*.js /opt/jpf-job/services/aiEvaluator.js
-   docker compose up -d --build app
-   curl -fsS https://hrjpf.tech/api/health
-   ```
-   *(مجرّب فعلياً في Drill 4؛ ملفات السير الذاتية في الـ Volume المسمى `uploads_data` تبقى متاحة، وصور `/uploads/public` الإضافية تبقى خاملة بأمان دون تأثير على `v2.0`).*
+### ج. المستوى الأول للرجوع (رجوع حاوية التطبيق إلى `70be659` مع الحفاظ على الطلبات والمرفقات الجديدة):
+*(مُثبت ومُجرَّب آلياً في `scripts/ci-container-rollback-drill.sh` داخل CI — جميع أعمدة `NOT NULL` الجديدة في `v2.1` مزوّدة بـ `DEFAULT` على مستوى PostgreSQL بحيث يعمل كود `70be659` قراءةً وإدراجاً دون تعارض):*
+```bash
+cd /opt/jpf-job
+git checkout 70be659
+cp "/root/backups/smarthr/aiEvaluator_pre_v21_${TS}.js" /opt/jpf-job/services/aiEvaluator.js
 
-2. **استعادة القاعدة المعزولة أولاً عند الطوارئ القصوى (قبل أي مساس بقاعدة الإنتاج):**
-   ```bash
-   # اختبار الاستعادة في قاعدة مؤقتة معزولة داخل نفس الحاوية للتحقق قبل التبديل
-   docker compose exec -T db sh -c 'psql -U "$POSTGRES_USER" -d postgres -c "DROP DATABASE IF EXISTS smart_hr_restore_verify; CREATE DATABASE smart_hr_restore_verify;"'
-   docker compose exec -T db sh -c 'pg_restore -U "$POSTGRES_USER" -d smart_hr_restore_verify --no-owner --no-privileges' < /root/backups/smarthr/db_pre_v21_*.dump
-   ```
+# إعادة بناء حاوية app مع الإبقاء التام على docker-compose.override.yml و .env وحجمَي pgdata و uploads_data
+docker compose -f /opt/jpf-job/docker-compose.yml -f /opt/jpf-job/docker-compose.override.yml up -d --build app
+curl -fsS https://hrjpf.tech/api/health
+```
+
+### د. المستوى الثاني للرجوع عند الطوارئ القصوى (استعادة القاعدة + حجم `uploads_data` بالكامل إلى نقطة ما قبل الترقية):
+*(لا يُنفَّذ إلا بقرار صريح من عبدالرحمن في حال رُغب في إلغاء التغييرات اللاحقة والعودة الكاملة لنقطة النسخة الاحتياطية):*
+```bash
+DC="docker compose -f /opt/jpf-job/docker-compose.yml -f /opt/jpf-job/docker-compose.override.yml"
+
+# 1. التحقق أولاً من نجاح الاستعادة في القاعدة المعزولة smart_hr_restore_verify (الخطوة ب أعلاه)
+# 2. إيقاف حاوية التطبيق مؤقتاً لمنع الاتصالات النشطة أثناء استبدال القاعدة والمرفقات
+$DC stop app
+
+# 3. إعادة إنشاء قاعدة الإنتاج واستعادة النسخة الاحتياطية (معاملَا -c منفصلان)
+$DC exec -T db sh -c 'psql -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d postgres \
+  -c "DROP DATABASE IF EXISTS \"$POSTGRES_DB\" WITH (FORCE);" \
+  -c "CREATE DATABASE \"$POSTGRES_DB\";"'
+$DC exec -T db sh -c 'pg_restore -U "$POSTGRES_USER" -d "$POSTGRES_DB" --no-owner --no-privileges' \
+  < "/root/backups/smarthr/db_pre_v21_${TS}.dump"
+
+# 4. استرجاع كود 70be659 وملف الترقيع وتشغيل الحاوية ثم استعادة أرشيف المرفقات بصلاحيات المستخدم node
+cd /opt/jpf-job
+git checkout 70be659
+cp "/root/backups/smarthr/aiEvaluator_pre_v21_${TS}.js" /opt/jpf-job/services/aiEvaluator.js
+$DC up -d --build app
+$DC exec -T app sh -c 'rm -rf /app/uploads/* && mkdir -p /app/uploads/samples && tar -xzf - -C /app/uploads' \
+  < "/root/backups/smarthr/uploads_pre_v21_${TS}.tar.gz"
+curl -fsS https://hrjpf.tech/api/health
+```

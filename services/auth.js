@@ -157,6 +157,48 @@ function verifyCandidatePortalToken(token, expectedRefNo, dbCandidateAccessNonce
   return a.length === b.length && crypto.timingSafeEqual(a, b);
 }
 
+/**
+ * اشتقاق مفتاح دخول سري عالي الإنتروبيا (100-bit HMAC-SHA256 مقيّد بغرض candidate_access_key)
+ * يُسلَّم للمتقدم عند إنشاء طلبه كإثبات حيازة تشفيري (Proof-of-Possession) بدلاً من الاكتفاء بالبريد/الجوال.
+ * عند تدوير candidate_access_token في القاعدة، يبطل المفتاح القديم تلقائياً في التو واللحظة.
+ */
+const CROCKFORD_ALPHABET = '23456789ABCDEFGHJKLMNPQRSTUVWXYZ';
+
+function deriveCandidateAccessKey(referenceNo, dbCandidateAccessNonce) {
+  const ref = String(referenceNo || '').trim().toUpperCase();
+  const nonce = String(dbCandidateAccessNonce || '').trim();
+  if (!ref || !nonce) throw new Error('معطيات مفتاح المتقدم السري غير مكتملة.');
+  const mac = crypto
+    .createHmac('sha256', getPurposeKey('candidate_access_key'))
+    .update(`${ref}::${nonce}`)
+    .digest();
+  let chars = '';
+  for (let i = 0; i < 16; i += 1) {
+    chars += CROCKFORD_ALPHABET[mac[i] & 31];
+  }
+  return `JPFK-${chars.slice(0, 4)}-${chars.slice(4, 8)}-${chars.slice(8, 12)}-${chars.slice(12, 16)}`;
+}
+
+function normalizeCandidateKeyString(raw) {
+  return String(raw || '')
+    .toUpperCase()
+    .replace(/[^A-Z0-9]/g, '');
+}
+
+function verifyCandidateAccessKey(inputKey, referenceNo, dbCandidateAccessNonce) {
+  if (!inputKey || !referenceNo || !dbCandidateAccessNonce) return false;
+  try {
+    const expected = normalizeCandidateKeyString(deriveCandidateAccessKey(referenceNo, dbCandidateAccessNonce));
+    let actual = normalizeCandidateKeyString(inputKey);
+    if (actual.length === 16) actual = `JPFK${actual}`;
+    const a = Buffer.from(actual, 'utf8');
+    const b = Buffer.from(expected, 'utf8');
+    return a.length === b.length && crypto.timingSafeEqual(a, b);
+  } catch (_e) {
+    return false;
+  }
+}
+
 function parseCookies(cookieHeader) {
   const out = {};
   if (!cookieHeader) return out;
@@ -247,6 +289,27 @@ function extractCandidateTokenFromRequest(req, referenceNo) {
   }
 }
 
+function extractAllCandidateTokensFromRequest(req) {
+  const list = [];
+  const direct = req.query?.ct || req.headers['x-candidate-token'] || req.body?.candidate_token;
+  if (direct && typeof direct === 'string' && direct.trim()) {
+    list.push(direct.trim());
+  }
+  const cookies = parseCookies(req.headers.cookie);
+  const rawCookie = cookies[CANDIDATE_COOKIE_NAME];
+  if (rawCookie) {
+    try {
+      const map = JSON.parse(Buffer.from(rawCookie, 'base64url').toString('utf8'));
+      if (map && typeof map === 'object') {
+        for (const val of Object.values(map)) {
+          if (typeof val === 'string' && val.trim()) list.push(val.trim());
+        }
+      }
+    } catch (_e) {}
+  }
+  return list;
+}
+
 const ROLE_LABELS = {
   super_admin: 'مدير النظام / رئيس اللجنة',
   committee_member: 'عضو لجنة التوظيف',
@@ -290,8 +353,11 @@ module.exports = {
   verifyVisitPassToken,
   createCandidatePortalToken,
   verifyCandidatePortalToken,
+  deriveCandidateAccessKey,
+  verifyCandidateAccessKey,
   setCandidateCookie,
   extractCandidateTokenFromRequest,
+  extractAllCandidateTokensFromRequest,
   verifyScopedToken,
   requireAuth
 };

@@ -8,6 +8,7 @@ on:
 
 jobs:
   verify-platform:
+    name: Schema Parity, PoP Ownership, WA State & Isolated DB Drills
     runs-on: ubuntu-latest
 
     services:
@@ -26,14 +27,22 @@ jobs:
           --health-retries 5
 
     steps:
-      - name: Checkout jpf-job repository
+      - name: Checkout full jpf-job repository history
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Setup Node.js 20
         uses: actions/setup-node@v4
         with:
           node-version: '20'
           cache: 'npm'
+
+      - name: Install PostgreSQL 17 client tools (matching postgres:17-alpine)
+        run: |
+          sudo /usr/share/postgresql-common/pgdg/apt.postgresql.org.sh -y
+          sudo apt-get install -y postgresql-client-17
+          echo "/usr/lib/postgresql/17/bin" >> $GITHUB_PATH
 
       - name: Install dependencies
         run: npm ci
@@ -53,7 +62,6 @@ jobs:
           node server.js &
           SERVER_PID=$!
           sleep 3
-          # 1. فحص الصحة وبوابة المتقدمين العامة وصفحات v2.1
           curl -fsS http://127.0.0.1:3000/api/health
           curl -fsS http://127.0.0.1:3000/index.html >/dev/null
           curl -fsS http://127.0.0.1:3000/Apply.dc.html >/dev/null
@@ -62,7 +70,6 @@ jobs:
           curl -fsS http://127.0.0.1:3000/img/hq-entrance.svg >/dev/null
           curl -fsS http://127.0.0.1:3000/Login.dc.html >/dev/null
 
-          # 2. التأكد من منع الزوار غير المسجلين من دخول صفحات اللجنة (302) و API (401) ومنع التعداد التسلسلي للطلبات والبطاقات (403)
           DASH_CODE=$(curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:3000/Dashboard.dc.html)
           test "$DASH_CODE" = "302"
           API_CODE=$(curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:3000/api/stats)
@@ -72,7 +79,6 @@ jobs:
           VISIT_ENUM_CODE=$(curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:3000/api/public/visit/APP-2026-1001)
           test "$VISIT_ENUM_CODE" = "403"
 
-          # 3. تسجيل الدخول بحساب المدير وفحص صفحات اللجنة وموديلات Ollama
           curl -fsS -c /tmp/cookies.txt -X POST http://127.0.0.1:3000/api/auth/login \
             -H "Content-Type: application/json" \
             -d '{"username":"admin","password":"CI-TEST-ADMIN-2026"}'
@@ -86,3 +92,27 @@ jobs:
           curl -fsS -b /tmp/cookies.txt http://127.0.0.1:3000/api/ollama/models >/dev/null
           rm -f /tmp/cookies.txt
           kill $SERVER_PID
+
+      - name: Run Isolated v2.1 Security, 139-Column Parity & Backup/Restore Suite (verify:v21)
+        env:
+          ALLOW_ISOLATED_DRILL: "1"
+          DRILL_PG_ADMIN_URL: postgresql://postgres:postgres_ci_password@127.0.0.1:5432/postgres
+        run: |
+          # التأكد أولاً من أن حواجز الأمان ترفض التشغيل بدون المتغير الصريح أو في وضع الإنتاج
+          if node scripts/verify-v21-drills.js 2>/dev/null; then exit 1; fi
+          if NODE_ENV=production node scripts/verify-v21-drills.js 2>/dev/null; then exit 1; fi
+          npm run verify:v21
+
+  container-upgrade-rollback-drill:
+    name: Docker Compose Upgrade, Override, Uploads Backup & Rollback Drill
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout full jpf-job repository history
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Execute Isolated Containerized v2.0 -> v2.1 -> Restore -> v2.0 Rollback Drill
+        env:
+          ALLOW_ISOLATED_CONTAINER_DRILL: "1"
+        run: bash scripts/ci-container-rollback-drill.sh

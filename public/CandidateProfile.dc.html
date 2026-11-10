@@ -107,6 +107,7 @@
 
               <div style="display:flex;gap:8px;flex-wrap:wrap;">
                 ${currentApp.cv_stored_path ? `<a href="${SmartHR.escapeHtml(currentApp.cv_stored_path)}" target="_blank" rel="noopener" class="btn btn-outline btn-sm">📄 معاينة السيرة الذاتية ↗</a>` : ''}
+                <button class="btn btn-outline btn-sm" onclick="prepareCandidateRecovery()" title="تدوير الرمز السري وتجهيز مسودة واتساب للجوال المسجل فقط">🔑 استعادة دخول المتقدم</button>
                 <button class="btn btn-olive btn-sm" onclick="changeAppStatus('offered')">اعتماد عرض وظيفي ✓</button>
                 <button class="btn btn-outline btn-sm" style="color:var(--terracotta);border-color:var(--terracotta);" onclick="changeAppStatus('rejected')">اعتذار للمرشح</button>
               </div>
@@ -324,6 +325,22 @@
         });
       } catch (err) {
         root.innerHTML = `<div class="card" style="color:var(--terracotta);">${SmartHR.escapeHtml(err.message)}</div>`;
+      }
+    }
+
+    async function prepareCandidateRecovery() {
+      if (!currentApp) return;
+      try {
+        const res = await SmartHR.apiFetch(`/api/applications/${currentApp.id}/recovery-link`, {
+          method: 'POST',
+          body: JSON.stringify({})
+        });
+        SmartHR.showToast(res.message || 'تم تجهيز مسودة الاستعادة للجوال المسجل', 'success');
+        if (res.wa_link) {
+          window.open(res.wa_link, '_blank', 'noopener');
+        }
+      } catch (err) {
+        SmartHR.showToast(err.message, 'error');
       }
     }
 

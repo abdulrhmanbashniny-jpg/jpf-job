@@ -1,19 +1,94 @@
-require('dotenv').config();
+#!/usr/bin/env node
+/**
+ * سكربت التحقق الهندسي والأمني المعزول بالكامل للإصدار v2.1
+ * -------------------------------------------------------------------------
+ * حواجز أمان صارمة (Safety Lockouts):
+ * 1. لا يحمّل ملف .env ولا يقرأ متغير DATABASE_URL نهائياً.
+ * 2. يرفض التشغيل فوراً إذا كانت NODE_ENV=production أو داخل /opt/jpf-job.
+ * 3. يشترط تمرير ALLOW_ISOLATED_DRILL=1 ومتغير DRILL_PG_ADMIN_URL على المضيف المحلي فقط (127.0.0.1 / localhost) وقاعدة الصيانة /postgres.
+ * 4. ينشئ قواعد بيانات ومجلد مرفقات ومنافذ مؤقتة معزولة تماماً ثم يزيلها في كتلة finally.
+ */
+
 const fs = require('fs');
+const path = require('path');
+const crypto = require('crypto');
 const { execSync, spawn } = require('child_process');
-const { Pool } = require('pg');
-const { createSessionToken, COOKIE_NAME } = require('../services/auth');
+const { Client, Pool } = require('pg');
+
+function abortUnsafe(reason) {
+  console.error(`[SAFETY_LOCKOUT] ${reason}`);
+  process.exit(1);
+}
+
+if (process.env.ALLOW_ISOLATED_DRILL !== '1') {
+  abortUnsafe('يلزم تمرير ALLOW_ISOLATED_DRILL=1 صراحةً لتشغيل سكربت الفحص المعزول.');
+}
+if (process.env.NODE_ENV === 'production') {
+  abortUnsafe('يُمنع تشغيل سكربت الفحص المعزول في بيئة الإنتاج (NODE_ENV=production).');
+}
+if (process.cwd().startsWith('/opt/jpf-job') || __dirname.startsWith('/opt/jpf-job')) {
+  abortUnsafe('يُمنع تشغيل هذا السكربت داخل مسار الإنتاج /opt/jpf-job.');
+}
+if (!process.env.DRILL_PG_ADMIN_URL) {
+  abortUnsafe('يلزم تحديد DRILL_PG_ADMIN_URL للاتصال بقاعدة الصيانة المحلية (/postgres) بعيداً عن DATABASE_URL.');
+}
+
+let adminUrl;
+try {
+  adminUrl = new URL(process.env.DRILL_PG_ADMIN_URL);
+} catch (_e) {
+  abortUnsafe('صيغة DRILL_PG_ADMIN_URL غير صالحة.');
+}
+
+if (!['127.0.0.1', 'localhost'].includes(adminUrl.hostname)) {
+  abortUnsafe(`يُسمح بالتشغيل على المضيف المحلي فقط (127.0.0.1/localhost)، الممرر: ${adminUrl.hostname}`);
+}
+if (adminUrl.pathname !== '/postgres') {
+  abortUnsafe(`يجب أن يشير DRILL_PG_ADMIN_URL إلى قاعدة الصيانة /postgres فقط وليس ${adminUrl.pathname}`);
+}
+
+const dbBaseOrigin = `${adminUrl.protocol}//${adminUrl.username}:${adminUrl.password}@${adminUrl.host}`;
+const runTag = `${process.pid}_${crypto.randomBytes(3).toString('hex')}`;
+const dbMig = `jpf_iso_mig_${runTag}`;
+const dbFresh = `jpf_iso_fresh_${runTag}`;
+const dbRest = `jpf_iso_rest_${runTag}`;
+const tmpRoot = `/tmp/jpf_iso_drill_${runTag}`;
+const sharedUploadsDir = path.join(tmpRoot, 'uploads_data');
+const backupDir = path.join(tmpRoot, 'backups');
+const restoredUploadsDir = path.join(tmpRoot, 'uploads_restored');
+const rbDir = path.join(tmpRoot, 'v20_rollback_app');
+
+const SESSION_SECRET_DRILL = 'drill-isolated-session-secret-2026-v21';
+const ADMIN_PASS_DRILL = 'DRILL-ADMIN-PASS-2026';
 
 function assert(cond, msg) {
   if (!cond) throw new Error('ASSERTION FAILED: ' + msg);
 }
 
-const adminDbUrl = new URL(process.env.DATABASE_URL || 'postgresql://postgres:postgres@127.0.0.1:5432/smart_hr_db');
-const dbBaseOrigin = `${adminDbUrl.protocol}//${adminDbUrl.username}:${adminDbUrl.password}@${adminDbUrl.host}`;
+async function recreateIsolatedDb(dbName) {
+  if (!/^jpf_iso_[a-z0-9_]+$/.test(dbName)) {
+    abortUnsafe('اسم قاعدة غير مسموح: ' + dbName);
+  }
+  const client = new Client({ connectionString: adminUrl.toString() });
+  await client.connect();
+  try {
+    await client.query(`DROP DATABASE IF EXISTS ${dbName} WITH (FORCE)`);
+    await client.query(`CREATE DATABASE ${dbName}`);
+  } finally {
+    await client.end();
+  }
+}
 
-function recreateDb(dbName) {
-  execSync(`sudo -u postgres psql -c "DROP DATABASE IF EXISTS ${dbName} WITH (FORCE);"`, { stdio: 'pipe' });
-  execSync(`sudo -u postgres psql -c "CREATE DATABASE ${dbName} OWNER ${adminDbUrl.username};"`, { stdio: 'pipe' });
+async function dropIsolatedDb(dbName) {
+  if (!/^jpf_iso_[a-z0-9_]+$/.test(dbName)) return;
+  const client = new Client({ connectionString: adminUrl.toString() });
+  await client.connect();
+  try {
+    await client.query(`DROP DATABASE IF EXISTS ${dbName} WITH (FORCE)`);
+  } catch (_e) {
+  } finally {
+    await client.end();
+  }
 }
 
 async function getColumnsSignature(pool) {
@@ -32,325 +107,503 @@ async function getColumnsSignature(pool) {
   return rows.map((r) => `${r.table_name}.${r.column_name}:${r.data_type}(${r.max_len}):null=${r.is_nullable}:def=${r.col_def}`);
 }
 
-(async () => {
-  console.log('=== [DRILL 1] POPULATED v2.0 (70be659) -> v2.1 UPGRADE & SCHEMA PARITY ===');
-  recreateDb('drill_v20_populated');
-  recreateDb('drill_v21_fresh');
-
-  // 1A. تهيئة قاعدة مأهولة مطابقة لإصدار الإنتاج v2.0 (70be659)
-  const v20Sql = execSync('git show 70be659:database/schema_and_seed.sql', { encoding: 'utf8' });
-  const pMig = new Pool({ connectionString: `${dbBaseOrigin}/drill_v20_populated` });
-  await pMig.query(v20Sql);
-
-  // تعديل قالب موجود + إضافة مفتاح مخصص إضافي للتأكد من عدم فقدانهما عند الترقية
-  await pMig.query(
-    `UPDATE system_settings
-     SET setting_value = setting_value || $1::jsonb
-     WHERE setting_key = 'whatsapp_templates'`,
-    [
-      JSON.stringify({
-        interview_invite: 'نص دعوة مخصص سابق من الموارد البشرية',
-        custom_hr_special: 'قالب خاص إضافي محفوظ في الإنتاج'
-      })
-    ]
-  );
-
-  const preCounts = (
-    await pMig.query(`
-      SELECT (SELECT COUNT(*)::int FROM jobs) AS jobs,
-             (SELECT COUNT(*)::int FROM candidates) AS cands,
-             (SELECT COUNT(*)::int FROM applications) AS apps,
-             (SELECT COUNT(*)::int FROM interviews) AS ints
-    `)
-  ).rows[0];
-  console.log('Pre-upgrade v2.0 counts:', preCounts);
-  await pMig.end();
-
-  // 1B. تشغيل ترحيل v2.1 على القاعدة المأهولة وقياس الزمن الفعلي
-  const tMig0 = Date.now();
-  execSync(
-    `DATABASE_URL="${dbBaseOrigin}/drill_v20_populated" node -e "const {ensureDatabaseInitialized, pool}=require('./database/db'); ensureDatabaseInitialized().then(()=>pool.end())"`,
-    { stdio: 'pipe' }
-  );
-  const migMs = Date.now() - tMig0;
-
-  // 1C. تهيئة قاعدة نظيفة من schema_and_seed.sql في v2.1 للمقارنة الصارمة للأعمدة
-  execSync(
-    `DATABASE_URL="${dbBaseOrigin}/drill_v21_fresh" node -e "const {ensureDatabaseInitialized, pool}=require('./database/db'); ensureDatabaseInitialized().then(()=>pool.end())"`,
-    { stdio: 'pipe' }
-  );
-
-  const pMigAfter = new Pool({ connectionString: `${dbBaseOrigin}/drill_v20_populated` });
-  const pFresh = new Pool({ connectionString: `${dbBaseOrigin}/drill_v21_fresh` });
-
-  const postCounts = (
-    await pMigAfter.query(`
-      SELECT (SELECT COUNT(*)::int FROM jobs) AS jobs,
-             (SELECT COUNT(*)::int FROM candidates) AS cands,
-             (SELECT COUNT(*)::int FROM applications) AS apps,
-             (SELECT COUNT(*)::int FROM interviews) AS ints
-    `)
-  ).rows[0];
-  assert(JSON.stringify(preCounts) === JSON.stringify(postCounts), 'Row counts changed after migration!');
-
-  // التحقق من النقطة (1): الحفاظ الكامل على مفاتيح وقيم whatsapp_templates السابقة
-  const tplRow = (
-    await pMigAfter.query("SELECT setting_value FROM system_settings WHERE setting_key = 'whatsapp_templates'")
-  ).rows[0].setting_value;
-  assert(tplRow.interview_invite === 'نص دعوة مخصص سابق من الموارد البشرية', 'Custom interview_invite value was overwritten!');
-  assert(tplRow.custom_hr_special === 'قالب خاص إضافي محفوظ في الإنتاج', 'Custom key custom_hr_special was lost!');
-  assert(Boolean(tplRow.pass_notification) && Boolean(tplRow.reschedule_notice), 'Original seed keys were lost!');
-  assert(
-    Boolean(tplRow.interview_inperson) && Boolean(tplRow.confirm_booking) && Boolean(tplRow.send_room_now),
-    'New v2.1 template keys were not merged!'
-  );
-  console.log(
-    `[OK] Migration duration: ${migMs}ms | Preserved all ${Object.keys(tplRow).length} whatsapp_templates keys including custom HR values!`
-  );
-
-  // التحقق من النقطة (4): تطابق 100% في تعريفات الأعمدة والـ DEFAULT والـ NOT NULL بين الترحيل والتأسيس
-  const sigMig = await getColumnsSignature(pMigAfter);
-  const sigFresh = await getColumnsSignature(pFresh);
-  const diffMigOnly = sigMig.filter((x) => !sigFresh.includes(x));
-  const diffFreshOnly = sigFresh.filter((x) => !sigMig.includes(x));
-  assert(
-    diffMigOnly.length === 0 && diffFreshOnly.length === 0,
-    'Column parity mismatch: ' + JSON.stringify({ diffMigOnly, diffFreshOnly })
-  );
-  console.log(`[OK] 100% Column Schema Parity verified across ${sigFresh.length} columns (0 differences)!`);
-  await pFresh.end();
-
-  console.log('\n=== [DRILL 2] PURPOSE-SCOPED TOKENS (POINT 2) & WA STATUS INTEGRITY (POINT 3) ===');
-  const base = 'http://127.0.0.1:3000';
-  const mainPool = new Pool({ connectionString: process.env.DATABASE_URL });
-  await mainPool.query('DELETE FROM candidates WHERE email = $1', ['sec_drill@jpf.sa']);
-
-  // فحص إغلاق المسار العام الموروث ومنع التعداد التسلسلي
-  assert((await fetch(base + '/api/applications/1')).status === 401, 'Numeric ID must return 401');
-  const unauthRefResp = await fetch(base + '/api/applications/APP-2026-1001');
-  assert(unauthRefResp.status === 403, 'Sequential ref without token must return 403');
-  const unauthJson = await unauthRefResp.json();
-  assert(!unauthJson.application && !unauthJson.ai_report, 'Unauth response leaked application data!');
-  assert((await fetch(base + '/api/assessments/status/APP-2026-1001')).status === 403, 'Status poll without token must return 403');
-  assert((await fetch(base + '/api/public/visit/APP-2026-1001')).status === 403, 'Visit pass must reject sequential ref');
-  assert(
-    (await fetch(base + '/api/public/visit/APP-2026-1001/confirm', { method: 'POST' })).status === 403,
-    'Visit confirm must reject sequential ref'
-  );
-
-  // تقديم طلب شرعي واستلام كوكي المتقدم المقيّد بالغرض
-  const fd = new FormData();
-  fd.append('job_id', '1');
-  fd.append('full_name', 'مرشح فحص الأمان');
-  fd.append('email', 'sec_drill@jpf.sa');
-  fd.append('phone', '0558887766');
-  fd.append('city', 'جدة');
-  fd.append('qualification', 'ماجستير');
-  fd.append('specialization', 'هندسة كيميائية');
-  fd.append('years_experience', '6');
-  fd.append('privacy_consent', 'true');
-  fd.append('cv_file', new Blob(['%PDF-1.4 Security Test CV ISO 9001'], { type: 'application/pdf' }), 'sec_cv.pdf');
-
-  const applyResp = await fetch(base + '/api/applications', { method: 'POST', body: fd });
-  assert(applyResp.status === 201, 'Apply failed: ' + applyResp.status);
-  const candCookie = applyResp.headers.get('set-cookie').split(';')[0];
-  const applyData = await applyResp.json();
-  const refNo = applyData.reference_no;
-
-  // رفض استخدام رمز candidate_portal على مسار visit_pass (تقييد الغرض)
-  assert(
-    (await fetch(base + '/api/public/visit/' + encodeURIComponent(applyData.candidate_token))).status === 403,
-    'candidate_portal token must be rejected on visit_pass endpoint!'
-  );
-
-  // إرسال الاختبار وقياس الزمن الفعلي
-  const jobQs = (await mainPool.query('SELECT questions FROM jobs WHERE id = 1')).rows[0].questions;
-  const ans = jobQs.map((q) => ({
-    question_index: q.index,
-    answer_value:
-      q.type === 'mcq'
-        ? String(q.correct_option)
-        : q.type === 'numeric'
-          ? String(q.correct_number)
-          : 'تطبيق معايير السلامة والجودة ISO 9001 ومراقبة اللزوجة والكثافة بدقة.',
-    time_taken_seconds: 10
-  }));
-  const tSub0 = Date.now();
-  const subResp = await fetch(base + '/api/assessments/submit', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', Cookie: candCookie },
-    body: JSON.stringify({ reference_no: refNo, answers: ans, telemetry: { tab_switches: 0, paste_attempts: 0, time_spent_seconds: 95 } })
-  });
-  const subMs = Date.now() - tSub0;
-  assert(subResp.status === 200, 'Assessment submit failed');
-
-  // التأكد من عدم تسريب حقول تقرير اللجنة الداخلية للمتقدم حتى بعد توثيقه
-  const ownApp = await fetch(base + '/api/applications/' + refNo, { headers: { Cookie: candCookie } }).then((r) => r.json());
-  assert(
-    ownApp.application.email === undefined && ownApp.application.cv_stored_path === undefined,
-    'PII/CV path leaked to public candidate endpoint!'
-  );
-  assert(
-    ownApp.application.committee_avg_score === undefined &&
-      ownApp.application.ai_report.blind_summary === undefined &&
-      ownApp.application.ai_report.risks === undefined,
-    'Internal committee report leaked!'
-  );
-  console.log(`[OK] Security scoping & report sanitization verified | Submit latency = ${subMs}ms!`);
-
-  // التحقق من النقطة (3): فتح مسودة wa.me لا يسجّل الرسالة كمرسلة (sent)
-  const adminRow = (await mainPool.query("SELECT * FROM staff_users WHERE role = 'super_admin' LIMIT 1")).rows[0];
-  const staffCookie = COOKIE_NAME + '=' + createSessionToken(adminRow);
-  const appId = (await mainPool.query('SELECT id FROM applications WHERE reference_no = $1', [refNo])).rows[0].id;
-
-  const schResp = await fetch(base + '/api/interviews/schedule-single', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', Cookie: staffCookie },
-    body: JSON.stringify({
-      application_id: appId,
-      scheduled_date: '2026-11-20',
-      start_time: '10:00',
-      interview_mode: 'in_person',
-      open_draft: true
-    })
-  }).then((r) => r.json());
-
-  assert(schResp.wa_message.queue_status === 'queued', 'Draft open must stay queued!');
-  assert(schResp.wa_message.sent_at === null, 'sent_at must remain null on draft open!');
-  assert(schResp.wa_message.prepared_at !== null, 'prepared_at must record draft open timestamp!');
-  assert(schResp.interview.booking_status === 'scheduled', 'booking_status must remain scheduled until confirmed sent!');
-  assert(schResp.visit_url.includes('Visit.dc.html?vt='), 'visit_url must use scoped vt token!');
-
-  // التحقق من تأكيد الإرسال الفعلي الصريح
-  const confirmSendResp = await fetch(base + '/api/wa-messages/' + schResp.wa_message.id, {
-    method: 'PATCH',
-    headers: { 'Content-Type': 'application/json', Cookie: staffCookie },
-    body: JSON.stringify({ action: 'confirm_sent' })
-  }).then((r) => r.json());
-  assert(confirmSendResp.message.queue_status === 'sent' && confirmSendResp.message.sent_at !== null, 'Explicit confirm_sent failed!');
-  const intAfterSend = (await mainPool.query('SELECT booking_status FROM interviews WHERE id = $1', [schResp.interview.id])).rows[0];
-  assert(intAfterSend.booking_status === 'invitation_sent', 'Interview booking_status must become invitation_sent after confirm_sent!');
-
-  // التحقق من بطاقة الزيارة وتأكيد الحضور بالرمز المقيّد بالغرض vt
-  const vtParam = new URL(schResp.visit_url).searchParams.get('vt');
-  assert(
-    (await fetch(base + '/api/applications/' + refNo + '?ct=' + encodeURIComponent(vtParam))).status === 403,
-    'visit_pass token must fail on candidate_portal endpoint!'
-  );
-  assert((await fetch(base + '/api/public/visit/' + encodeURIComponent(vtParam))).status === 200, 'Valid vt failed on GET visit');
-  const visitConf = await fetch(base + '/api/public/visit/' + encodeURIComponent(vtParam) + '/confirm', { method: 'POST' }).then((r) =>
-    r.json()
-  );
-  assert(visitConf.booking_status === 'confirmed', 'Candidate attendance confirm failed!');
-  console.log('[OK] WhatsApp draft vs confirmed-sent lifecycle & Visit Pass vt token verified!');
-
-  await mainPool.query('DELETE FROM candidates WHERE email = $1', ['sec_drill@jpf.sa']);
-  await mainPool.end();
-
-  console.log('\n=== [DRILL 3] ISOLATED pg_dump -Fc BACKUP & pg_restore VERIFICATION ===');
-  await pMigAfter.query(
-    `INSERT INTO candidates (full_name, email, phone, city, years_experience, qualification, specialization, cv_filename, cv_stored_path)
-     VALUES ($1, $2, $3, 'جدة', 4, 'بكالوريوس', 'هندسة صناعية', 'rb.pdf', '/uploads/samples/sample-cv-1.pdf')`,
-    ['مرشح تجربة الرجوع', 'rollback_cand@jpf.sa', '0554443322']
-  );
-  await pMigAfter.query(
-    `INSERT INTO applications (reference_no, job_id, candidate_id, status, assessment_score, ai_overall_score, privacy_consent)
-     VALUES ('APP-2026-1099', 1, (SELECT id FROM candidates WHERE email = $1), 'interview_scheduled', 84, 80, TRUE)`,
-    ['rollback_cand@jpf.sa']
-  );
-  await pMigAfter.query(
-    `INSERT INTO interviews (application_id, scheduled_date, start_time, end_time, duration_minutes, meeting_platform, meeting_url, interview_mode, location_floor, location_office)
-     VALUES ((SELECT id FROM applications WHERE reference_no = 'APP-2026-1099'), '2026-11-22', '11:00', '11:30', 30, 'مقابلة حضورية', 'https://hrjpf.tech', 'in_person', 'الدور الثالث', 'مكتب 304')`
-  );
-
-  const dumpFile = '/tmp/smarthr_drill_backup.dump';
-  const tDump0 = Date.now();
-  execSync(`PGPASSWORD="${adminDbUrl.password}" pg_dump -h 127.0.0.1 -U "${adminDbUrl.username}" -d drill_v20_populated -Fc -f ${dumpFile}`);
-  const dumpMs = Date.now() - tDump0;
-  const dumpKb = Math.round(fs.statSync(dumpFile).size / 1024);
-
-  recreateDb('drill_restore_isolated');
-  const tRes0 = Date.now();
-  execSync(
-    `PGPASSWORD="${adminDbUrl.password}" pg_restore -h 127.0.0.1 -U "${adminDbUrl.username}" -d drill_restore_isolated --no-owner --no-privileges ${dumpFile}`
-  );
-  const restoreMs = Date.now() - tRes0;
-
-  const pRestored = new Pool({ connectionString: `${dbBaseOrigin}/drill_restore_isolated` });
-  const origSummary = (
-    await pMigAfter.query(
-      'SELECT (SELECT COUNT(*)::int FROM candidates) c, (SELECT COUNT(*)::int FROM applications) a, (SELECT COUNT(*)::int FROM interviews) i'
-    )
-  ).rows[0];
-  const restSummary = (
-    await pRestored.query(
-      'SELECT (SELECT COUNT(*)::int FROM candidates) c, (SELECT COUNT(*)::int FROM applications) a, (SELECT COUNT(*)::int FROM interviews) i'
-    )
-  ).rows[0];
-  assert(JSON.stringify(origSummary) === JSON.stringify(restSummary), 'Restore row count mismatch!');
-  console.log(
-    `[OK] Isolated Backup & Restore Verified: pg_dump=${dumpMs}ms (${dumpKb} KB), pg_restore=${restoreMs}ms, rows=${JSON.stringify(restSummary)}`
-  );
-  await pRestored.end();
-  await pMigAfter.end();
-
-  console.log('\n=== [DRILL 4] ACTUAL ROLLBACK EXECUTION (v2.1 -> 70be659 v2.0 ON MIGRATED DB) ===');
-  const rbDir = '/tmp/jpf_v20_rollback_test';
-  execSync(`rm -rf ${rbDir} && mkdir -p ${rbDir} && git archive 70be659 | tar -x -C ${rbDir}`);
-  execSync(`ln -s /home/user/node_modules ${rbDir}/node_modules && cp -r /home/user/uploads ${rbDir}/uploads`);
-
-  const tRb0 = Date.now();
-  const rbProc = spawn('node', ['server.js'], {
-    cwd: rbDir,
-    env: {
-      ...process.env,
-      PORT: '3099',
-      HOST: '127.0.0.1',
-      DATABASE_URL: `${dbBaseOrigin}/drill_v20_populated`,
-      ADMIN_ACCESS_CODE: 'RB-ADMIN-2026'
-    },
-    stdio: 'pipe'
-  });
-
-  await new Promise((resolve, reject) => {
-    const timer = setTimeout(() => reject(new Error('v2.0 rollback server start timeout')), 8000);
-    rbProc.stdout.on('data', (d) => {
-      if (String(d).includes('3099')) {
+function spawnServer(cwd, port, dbName, uploadDir) {
+  const cleanEnv = {
+    PATH: process.env.PATH,
+    NODE_ENV: 'test',
+    PORT: String(port),
+    HOST: '127.0.0.1',
+    DATABASE_URL: `${dbBaseOrigin}/${dbName}`,
+    UPLOAD_DIR: uploadDir,
+    SESSION_SECRET: SESSION_SECRET_DRILL,
+    ADMIN_ACCESS_CODE: ADMIN_PASS_DRILL
+  };
+  const proc = spawn(process.execPath, ['server.js'], { cwd, env: cleanEnv, stdio: 'pipe' });
+  const ready = new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(`Server on port ${port} start timeout`)), 12000);
+    proc.stdout.on('data', (d) => {
+      if (String(d).includes(String(port))) {
         clearTimeout(timer);
         resolve();
       }
     });
-    rbProc.stderr.on('data', (d) => console.error('[v2.0 stderr]:', String(d)));
+    proc.stderr.on('data', (d) => {
+      const s = String(d).trim();
+      if (s) console.error(`[port ${port} stderr]:`, s);
+    });
+    proc.on('exit', (code) => {
+      clearTimeout(timer);
+      if (code !== null && code !== 0) reject(new Error(`Server on port ${port} exited with code ${code}`));
+    });
   });
-  const rbBootMs = Date.now() - tRb0;
+  return { proc, ready };
+}
 
-  const v20Health = await fetch('http://127.0.0.1:3099/api/health').then((r) => r.json());
-  assert(v20Health.status === 'ok', 'v2.0 health failed on migrated DB!');
+(async () => {
+  let v21Proc = null;
+  let v20Proc = null;
+  fs.mkdirSync(path.join(sharedUploadsDir, 'public'), { recursive: true });
+  fs.mkdirSync(backupDir, { recursive: true });
+  fs.mkdirSync(restoredUploadsDir, { recursive: true });
 
-  // التأكد من قدرة كود v2.0 بعد الرجوع على قراءة الطلبات المحدثة وإدراج طلب جديد في القاعدة المرحّلة دون خطأ
-  const fd20 = new FormData();
-  fd20.append('job_id', '2');
-  fd20.append('full_name', 'مرشح بعد الرجوع لنسخة 2.0');
-  fd20.append('email', 'post_rollback_v20@jpf.sa');
-  fd20.append('phone', '0551112233');
-  fd20.append('city', 'الرياض');
-  fd20.append('qualification', 'بكالوريوس');
-  fd20.append('years_experience', '3');
-  fd20.append('privacy_consent', 'true');
-  fd20.append('cv_file', new Blob(['%PDF-1.4 Post Rollback CV'], { type: 'application/pdf' }), 'v20.pdf');
-  const v20AppResp = await fetch('http://127.0.0.1:3099/api/applications', { method: 'POST', body: fd20 });
-  assert(v20AppResp.status === 201, 'v2.0 failed to INSERT into v2.1-migrated DB! Status: ' + v20AppResp.status);
+  try {
+    console.log('=== [DRILL 1] POPULATED v2.0 (70be659) -> v2.1 UPGRADE & 139-COLUMN PARITY ===');
+    await recreateIsolatedDb(dbMig);
+    await recreateIsolatedDb(dbFresh);
 
-  rbProc.kill('SIGTERM');
-  execSync(`rm -rf ${rbDir} ${dumpFile}`);
-  execSync('sudo -u postgres psql -c "DROP DATABASE IF EXISTS drill_v20_populated WITH (FORCE);"');
-  execSync('sudo -u postgres psql -c "DROP DATABASE IF EXISTS drill_v21_fresh WITH (FORCE);"');
-  execSync('sudo -u postgres psql -c "DROP DATABASE IF EXISTS drill_restore_isolated WITH (FORCE);"');
-  console.log(
-    `[OK] Actual v2.0 Rollback Drill Verified: v2.0 booted on migrated DB in ${rbBootMs}ms, /api/health=ok, and v2.0 INSERT succeeded cleanly!`
-  );
-  console.log('\nALL_4_HERMES_AUDIT_DRILLS_PASSED_100_PERCENT');
-})().catch((e) => {
-  console.error(e);
+    // 1A. تهيئة قاعدة مأهولة من مخطط الإنتاج الحالي 70be659 + ملف سيرة مرفوع قبل الترقية
+    const v20Sql = execSync('git show 70be659:database/schema_and_seed.sql', { encoding: 'utf8' });
+    const pMigPre = new Pool({ connectionString: `${dbBaseOrigin}/${dbMig}` });
+    await pMigPre.query(v20Sql);
+
+    const preUpgradeCvName = 'pre-upgrade-v20-cv.pdf';
+    fs.writeFileSync(path.join(sharedUploadsDir, preUpgradeCvName), '%PDF-1.4 Pre-upgrade Production CV Content');
+    await pMigPre.query(`UPDATE candidates SET cv_stored_path = $1 WHERE id = 1`, [`/uploads/${preUpgradeCvName}`]);
+
+    await pMigPre.query(
+      `UPDATE system_settings
+       SET setting_value = setting_value || $1::jsonb
+       WHERE setting_key = 'whatsapp_templates'`,
+      [
+        JSON.stringify({
+          interview_invite: 'نص دعوة مخصص سابق من الموارد البشرية',
+          custom_hr_special: 'قالب خاص إضافي محفوظ في الإنتاج'
+        })
+      ]
+    );
+
+    const preCounts = (
+      await pMigPre.query(`
+        SELECT (SELECT COUNT(*)::int FROM jobs) AS jobs,
+               (SELECT COUNT(*)::int FROM candidates) AS cands,
+               (SELECT COUNT(*)::int FROM applications) AS apps,
+               (SELECT COUNT(*)::int FROM interviews) AS ints
+      `)
+    ).rows[0];
+    await pMigPre.end();
+
+    // 1B. تشغيل خادم v2.1 المعزول على القاعدة المأهولة وقياس زمن الترحيل والإقلاع
+    const tMig0 = Date.now();
+    const s21 = spawnServer(process.cwd(), 3091, dbMig, sharedUploadsDir);
+    v21Proc = s21.proc;
+    await s21.ready;
+    const v21BootAndMigMs = Date.now() - tMig0;
+
+    // 1C. تهيئة قاعدة نظيفة من v2.1 للمطابقة الصارمة للأعمدة
+    execSync(
+      `DATABASE_URL="${dbBaseOrigin}/${dbFresh}" ADMIN_ACCESS_CODE="${ADMIN_PASS_DRILL}" "${process.execPath}" -e "const {ensureDatabaseInitialized, pool}=require('./database/db'); ensureDatabaseInitialized().then(()=>pool.end())"`,
+      { stdio: 'pipe' }
+    );
+
+    const pMig = new Pool({ connectionString: `${dbBaseOrigin}/${dbMig}` });
+    const pFresh = new Pool({ connectionString: `${dbBaseOrigin}/${dbFresh}` });
+
+    const postCounts = (
+      await pMig.query(`
+        SELECT (SELECT COUNT(*)::int FROM jobs) AS jobs,
+               (SELECT COUNT(*)::int FROM candidates) AS cands,
+               (SELECT COUNT(*)::int FROM applications) AS apps,
+               (SELECT COUNT(*)::int FROM interviews) AS ints
+      `)
+    ).rows[0];
+    assert(JSON.stringify(preCounts) === JSON.stringify(postCounts), 'Row counts changed after migration!');
+
+    const tplRow = (
+      await pMig.query("SELECT setting_value FROM system_settings WHERE setting_key = 'whatsapp_templates'")
+    ).rows[0].setting_value;
+    assert(tplRow.interview_invite === 'نص دعوة مخصص سابق من الموارد البشرية', 'Custom interview_invite overwritten!');
+    assert(tplRow.custom_hr_special === 'قالب خاص إضافي محفوظ في الإنتاج', 'Custom key custom_hr_special lost!');
+    assert(Boolean(tplRow.pass_notification) && Boolean(tplRow.reschedule_notice), 'Original seed keys lost!');
+    assert(Boolean(tplRow.interview_inperson) && Boolean(tplRow.confirm_booking), 'New v2.1 keys not merged!');
+
+    const sigMig = await getColumnsSignature(pMig);
+    const sigFresh = await getColumnsSignature(pFresh);
+    const diff1 = sigMig.filter((x) => !sigFresh.includes(x));
+    const diff2 = sigFresh.filter((x) => !sigMig.includes(x));
+    assert(diff1.length === 0 && diff2.length === 0, 'Column parity diff: ' + JSON.stringify({ diff1, diff2 }));
+    await pFresh.end();
+    console.log(
+      `[OK] Populated v2.0->v2.1 upgrade + server boot: ${v21BootAndMigMs}ms | Templates preserved: ${Object.keys(tplRow).length}/9 | Column parity: ${sigFresh.length}/${sigFresh.length} (0 diff)`
+    );
+
+    console.log('\n=== [DRILL 2A] CANDIDATE OWNERSHIP PROOF-OF-POSSESSION & ANTI-TAKEOVER ===');
+    const base = 'http://127.0.0.1:3091';
+
+    // منع التعداد غير الموثق
+    assert((await fetch(`${base}/api/applications/1`)).status === 401, 'Numeric ID must return 401');
+    assert((await fetch(`${base}/api/applications/APP-2026-1001`)).status === 403, 'Sequential ref must return 403');
+    assert((await fetch(`${base}/api/public/visit/APP-2026-1001`)).status === 403, 'Visit pass must reject ref');
+
+    // المتقدمة الشرعية (أليس) تقدم على الوظيفة 1 وتترك الاختبار معلقاً (assessment_pending)
+    const makeApplyForm = ({ jobId = '1', name = 'أليس المتقدمة', email, phone, accessKey = null }) => {
+      const f = new FormData();
+      f.append('job_id', String(jobId));
+      f.append('full_name', name);
+      f.append('email', email);
+      f.append('phone', phone);
+      f.append('city', 'جدة');
+      f.append('qualification', 'ماجستير');
+      f.append('specialization', 'هندسة كيميائية');
+      f.append('years_experience', '6');
+      f.append('privacy_consent', 'true');
+      if (accessKey) f.append('access_key', accessKey);
+      f.append('cv_file', new Blob(['%PDF-1.4 Alice Legit CV ISO 9001'], { type: 'application/pdf' }), 'alice_v21.pdf');
+      return f;
+    };
+
+    const aliceResp = await fetch(`${base}/api/applications`, {
+      method: 'POST',
+      body: makeApplyForm({ email: 'alice_owner@jpf.sa', phone: '0558887766' })
+    });
+    assert(aliceResp.status === 201, 'Alice initial apply failed: ' + aliceResp.status);
+    const aliceCookie = aliceResp.headers.get('set-cookie').split(';')[0];
+    const aliceData = await aliceResp.json();
+    const aliceRef = aliceData.reference_no;
+    const aliceKey = aliceData.access_key;
+    assert(aliceKey && aliceKey.startsWith('JPFK-'), 'Missing cryptographic access_key!');
+
+    // هجوم 1: منتحل يحاول سرقة الاختبار المعلق بإدخال بريد أليس مع جوال مختلف
+    const atkPartial = await fetch(`${base}/api/applications`, {
+      method: 'POST',
+      body: makeApplyForm({ name: 'منتحل 1', email: 'alice_owner@jpf.sa', phone: '0559990000' })
+    });
+    assert(atkPartial.status === 409, 'Partial contact collision must return 409, got ' + atkPartial.status);
+    assert(!atkPartial.headers.get('set-cookie'), 'Must not set cookie on rejected apply!');
+
+    // هجوم 2: منتحل يعرف بريد أليس وجوال أليس معاً ويحاول استعادة اختبارها المعلق بدون مفتاح الدخول السري
+    const atkExactSameJob = await fetch(`${base}/api/applications`, {
+      method: 'POST',
+      body: makeApplyForm({ name: 'منتحل 2', email: 'alice_owner@jpf.sa', phone: '0558887766' })
+    });
+    assert(atkExactSameJob.status === 403, 'Unauthenticated duplicate apply must return 403, got ' + atkExactSameJob.status);
+    const atkExactJson = await atkExactSameJob.json();
+    assert(atkExactJson.code === 'CANDIDATE_OWNERSHIP_PROOF_REQUIRED', 'Expected CANDIDATE_OWNERSHIP_PROOF_REQUIRED');
+    assert(!atkExactJson.candidate_token && !atkExactJson.reference_no, 'Leaked token or reference_no to attacker!');
+    assert(!atkExactSameJob.headers.get('set-cookie'), 'Must not set cookie for attacker!');
+
+    // هجوم 3: منتحل يعرف بريد وجوال أليس ويحاول التقديم على وظيفة ثانية (job_id=2) لتخريب سيرتها الذاتية
+    const atkOtherJob = await fetch(`${base}/api/applications`, {
+      method: 'POST',
+      body: makeApplyForm({ jobId: '2', name: 'منتحل مخرّب', email: 'alice_owner@jpf.sa', phone: '0558887766' })
+    });
+    assert(atkOtherJob.status === 403, 'Unauthenticated cross-job apply must return 403!');
+    const aliceDbRow = (await pMig.query('SELECT full_name FROM candidates WHERE email = $1', ['alice_owner@jpf.sa'])).rows[0];
+    assert(aliceDbRow.full_name === 'أليس المتقدمة', 'Attacker mutated Alice candidate record!');
+
+    // هجوم 4: محاولة التحقق في candidate-verify بالرقم المرجعي + البريد/الجوال (بدون مفتاح الدخول السري)
+    const atkPiiVerify = await fetch(`${base}/api/public/candidate-verify`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ reference_no: aliceRef, contact: 'alice_owner@jpf.sa' })
+    });
+    assert(atkPiiVerify.status === 400, 'PII-only candidate-verify must be rejected (400)!');
+
+    const atkWrongKey = await fetch(`${base}/api/public/candidate-verify`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ reference_no: aliceRef, access_key: 'JPFK-2345-6789-ABCD-EFGH' })
+    });
+    assert(atkWrongKey.status === 403, 'Wrong access_key must return 403!');
+
+    // استئناف شرعي من متصفح جديد باستخدام مفتاح الدخول السري الصحيح (Proof-of-Possession)
+    const legitResume = await fetch(`${base}/api/applications`, {
+      method: 'POST',
+      body: makeApplyForm({ email: 'alice_owner@jpf.sa', phone: '0558887766', accessKey: aliceKey })
+    });
+    assert(legitResume.status === 200, 'Legitimate resume with valid access_key failed: ' + legitResume.status);
+    const legitResumeJson = await legitResume.json();
+    assert(legitResumeJson.resumed === true && legitResumeJson.reference_no === aliceRef, 'Resume payload mismatch!');
+
+    // تحقق شرعي عبر candidate-verify من متصفح جديد بمفتاح الدخول السري
+    const legitVerify = await fetch(`${base}/api/public/candidate-verify`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ reference_no: aliceRef, access_key: aliceKey })
+    });
+    assert(legitVerify.status === 200, 'Legit candidate-verify with access_key failed!');
+
+    // إرسال الاختبار وقياس الزمن الفعلي
+    const jobQs = (await pMig.query('SELECT questions FROM jobs WHERE id = 1')).rows[0].questions;
+    const ans = jobQs.map((q) => ({
+      question_index: q.index,
+      answer_value:
+        q.type === 'mcq'
+          ? String(q.correct_option)
+          : q.type === 'numeric'
+            ? String(q.correct_number)
+            : 'تطبيق معايير السلامة والجودة ISO 9001 ومراقبة اللزوجة والكثافة بدقة.',
+      time_taken_seconds: 9
+    }));
+    const tSub0 = Date.now();
+    const subResp = await fetch(`${base}/api/assessments/submit`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Cookie: aliceCookie },
+      body: JSON.stringify({ reference_no: aliceRef, answers: ans, telemetry: { tab_switches: 0, paste_attempts: 0, time_spent_seconds: 90 } })
+    });
+    const subMs = Date.now() - tSub0;
+    assert(subResp.status === 200, 'Assessment submit failed');
+
+    // دخول موظف اللجنة وفحص تدوير رابط الاستعادة للجوال المسجل فقط
+    const loginResp = await fetch(`${base}/api/auth/login`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username: 'admin', password: ADMIN_PASS_DRILL })
+    });
+    assert(loginResp.status === 200, 'Staff login failed');
+    const staffCookie = loginResp.headers.get('set-cookie').split(';')[0];
+
+    const aliceAppId = (await pMig.query('SELECT id FROM applications WHERE reference_no = $1', [aliceRef])).rows[0].id;
+    const recResp = await fetch(`${base}/api/applications/${aliceAppId}/recovery-link`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Cookie: staffCookie },
+      body: JSON.stringify({})
+    });
+    assert(recResp.status === 201, 'HR recovery-link failed');
+    const recJson = await recResp.json();
+    assert(recJson.wa_message.recipient_phone === '966558887766', 'Recovery WA must target registered DB phone only!');
+    assert(recJson.wa_message.queue_status === 'queued', 'Recovery WA must start queued!');
+
+    // المفتاح القديم أُبطل فوراً بعد التدوير
+    const oldKeyCheck = await fetch(`${base}/api/public/candidate-verify`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ reference_no: aliceRef, access_key: aliceKey })
+    });
+    assert(oldKeyCheck.status === 403, 'Rotated old access_key must be rejected (403)!');
+
+    // الرابط المحدّث المرسل للجوال المسجل يعمل فوراً
+    const recCt = new URL(recJson.recovery_url).searchParams.get('ct');
+    const recFetch = await fetch(`${base}/api/applications/${aliceRef}?ct=${encodeURIComponent(recCt)}`);
+    assert(recFetch.status === 200, 'Fresh recovery token failed!');
+    console.log(`[OK] Candidate PoP ownership, anti-takeover, key rotation & <25ms submit (${subMs}ms) verified!`);
+
+    console.log('\n=== [DRILL 2B] WHATSAPP STATE CONSISTENCY & RESCHEDULE TOKEN REVOCATION ===');
+    const sch1 = await fetch(`${base}/api/interviews/schedule-single`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Cookie: staffCookie },
+      body: JSON.stringify({
+        application_id: aliceAppId,
+        scheduled_date: '2026-11-20',
+        start_time: '10:00',
+        interview_mode: 'in_person',
+        open_draft: true
+      })
+    }).then((r) => r.json());
+
+    const vt1 = new URL(sch1.visit_url).searchParams.get('vt');
+    assert(sch1.wa_message.queue_status === 'queued' && sch1.wa_message.prepared_at !== null, 'Draft must stay queued!');
+    assert(sch1.interview.booking_status === 'scheduled', 'Interview must start scheduled!');
+
+    // منع المرشح من تأكيد الحضور قبل إرسال الدعوة فعلياً (queued لا تتحول إلى confirmed)
+    const prematureConfirm = await fetch(`${base}/api/public/visit/${encodeURIComponent(vt1)}/confirm`, { method: 'POST' });
+    assert(prematureConfirm.status === 409, 'Confirm before invitation_sent must return 409, got ' + prematureConfirm.status);
+
+    // منع الموظف من تحويل رسالة queued مباشرة إلى confirmed قبل إرسالها
+    const directStaffConfirmUnsent = await fetch(`${base}/api/wa-messages/${sch1.wa_message.id}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json', Cookie: staffCookie },
+      body: JSON.stringify({ queue_status: 'confirmed' })
+    });
+    assert(directStaffConfirmUnsent.status === 400, 'Direct queued->confirmed must return 400!');
+
+    // تأكيد إرسال الدعوة الأولى فعلياً
+    const send1 = await fetch(`${base}/api/wa-messages/${sch1.wa_message.id}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json', Cookie: staffCookie },
+      body: JSON.stringify({ action: 'confirm_sent' })
+    });
+    assert(send1.status === 200, 'confirm_sent failed');
+
+    // إضافة رسالة تذكير ثانية غير مرسلة (queued) لنفس المقابلة للتأكد أنها لا تتحول إلى confirmed عند تأكيد الحضور
+    const unsentReminder = await fetch(`${base}/api/wa-messages`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Cookie: staffCookie },
+      body: JSON.stringify({
+        application_id: aliceAppId,
+        interview_id: sch1.interview.id,
+        template_key: 'reminder_day_before',
+        recipient_name: 'أليس المتقدمة',
+        recipient_phone: '0558887766',
+        message_body: 'تذكير غداً بالموعد'
+      })
+    }).then((r) => r.json());
+    assert(unsentReminder.message.queue_status === 'queued', 'Reminder must be queued');
+
+    // تأكيد حضور المرشح الآن بعد إرسال الدعوة
+    const okConfirm1 = await fetch(`${base}/api/public/visit/${encodeURIComponent(vt1)}/confirm`, { method: 'POST' });
+    assert(okConfirm1.status === 200, 'Candidate confirm after invitation_sent failed!');
+
+    const msgStatesAfterConfirm = (
+      await pMig.query('SELECT id, queue_status FROM wa_messages WHERE interview_id = $1 ORDER BY id ASC', [sch1.interview.id])
+    ).rows;
+    const sentMsgRow = msgStatesAfterConfirm.find((m) => m.id === sch1.wa_message.id);
+    const queuedRemRow = msgStatesAfterConfirm.find((m) => m.id === unsentReminder.message.id);
+    assert(sentMsgRow.queue_status === 'confirmed', 'Sent invitation should become confirmed!');
+    assert(queuedRemRow.queue_status === 'queued', 'Unsent queued reminder MUST stay queued and NOT become confirmed!');
+
+    // إعادة الجدولة عبر schedule-single -> تدوير visit_token وإبطال vt1 وإلغاء كافة الرسائل السابقة
+    const sch2 = await fetch(`${base}/api/interviews/schedule-single`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Cookie: staffCookie },
+      body: JSON.stringify({
+        application_id: aliceAppId,
+        scheduled_date: '2026-11-22',
+        start_time: '11:30',
+        interview_mode: 'in_person',
+        open_draft: false
+      })
+    }).then((r) => r.json());
+
+    const vt2 = new URL(sch2.visit_url).searchParams.get('vt');
+    assert(vt2 !== vt1, 'Reschedule MUST rotate visit_token!');
+    assert(sch2.interview.booking_status === 'rescheduled', 'Status must be rescheduled!');
+
+    assert((await fetch(`${base}/api/public/visit/${encodeURIComponent(vt1)}`)).status === 403, 'Old vt1 GET must return 403!');
+    assert(
+      (await fetch(`${base}/api/public/visit/${encodeURIComponent(vt1)}/confirm`, { method: 'POST' })).status === 403,
+      'Old vt1 POST confirm must return 403!'
+    );
+    assert((await fetch(`${base}/api/public/visit/${encodeURIComponent(vt2)}`)).status === 200, 'New vt2 GET must return 200!');
+
+    const oldMsgsAfterResched = (
+      await pMig.query('SELECT queue_status FROM wa_messages WHERE id = ANY($1::int[])', [[sch1.wa_message.id, unsentReminder.message.id]])
+    ).rows;
+    assert(oldMsgsAfterResched.every((r) => r.queue_status === 'cancelled'), 'All prior messages must be cancelled on reschedule!');
+
+    // رفض إرسال رسالة ملغاة قديمة
+    const sendCancelledTry = await fetch(`${base}/api/wa-messages/${sch1.wa_message.id}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json', Cookie: staffCookie },
+      body: JSON.stringify({ action: 'confirm_sent' })
+    });
+    assert(sendCancelledTry.status === 400, 'Sending a cancelled message must return 400!');
+
+    // إعادة الجدولة عبر PATCH /api/interviews/:id -> تدوير جديد vt3 وإبطال vt2
+    const patchResched = await fetch(`${base}/api/interviews/${sch1.interview.id}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json', Cookie: staffCookie },
+      body: JSON.stringify({ start_time: '14:00' })
+    }).then((r) => r.json());
+    const vt3 = new URL(patchResched.visit_url).searchParams.get('vt');
+    assert(vt3 !== vt2, 'PATCH reschedule must rotate visit_token!');
+    assert((await fetch(`${base}/api/public/visit/${encodeURIComponent(vt2)}`)).status === 403, 'Old vt2 must return 403 after PATCH!');
+    assert((await fetch(`${base}/api/public/visit/${encodeURIComponent(vt3)}`)).status === 200, 'New vt3 must return 200!');
+    assert(patchResched.wa_message && patchResched.wa_message.queue_status === 'queued', 'PATCH reschedule must queue reschedule_notice!');
+    console.log('[OK] WhatsApp state transitions & reschedule visit_token/message revocation verified!');
+
+    console.log('\n=== [DRILL 3] ISOLATED pg_dump -Fc + SEPARATE -c psql RESTORE + UPLOADS ARCHIVE ===');
+    const dumpFile = path.join(backupDir, 'db_drill.dump');
+    const uploadsTar = path.join(backupDir, 'uploads_drill.tar.gz');
+
+    const tDump0 = Date.now();
+    execSync(
+      `PGPASSWORD="${adminUrl.password}" pg_dump -h "${adminUrl.hostname}" -p "${adminUrl.port || 5432}" -U "${adminUrl.username}" -d "${dbMig}" -Fc -f "${dumpFile}"`
+    );
+    execSync(`tar -czf "${uploadsTar}" -C "${sharedUploadsDir}" .`);
+    const dumpMs = Date.now() - tDump0;
+    const dumpKb = Math.round(fs.statSync(dumpFile).size / 1024);
+
+    // اختبار أمر psql الفعلي بمعاملَي -c منفصلين (خارج كتلة المعاملة) تماماً كما هو موثق في ملف المراجعة
+    execSync(
+      `PGPASSWORD="${adminUrl.password}" psql -v ON_ERROR_STOP=1 -h "${adminUrl.hostname}" -p "${adminUrl.port || 5432}" -U "${adminUrl.username}" -d postgres -c "DROP DATABASE IF EXISTS ${dbRest} WITH (FORCE);" -c "CREATE DATABASE ${dbRest};"`,
+      { stdio: 'pipe' }
+    );
+
+    const tRes0 = Date.now();
+    execSync(
+      `PGPASSWORD="${adminUrl.password}" pg_restore -h "${adminUrl.hostname}" -p "${adminUrl.port || 5432}" -U "${adminUrl.username}" -d "${dbRest}" --no-owner --no-privileges "${dumpFile}"`
+    );
+    execSync(`tar -xzf "${uploadsTar}" -C "${restoredUploadsDir}"`);
+    const restoreMs = Date.now() - tRes0;
+
+    const pRestored = new Pool({ connectionString: `${dbBaseOrigin}/${dbRest}` });
+    const origSummary = (
+      await pMig.query(
+        'SELECT (SELECT COUNT(*)::int FROM candidates) c, (SELECT COUNT(*)::int FROM applications) a, (SELECT COUNT(*)::int FROM interviews) i, (SELECT COUNT(*)::int FROM wa_messages) w'
+      )
+    ).rows[0];
+    const restSummary = (
+      await pRestored.query(
+        'SELECT (SELECT COUNT(*)::int FROM candidates) c, (SELECT COUNT(*)::int FROM applications) a, (SELECT COUNT(*)::int FROM interviews) i, (SELECT COUNT(*)::int FROM wa_messages) w'
+      )
+    ).rows[0];
+    assert(JSON.stringify(origSummary) === JSON.stringify(restSummary), 'Restored DB counts mismatch!');
+    const origFiles = fs.readdirSync(sharedUploadsDir).filter((f) => f.endsWith('.pdf')).sort();
+    const restFiles = fs.readdirSync(restoredUploadsDir).filter((f) => f.endsWith('.pdf')).sort();
+    assert(origFiles.length >= 2 && JSON.stringify(origFiles) === JSON.stringify(restFiles), 'Restored uploads mismatch!');
+    await pRestored.end();
+    await pMig.end();
+    console.log(
+      `[OK] Isolated DB + Uploads Restore verified: dump=${dumpMs}ms (${dumpKb} KB), restore=${restoreMs}ms, rows=${JSON.stringify(restSummary)}, pdfs=${restFiles.length}`
+    );
+
+    console.log('\n=== [DRILL 4] ISOLATED ROLLBACK (v2.1 -> 70be659 + HOTFIX aiEvaluator.js + SHARED UPLOADS) ===');
+    v21Proc.kill('SIGTERM');
+    v21Proc = null;
+
+    fs.mkdirSync(rbDir, { recursive: true });
+    execSync(`git archive 70be659 | tar -x -C "${rbDir}"`);
+    execSync(`ln -s "${path.join(process.cwd(), 'node_modules')}" "${path.join(rbDir, 'node_modules')}"`);
+
+    // محاكاة استرجاع ملف الترقيع المحلي services/aiEvaluator.js على الإنتاج فوق 70be659
+    const v20EvalPath = path.join(rbDir, 'services', 'aiEvaluator.js');
+    const patchedEvalContent = `// PRODUCTION_LOCAL_OLLAMA_HOTFIX_RESTORED\n` + fs.readFileSync(v20EvalPath, 'utf8');
+    fs.writeFileSync(v20EvalPath, patchedEvalContent);
+
+    // تعديل مسار uploads في نسخة الفحص المعزولة ليرتبط بنفس مجلد المرفقات المشترك (محاكاة Docker volume uploads_data)
+    const v20ServerPath = path.join(rbDir, 'server.js');
+    const v20ServerSrc = fs
+      .readFileSync(v20ServerPath, 'utf8')
+      .replace("const uploadsDir = path.join(__dirname, 'uploads');", "const uploadsDir = process.env.UPLOAD_DIR || path.join(__dirname, 'uploads');");
+    fs.writeFileSync(v20ServerPath, v20ServerSrc);
+
+    const tRb0 = Date.now();
+    const s20 = spawnServer(rbDir, 3092, dbMig, sharedUploadsDir);
+    v20Proc = s20.proc;
+    await s20.ready;
+    const rbBootMs = Date.now() - tRb0;
+
+    const v20Health = await fetch('http://127.0.0.1:3092/api/health').then((r) => r.json());
+    assert(v20Health.status === 'ok', 'v2.0 health failed on migrated DB!');
+    assert(fs.readFileSync(v20EvalPath, 'utf8').startsWith('// PRODUCTION_LOCAL_OLLAMA_HOTFIX_RESTORED'), 'Hotfix aiEvaluator missing!');
+
+    // تسجيل دخول اللجنة على v2.0 والتحقق من بقاء مرفقات ما قبل الترقية ومرفقات v2.1 قابلة للقراءة
+    const v20Login = await fetch('http://127.0.0.1:3092/api/auth/login', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username: 'admin', password: ADMIN_PASS_DRILL })
+    });
+    const v20StaffCookie = v20Login.headers.get('set-cookie').split(';')[0];
+    const preCvResp = await fetch(`http://127.0.0.1:3092/uploads/${preUpgradeCvName}`, { headers: { Cookie: v20StaffCookie } });
+    assert(preCvResp.status === 200, 'Pre-upgrade CV inaccessible after rollback!');
+
+    // إدراج طلب جديد من كود v2.0 على القاعدة المرحّلة إلى v2.1
+    const fd20 = new FormData();
+    fd20.append('job_id', '2');
+    fd20.append('full_name', 'مرشح بعد الرجوع لنسخة 2.0');
+    fd20.append('email', 'post_rollback_v20@jpf.sa');
+    fd20.append('phone', '0551112233');
+    fd20.append('city', 'الرياض');
+    fd20.append('qualification', 'بكالوريوس');
+    fd20.append('years_experience', '3');
+    fd20.append('privacy_consent', 'true');
+    fd20.append('cv_file', new Blob(['%PDF-1.4 Post Rollback CV'], { type: 'application/pdf' }), 'v20_after_rb.pdf');
+    const v20AppResp = await fetch('http://127.0.0.1:3092/api/applications', { method: 'POST', body: fd20 });
+    assert(v20AppResp.status === 201, 'v2.0 INSERT failed on migrated DB: ' + v20AppResp.status);
+
+    console.log(
+      `[OK] Isolated v2.0 Rollback verified: booted in ${rbBootMs}ms, hotfix aiEvaluator intact, shared uploads preserved, and v2.0 INSERT=201!`
+    );
+    console.log('\nALL_ISOLATED_V21_DRILLS_PASSED_100_PERCENT');
+  } finally {
+    if (v21Proc) v21Proc.kill('SIGTERM');
+    if (v20Proc) v20Proc.kill('SIGTERM');
+    await dropIsolatedDb(dbMig);
+    await dropIsolatedDb(dbFresh);
+    await dropIsolatedDb(dbRest);
+    fs.rmSync(tmpRoot, { recursive: true, force: true });
+  }
+})().catch((err) => {
+  console.error(err);
   process.exit(1);
 });

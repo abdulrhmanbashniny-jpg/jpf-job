@@ -29,8 +29,11 @@ const {
   verifyVisitPassToken,
   createCandidatePortalToken,
   verifyCandidatePortalToken,
+  deriveCandidateAccessKey,
+  verifyCandidateAccessKey,
   setCandidateCookie,
   extractCandidateTokenFromRequest,
+  extractAllCandidateTokensFromRequest,
   verifyScopedToken,
   requireAuth
 } = require('./services/auth');
@@ -40,10 +43,34 @@ const PORT = parseInt(process.env.PORT || '3000', 10);
 const HOST = process.env.HOST || '0.0.0.0';
 const MAX_UPLOAD_MB = parseInt(process.env.MAX_UPLOAD_MB || '10', 10);
 
-const uploadsDir = path.join(__dirname, 'uploads');
+const uploadsDir = process.env.UPLOAD_DIR ? path.resolve(process.env.UPLOAD_DIR) : path.join(__dirname, 'uploads');
 const publicUploadsDir = path.join(uploadsDir, 'public');
 if (!fs.existsSync(publicUploadsDir)) {
   fs.mkdirSync(publicUploadsDir, { recursive: true });
+}
+
+function safeUnlink(filePath) {
+  if (!filePath) return;
+  try {
+    if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
+  } catch (_e) {}
+}
+
+function hasCandidateOwnershipProof(req, targetApps, rawAccessKey) {
+  const candidateTokens = extractAllCandidateTokensFromRequest(req);
+  const cleanKey = String(rawAccessKey || '').trim();
+  for (const appRow of targetApps) {
+    if (!appRow || !appRow.reference_no || !appRow.candidate_access_token) continue;
+    for (const tok of candidateTokens) {
+      if (verifyCandidatePortalToken(tok, appRow.reference_no, appRow.candidate_access_token)) {
+        return true;
+      }
+    }
+    if (cleanKey && verifyCandidateAccessKey(cleanKey, appRow.reference_no, appRow.candidate_access_token)) {
+      return true;
+    }
+  }
+  return false;
 }
 
 app.set('trust proxy', 1);
@@ -989,33 +1016,67 @@ app.post('/api/applications', upload.single('cv_file'), async (req, res) => {
     await client.query('BEGIN');
 
     const existingCand = await client.query(
-      'SELECT * FROM candidates WHERE LOWER(email) = $1 OR phone = $2 LIMIT 1',
+      'SELECT * FROM candidates WHERE LOWER(email) = $1 OR phone = $2',
       [cleanEmail, cleanPhone]
     );
 
     let candidateId;
     if (existingCand.rows.length > 0) {
+      // منع الدمج أو الاستحواذ عند تطابق جزئي للبريد أو الجوال مع مرشح آخر
+      if (
+        existingCand.rows.length > 1 ||
+        String(existingCand.rows[0].email || '').trim().toLowerCase() !== cleanEmail ||
+        normalizePhoneForWa(existingCand.rows[0].phone) !== cleanPhone
+      ) {
+        await client.query('ROLLBACK');
+        safeUnlink(req.file?.path);
+        return res.status(409).json({
+          error: 'البريد الإلكتروني أو رقم الجوال مرتبط بسجل متقدم آخر ببيانات اتصال مختلفة. يرجى إدخال بياناتك المسجلة بدقة أو التواصل مع فريق التوظيف.',
+          code: 'CANDIDATE_CONTACT_CONFLICT'
+        });
+      }
+
       candidateId = existingCand.rows[0].id;
 
-      const dupApp = await client.query(
-        'SELECT reference_no, status, candidate_access_token FROM applications WHERE job_id = $1 AND candidate_id = $2',
-        [job.id, candidateId]
+      const priorAppsRes = await client.query(
+        'SELECT id, job_id, reference_no, status, candidate_access_token FROM applications WHERE candidate_id = $1 ORDER BY id DESC',
+        [candidateId]
       );
-      if (dupApp.rows.length > 0) {
+      const priorApps = priorAppsRes.rows;
+      const dupApp = priorApps.find((a) => Number(a.job_id) === Number(job.id)) || null;
+      const inputAccessKey = req.body?.access_key;
+
+      // اشتراط إثبات الملكية التشفيري (كوكي الجلسة الأصلي أو مفتاح الدخول السري Access Key) قبل استئناف طلب أو تعديل ملف مرشح مسجل
+      const targetProofSet = dupApp ? [dupApp] : priorApps;
+      const isOwnerVerified = priorApps.length > 0 && hasCandidateOwnershipProof(req, targetProofSet, inputAccessKey);
+
+      if (!isOwnerVerified) {
         await client.query('ROLLBACK');
-        const existingApp = dupApp.rows[0];
-        if (existingApp.status === 'assessment_pending') {
-          const ct = createCandidatePortalToken(existingApp.reference_no, existingApp.candidate_access_token);
-          setCandidateCookie(res, req, existingApp.reference_no, ct);
+        safeUnlink(req.file?.path);
+        return res.status(403).json({
+          error: 'توجد طلبات مسجلة مسبقاً لهذه البيانات. لحماية حسابك ومنع انتحال الهوية، يرجى إدخال مفتاح الدخول السري (Access Key) الصادر لك عند التقديم الأول، أو طلب رابط الاستعادة على جوالك المسجل عبر واتساب الموارد البشرية.',
+          code: 'CANDIDATE_OWNERSHIP_PROOF_REQUIRED',
+          requires_access_key: true
+        });
+      }
+
+      if (dupApp) {
+        await client.query('ROLLBACK');
+        safeUnlink(req.file?.path);
+        if (dupApp.status === 'assessment_pending') {
+          const ct = createCandidatePortalToken(dupApp.reference_no, dupApp.candidate_access_token);
+          const ak = deriveCandidateAccessKey(dupApp.reference_no, dupApp.candidate_access_token);
+          setCandidateCookie(res, req, dupApp.reference_no, ct);
           return res.status(200).json({
             resumed: true,
-            message: 'لديك طلب مسجل بانتظار استكمال اختبار الجدارة، جاري نقلك للاختبار.',
-            reference_no: existingApp.reference_no,
-            candidate_token: ct
+            message: 'تم التحقق من ملكيتك للطلب؛ جاري نقلك لاستكمال اختبار الجدارة.',
+            reference_no: dupApp.reference_no,
+            candidate_token: ct,
+            access_key: ak
           });
         }
         return res.status(409).json({
-          error: `لقد قمت بالتقديم مسبقاً على هذه الوظيفة برقم مرجعي (${existingApp.reference_no}). يمنع النظام تكرار الطلبات لنفس الوظيفة.`
+          error: `لقد قمت بالتقديم وإتمام التقييم مسبقاً على هذه الوظيفة برقم مرجعي (${dupApp.reference_no}). يمنع النظام تكرار الطلبات لنفس الوظيفة.`
         });
       }
 
@@ -1083,6 +1144,7 @@ app.post('/api/applications', upload.single('cv_file'), async (req, res) => {
 
     const createdApp = appIns.rows[0];
     const candidatePortalToken = createCandidatePortalToken(refNo, createdApp.candidate_access_token);
+    const candidateAccessKey = deriveCandidateAccessKey(refNo, createdApp.candidate_access_token);
     setCandidateCookie(res, req, refNo, candidatePortalToken);
 
     await logAudit({
@@ -1106,10 +1168,12 @@ app.post('/api/applications', upload.single('cv_file'), async (req, res) => {
       },
       reference_no: refNo,
       candidate_token: candidatePortalToken,
+      access_key: candidateAccessKey,
       job: { id: job.id, code: job.code, title: job.title, duration_minutes: job.duration_minutes }
     });
   } catch (err) {
     await client.query('ROLLBACK').catch(() => {});
+    safeUnlink(req.file?.path);
     res.status(500).json({ error: 'حدث خطأ أثناء حفظ الطلب: ' + err.message });
   } finally {
     client.release();
@@ -1162,43 +1226,123 @@ app.get('/api/applications', requireAuth(), async (req, res) => {
   }
 });
 
-// تحقق ملكية المتقدم للطلب (عند الدخول من متصفح جديد بدون كوكي الجلسة المقيّد بالغرض)
+// تحقق ملكية المتقدم للطلب بإثبات حيازة تشفيري (مفتاح الدخول السري 100-bit Access Key — لا يُقبل البريد أو الجوال وحدهما أبداً)
 app.post('/api/public/candidate-verify', candidateVerifyLimiter, async (req, res) => {
   try {
-    const ref = String(req.body?.reference_no || '').trim();
-    const contact = String(req.body?.contact || '').trim();
-    if (!ref || !contact) {
-      return res.status(400).json({ error: 'يرجى إدخال الرقم المرجعي ورقم الجوال أو البريد الإلكتروني المسجل.' });
+    const ref = String(req.body?.reference_no || '').trim().toUpperCase();
+    const accessKey = String(req.body?.access_key || '').trim();
+    if (!ref || !accessKey) {
+      return res.status(400).json({
+        error: 'يرجى إدخال الرقم المرجعي للطلب ومفتاح الدخول السري (Access Key) الصادر عند التقديم.',
+        code: 'ACCESS_KEY_REQUIRED'
+      });
     }
 
     const { rows } = await query(
-      `SELECT a.reference_no, a.candidate_access_token, c.email, c.phone
+      `SELECT a.reference_no, a.candidate_access_token
        FROM applications a
-       JOIN candidates c ON c.id = a.candidate_id
        WHERE UPPER(a.reference_no) = UPPER($1)
        LIMIT 1`,
       [ref]
     );
 
-    if (!rows.length) {
-      return res.status(403).json({ error: 'تعذر التحقق من تطابق البيانات المسجلة.' });
+    if (!rows.length || !verifyCandidateAccessKey(accessKey, rows[0].reference_no, rows[0].candidate_access_token)) {
+      return res.status(403).json({
+        error: 'تعذر التحقق من مفتاح الدخول السري. تأكد من إدخال المفتاح الصحيح (JPFK-...) أو اطلب رابط استعادة على جوالك المسجل عبر واتساب الموارد البشرية.',
+        code: 'INVALID_ACCESS_KEY'
+      });
     }
 
     const row = rows[0];
-    const emailMatch = contact.includes('@') && String(row.email || '').trim().toLowerCase() === contact.toLowerCase();
-    const inputDigits = contact.replace(/\D/g, '');
-    const storedDigits = String(row.phone || '').replace(/\D/g, '');
-    const phoneMatch = inputDigits.length >= 9 && storedDigits.length >= 9 && inputDigits.slice(-9) === storedDigits.slice(-9);
-
-    if (!emailMatch && !phoneMatch) {
-      return res.status(403).json({ error: 'تعذر التحقق من تطابق البيانات المسجلة.' });
-    }
-
     const ct = createCandidatePortalToken(row.reference_no, row.candidate_access_token);
     setCandidateCookie(res, req, row.reference_no, ct);
     res.json({ verified: true, reference_no: row.reference_no, candidate_token: ct });
   } catch (err) {
     res.status(500).json({ error: err.message });
+  }
+});
+
+// استعادة وصول المتقدم عبر قناة الاتصال المسجلة حصراً (تدوير الرمز السري وتجهيز رسالة واتساب للجوال المسجل في القاعدة فقط)
+app.post('/api/applications/:id/recovery-link', requireAuth(['super_admin', 'hr_coordinator']), async (req, res) => {
+  const client = await pool.connect();
+  try {
+    const appId = parseInt(req.params.id, 10);
+    if (!Number.isInteger(appId) || appId <= 0) {
+      return res.status(400).json({ error: 'معرّف الطلب غير صالح.' });
+    }
+
+    await client.query('BEGIN');
+
+    const newSecretNonce = crypto.randomBytes(32).toString('hex');
+    const updRes = await client.query(
+      `UPDATE applications a
+       SET candidate_access_token = $1, updated_at = NOW()
+       FROM candidates c, jobs j
+       WHERE a.id = $2 AND c.id = a.candidate_id AND j.id = a.job_id
+       RETURNING a.id, a.reference_no, a.status, a.assessment_score, a.candidate_access_token,
+                 c.full_name, c.phone, j.title AS job_title, j.passing_score`,
+      [newSecretNonce, appId]
+    );
+
+    if (!updRes.rows.length) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({ error: 'الطلب غير موجود.' });
+    }
+
+    const row = updRes.rows[0];
+    const origin = getBaseOrigin(req);
+    const ct = createCandidatePortalToken(row.reference_no, row.candidate_access_token);
+    const freshAccessKey = deriveCandidateAccessKey(row.reference_no, row.candidate_access_token);
+
+    let targetPage = 'Assessment.dc.html';
+    if (row.status !== 'assessment_pending') {
+      targetPage = Number(row.assessment_score) >= Number(row.passing_score || 60) ? 'ResultPass.dc.html' : 'ResultFail.dc.html';
+    }
+    const recoveryUrl = `${origin}/${targetPage}?ref=${encodeURIComponent(row.reference_no)}&ct=${encodeURIComponent(ct)}`;
+
+    const msgBody =
+      `مرحباً ${row.full_name}،\n` +
+      `بناءً على طلبك لاستعادة الوصول لطلب التوظيف (${row.reference_no}) لوظيفة (${row.job_title}):\n` +
+      `🔗 رابط الدخول الشخصي المحدّث:\n${recoveryUrl}\n` +
+      `🔑 مفتاح الدخول السري الجديد:\n${freshAccessKey}\n` +
+      `(تم إبطال أي رابط أو مفتاح سابق لحماية خصوصيتك).`;
+
+    const cleanRegisteredPhone = normalizePhoneForWa(row.phone);
+    const waLink = buildWaLink(cleanRegisteredPhone, msgBody);
+
+    const waIns = await client.query(
+      `INSERT INTO wa_messages (
+        application_id, template_key, recipient_name, recipient_phone, message_body, wa_link, queue_status
+      ) VALUES ($1, 'portal_recovery', $2, $3, $4, $5, 'queued')
+      RETURNING *`,
+      [row.id, row.full_name, cleanRegisteredPhone, msgBody, waLink]
+    );
+
+    await client.query('COMMIT');
+
+    await logAudit({
+      actor: req.user.full_name,
+      actorRole: req.user.role,
+      action: 'CANDIDATE_RECOVERY_LINK_ROTATED',
+      entityType: 'application',
+      entityId: row.reference_no,
+      metadata: { registered_phone_tail: cleanRegisteredPhone.slice(-4), wa_message_id: waIns.rows[0].id },
+      ipAddress: req.ip
+    });
+
+    res.status(201).json({
+      message: 'تم تدوير الرمز السري وتجهيز مسودة رابط الاستعادة للجوال المسجل فقط.',
+      reference_no: row.reference_no,
+      access_key: freshAccessKey,
+      recovery_url: recoveryUrl,
+      wa_link: waLink,
+      wa_message: waIns.rows[0]
+    });
+  } catch (err) {
+    await client.query('ROLLBACK').catch(() => {});
+    res.status(500).json({ error: err.message });
+  } finally {
+    client.release();
   }
 });
 
@@ -1228,11 +1372,13 @@ app.get('/api/applications/:idOrRef', async (req, res) => {
 
     if (!appRes.rows.length) {
       if (!session) {
+        const locCfg = await getCompanyLocationConfig();
         return res.status(403).json({
-          error: 'يلزم التحقق من ملكية الطلب عبر رقم الجوال أو البريد المسجل.',
+          error: 'يلزم إثبات ملكية الطلب عبر مفتاح الدخول السري (Access Key) الصادر عند التقديم.',
           code: 'CANDIDATE_VERIFY_REQUIRED',
           requires_verification: true,
-          reference_no: String(idOrRef).toUpperCase()
+          reference_no: String(idOrRef).toUpperCase(),
+          hr_whatsapp_phone: locCfg.hr_whatsapp_phone || '966550000000'
         });
       }
       return res.status(404).json({ error: 'لم يتم العثور على الطلب المطلوب.' });
@@ -1251,11 +1397,13 @@ app.get('/api/applications/:idOrRef', async (req, res) => {
       );
 
       if (!isAuthorizedCandidate) {
+        const locCfg = await getCompanyLocationConfig();
         return res.status(403).json({
-          error: 'لحماية خصوصية المتقدمين، يرجى تأكيد رقم الجوال أو البريد الإلكتروني المسجل مع هذا الطلب.',
+          error: 'لحماية خصوصية المتقدمين، يرجى إدخال مفتاح الدخول السري (Access Key) الصادر لك عند التقديم.',
           code: 'CANDIDATE_VERIFY_REQUIRED',
           requires_verification: true,
-          reference_no: application.reference_no
+          reference_no: application.reference_no,
+          hr_whatsapp_phone: locCfg.hr_whatsapp_phone || '966550000000'
         });
       }
 
@@ -1439,8 +1587,16 @@ app.post('/api/public/visit/:vt/confirm', candidateVerifyLimiter, async (req, re
       return res.status(403).json({ error: 'رمز تأكيد الحضور ملغى أو منتهي الصلاحية.', code: 'REVOKED_VISIT_TOKEN' });
     }
 
-    if (currentInt.booking_status === 'cancelled') {
-      return res.status(400).json({ error: 'هذا الموعد ملغى حالياً، يرجى التواصل مع منسق التوظيف.' });
+    if (['cancelled', 'completed', 'no_show'].includes(currentInt.booking_status)) {
+      return res.status(400).json({ error: 'هذا الموعد غير متاح للتأكيد حالياً، يرجى التواصل مع منسق التوظيف.' });
+    }
+
+    // لا يُسمح بتأكيد حضور موعد لم تُرسل دعوته فعلياً بعد (scheduled / rescheduled)
+    if (!['invitation_sent', 'confirmed'].includes(currentInt.booking_status)) {
+      return res.status(409).json({
+        error: 'لم يتم تفعيل تأكيد الحضور لهذا الموعد بعد؛ بانتظار إرسال الدعوة الرسمية المحدّثة من منسق التوظيف.',
+        code: 'INVITATION_NOT_SENT_YET'
+      });
     }
 
     await query(
@@ -1448,8 +1604,9 @@ app.post('/api/public/visit/:vt/confirm', candidateVerifyLimiter, async (req, re
       [currentInt.id]
     );
 
+    // تحديث الرسائل المرسلة فعلياً فقط (sent) إلى confirmed — لا تتحول رسائل الطابور غير المرسلة (queued) إلى confirmed أبداً
     await query(
-      `UPDATE wa_messages SET queue_status = 'confirmed' WHERE interview_id = $1 AND queue_status IN ('queued', 'sent')`,
+      `UPDATE wa_messages SET queue_status = 'confirmed' WHERE interview_id = $1 AND queue_status = 'sent'`,
       [currentInt.id]
     );
 
@@ -2178,14 +2335,31 @@ app.post('/api/interviews/schedule-single', requireAuth(['super_admin', 'hr_coor
 
     await client.query('BEGIN');
 
-    // لا يُسجَّل الموعد كـ invitation_sent لمجرد فتح رابط wa.me؛ يبقى scheduled حتى يؤكد الموظف الإرسال الفعلي
+    const prevIntRes = await client.query(
+      'SELECT id, booking_status FROM interviews WHERE application_id = $1 FOR UPDATE',
+      [cand.application_id]
+    );
+    const isReschedule = prevIntRes.rows.length > 0;
+    const freshVisitToken = crypto.randomBytes(32).toString('hex');
+
+    if (isReschedule) {
+      // إبطال كافة الدعوات والرسائل السابقة المرتبطة بالموعد القديم قبل إصدار الدعوة الجديدة برمز زيارة جديد
+      await client.query(
+        `UPDATE wa_messages
+         SET queue_status = 'cancelled'
+         WHERE interview_id = $1 AND queue_status IN ('queued', 'sent', 'confirmed')`,
+        [prevIntRes.rows[0].id]
+      );
+    }
+
+    // لا يُسجَّل الموعد كـ invitation_sent لمجرد فتح رابط wa.me؛ يبقى scheduled / rescheduled حتى يؤكد الموظف الإرسال الفعلي
     const intIns = await client.query(
       `INSERT INTO interviews (
         application_id, scheduled_date, start_time, end_time, duration_minutes,
         meeting_platform, meeting_url, interviewer_panel, booking_status,
-        interview_mode, location_building, location_floor, location_office,
+        interview_mode, visit_token, location_building, location_floor, location_office,
         location_maps_url, location_image_url, location_notes, notes
-      ) VALUES ($1,$2::date,$3::time,$4::time,$5,$6,$7,$8,'scheduled',$9,$10,$11,$12,$13,$14,$15,$16)
+      ) VALUES ($1,$2::date,$3::time,$4::time,$5,$6,$7,$8,'scheduled',$9,$10,$11,$12,$13,$14,$15,$16,$17)
       ON CONFLICT (application_id) DO UPDATE SET
         scheduled_date = EXCLUDED.scheduled_date,
         start_time = EXCLUDED.start_time,
@@ -2195,13 +2369,14 @@ app.post('/api/interviews/schedule-single', requireAuth(['super_admin', 'hr_coor
         meeting_url = EXCLUDED.meeting_url,
         interviewer_panel = EXCLUDED.interviewer_panel,
         interview_mode = EXCLUDED.interview_mode,
+        visit_token = EXCLUDED.visit_token,
         location_building = EXCLUDED.location_building,
         location_floor = EXCLUDED.location_floor,
         location_office = EXCLUDED.location_office,
         location_maps_url = EXCLUDED.location_maps_url,
         location_image_url = EXCLUDED.location_image_url,
         location_notes = EXCLUDED.location_notes,
-        booking_status = 'scheduled',
+        booking_status = 'rescheduled',
         updated_at = NOW()
       RETURNING *`,
       [
@@ -2214,6 +2389,7 @@ app.post('/api/interviews/schedule-single', requireAuth(['super_admin', 'hr_coor
         provisionalMeetUrl,
         interviewer_panel,
         isRemote ? 'remote' : 'in_person',
+        freshVisitToken,
         finalBuilding,
         finalFloor,
         finalOffice,
@@ -2404,13 +2580,24 @@ app.post('/api/interviews/auto-schedule', requireAuth(['super_admin', 'hr_coordi
           ? `https://meet.jit.si/JPF-${cand.job_code.replace(/[^a-zA-Z0-9]/g, '')}-${cand.reference_no.slice(-4)}`
           : origin;
 
+        const freshAutoToken = crypto.randomBytes(32).toString('hex');
+        const prevAutoInt = await client.query('SELECT id FROM interviews WHERE application_id = $1 FOR UPDATE', [cand.application_id]);
+        if (prevAutoInt.rows.length > 0) {
+          await client.query(
+            `UPDATE wa_messages
+             SET queue_status = 'cancelled'
+             WHERE interview_id = $1 AND queue_status IN ('queued', 'sent', 'confirmed')`,
+            [prevAutoInt.rows[0].id]
+          );
+        }
+
         const intIns = await client.query(
           `INSERT INTO interviews (
             application_id, scheduled_date, start_time, end_time, duration_minutes,
             meeting_platform, meeting_url, interviewer_panel, booking_status,
-            interview_mode, location_building, location_floor, location_office,
+            interview_mode, visit_token, location_building, location_floor, location_office,
             location_maps_url, location_image_url, location_notes, notes
-          ) VALUES ($1,$2,$3::time,$4::time,$5,$6,$7,$8,'scheduled',$9,$10,$11,$12,$13,$14,$15,'جدولة تلقائية ذكية')
+          ) VALUES ($1,$2,$3::time,$4::time,$5,$6,$7,$8,'scheduled',$9,$10,$11,$12,$13,$14,$15,$16,'جدولة تلقائية ذكية')
           ON CONFLICT (application_id) DO UPDATE SET
             scheduled_date = EXCLUDED.scheduled_date,
             start_time = EXCLUDED.start_time,
@@ -2420,6 +2607,7 @@ app.post('/api/interviews/auto-schedule', requireAuth(['super_admin', 'hr_coordi
             meeting_url = EXCLUDED.meeting_url,
             interviewer_panel = EXCLUDED.interviewer_panel,
             interview_mode = EXCLUDED.interview_mode,
+            visit_token = EXCLUDED.visit_token,
             location_building = EXCLUDED.location_building,
             location_floor = EXCLUDED.location_floor,
             location_office = EXCLUDED.location_office,
@@ -2439,6 +2627,7 @@ app.post('/api/interviews/auto-schedule', requireAuth(['super_admin', 'hr_coordi
             provisionalMeetUrl,
             interviewer_panel,
             isRemote ? 'remote' : 'in_person',
+            freshAutoToken,
             locCfg.building_name,
             locCfg.floor_number,
             locCfg.office_number,
@@ -2530,30 +2719,153 @@ app.post('/api/interviews/auto-schedule', requireAuth(['super_admin', 'hr_coordi
 });
 
 app.patch('/api/interviews/:id', requireAuth(['super_admin', 'hr_coordinator', 'committee_member']), async (req, res) => {
+  const client = await pool.connect();
   try {
     const id = parseInt(req.params.id, 10);
-    const { booking_status, notes, scheduled_date, start_time, end_time } = req.body;
-    const { rows } = await query(
+    const { booking_status, notes, scheduled_date, start_time, end_time, interview_mode } = req.body;
+
+    await client.query('BEGIN');
+    const curRes = await client.query(
+      `SELECT i.*, a.reference_no, c.full_name, c.phone, j.code AS job_code, j.title AS job_title
+       FROM interviews i
+       JOIN applications a ON a.id = i.application_id
+       JOIN candidates c ON c.id = a.candidate_id
+       JOIN jobs j ON j.id = a.job_id
+       WHERE i.id = $1
+       FOR UPDATE OF i`,
+      [id]
+    );
+    if (!curRes.rows.length) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({ error: 'الموعد غير موجود.' });
+    }
+
+    const cur = curRes.rows[0];
+    const curDateStr = cur.scheduled_date instanceof Date
+      ? cur.scheduled_date.toISOString().slice(0, 10)
+      : String(cur.scheduled_date || '').slice(0, 10);
+    const curStartStr = String(cur.start_time || '').slice(0, 5);
+    const curEndStr = String(cur.end_time || '').slice(0, 5);
+
+    const scheduleChanged =
+      (scheduled_date && String(scheduled_date).slice(0, 10) !== curDateStr) ||
+      (start_time && String(start_time).slice(0, 5) !== curStartStr) ||
+      (end_time && String(end_time).slice(0, 5) !== curEndStr) ||
+      (interview_mode && interview_mode !== cur.interview_mode) ||
+      booking_status === 'rescheduled';
+
+    const isCancelled = booking_status === 'cancelled';
+    const shouldRevokePriorPass = scheduleChanged || isCancelled;
+    const nextVisitToken = shouldRevokePriorPass ? crypto.randomBytes(32).toString('hex') : cur.visit_token;
+    const effectiveStatus = isCancelled
+      ? 'cancelled'
+      : scheduleChanged
+        ? 'rescheduled'
+        : (booking_status || cur.booking_status);
+
+    let effectiveEndTime = end_time || null;
+    if (!effectiveEndTime && start_time) {
+      effectiveEndTime = minutesToTime(timeToMinutes(start_time) + (Number(cur.duration_minutes) || 30));
+    }
+
+    const origin = getBaseOrigin(req);
+    const nextMode = interview_mode || cur.interview_mode || 'remote';
+    const newVisitUrl = buildVisitPassUrl(origin, id, nextVisitToken);
+    const nextMeetingUrl = nextMode === 'in_person' ? newVisitUrl : cur.meeting_url;
+
+    const { rows } = await client.query(
       `UPDATE interviews SET
-        booking_status = COALESCE($1, booking_status),
+        booking_status = $1,
         notes = COALESCE($2, notes),
         scheduled_date = COALESCE($3::date, scheduled_date),
         start_time = COALESCE($4::time, start_time),
         end_time = COALESCE($5::time, end_time),
+        interview_mode = $6,
+        visit_token = $7,
+        meeting_url = $8,
         updated_at = NOW()
-      WHERE id = $6
+      WHERE id = $9
       RETURNING *`,
-      [booking_status || null, notes || null, scheduled_date || null, start_time || null, end_time || null, id]
+      [
+        effectiveStatus,
+        notes || null,
+        scheduled_date || null,
+        start_time || null,
+        effectiveEndTime,
+        nextMode,
+        nextVisitToken,
+        nextMeetingUrl,
+        id
+      ]
     );
-    if (!rows.length) return res.status(404).json({ error: 'الموعد غير موجود.' });
 
-    if (booking_status === 'completed') {
-      await query("UPDATE applications SET status = 'interviewed', updated_at = NOW() WHERE id = $1", [rows[0].application_id]);
+    let replacementWaMessage = null;
+    if (shouldRevokePriorPass) {
+      // إبطال كافة الدعوات والرسائل السابقة المرتبطة بالموعد القديم أو الملغى
+      await client.query(
+        `UPDATE wa_messages
+         SET queue_status = 'cancelled'
+         WHERE interview_id = $1 AND queue_status IN ('queued', 'sent', 'confirmed')`,
+        [id]
+      );
+
+      if (scheduleChanged && !isCancelled) {
+        const [tplRes, locCfg] = await Promise.all([
+          client.query("SELECT setting_value FROM system_settings WHERE setting_key = 'whatsapp_templates'"),
+          getCompanyLocationConfig()
+        ]);
+        const templates = tplRes.rows[0]?.setting_value || {};
+        const rawTpl = templates.reschedule_notice ||
+          'مرحباً {الاسم}، تم تحديث موعد مقابلة ({الوظيفة}) إلى {موعد_المقابلة}. رابط البطاقة المحدّث وتأكيد الحضور:\n{بطاقة_الموقع}';
+        const updatedInt = rows[0];
+        const newDateStr = updatedInt.scheduled_date instanceof Date
+          ? updatedInt.scheduled_date.toISOString().slice(0, 10)
+          : String(updatedInt.scheduled_date).slice(0, 10);
+        const newStartStr = String(updatedInt.start_time).slice(0, 5);
+        const msgBody = renderWhatsAppTemplate(rawTpl, {
+          name: cur.full_name,
+          job_title: cur.job_title,
+          job_code: cur.job_code,
+          reference_no: cur.reference_no,
+          date: newDateStr,
+          time: newStartStr,
+          meet_url: nextMeetingUrl,
+          visit_url: newVisitUrl,
+          building: updatedInt.location_building || locCfg.building_name,
+          floor: updatedInt.location_floor || locCfg.floor_number,
+          office: updatedInt.location_office || locCfg.office_number,
+          maps_url: updatedInt.location_maps_url || locCfg.google_maps_url
+        });
+        const waLink = buildWaLink(cur.phone, msgBody);
+        const waIns = await client.query(
+          `INSERT INTO wa_messages (
+            application_id, interview_id, template_key, recipient_name, recipient_phone,
+            message_body, wa_link, queue_status
+          ) VALUES ($1,$2,'reschedule_notice',$3,$4,$5,$6,'queued')
+          RETURNING *`,
+          [cur.application_id, id, cur.full_name, normalizePhoneForWa(cur.phone), msgBody, waLink]
+        );
+        replacementWaMessage = waIns.rows[0];
+      }
     }
 
-    res.json({ interview: rows[0] });
+    if (effectiveStatus === 'completed') {
+      await client.query("UPDATE applications SET status = 'interviewed', updated_at = NOW() WHERE id = $1", [rows[0].application_id]);
+    }
+
+    await client.query('COMMIT');
+
+    const { visit_token: _vtPatch, ...safePatchInt } = rows[0];
+    res.json({
+      interview: { ...safePatchInt, visit_url: newVisitUrl },
+      wa_message: replacementWaMessage,
+      visit_url: newVisitUrl
+    });
   } catch (err) {
+    await client.query('ROLLBACK').catch(() => {});
     res.status(500).json({ error: err.message });
+  } finally {
+    client.release();
   }
 });
 
@@ -2680,6 +2992,13 @@ app.patch('/api/wa-messages/:id', requireAuth(['super_admin', 'hr_coordinator', 
     if (!existing.rows.length) return res.status(404).json({ error: 'الرسالة غير موجودة في الطابور.' });
 
     const current = existing.rows[0];
+    if (current.queue_status === 'cancelled' && queue_status !== 'cancelled') {
+      return res.status(400).json({
+        error: 'هذه الرسالة ملغاة بسبب تحديث أو إلغاء الموعد؛ يرجى استخدام الرسالة المحدّثة الجديدة.',
+        code: 'WA_MESSAGE_CANCELLED'
+      });
+    }
+
     const updatedBody = message_body !== undefined ? message_body : current.message_body;
     const updatedLink = buildWaLink(current.recipient_phone, updatedBody);
 
@@ -2710,6 +3029,14 @@ app.patch('/api/wa-messages/:id', requireAuth(['super_admin', 'hr_coordinator', 
 
     // 2. التأكيد الفعلي من الموظف بعد إرسال الرسالة فعلياً داخل واتساب
     const updatedStatus = action === 'confirm_sent' ? 'sent' : (queue_status || current.queue_status);
+
+    // منع الانتقال المباشر من queued (غير مرسلة) إلى confirmed دون تأكيد إرسال الدعوة أولاً
+    if (updatedStatus === 'confirmed' && current.queue_status === 'queued') {
+      return res.status(400).json({
+        error: 'لا يمكن تسجيل تأكيد حضور على رسالة ما زالت في الطابور (queued) ولم يتأكد إرسالها بعد.',
+        code: 'CANNOT_CONFIRM_UNSENT_MESSAGE'
+      });
+    }
 
     const { rows } = await query(
       `UPDATE wa_messages SET

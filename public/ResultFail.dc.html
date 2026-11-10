@@ -151,7 +151,7 @@
         });
       } catch (err) {
         if (err.code === 'CANDIDATE_VERIFY_REQUIRED' || err.status === 403) {
-          SmartHR.renderCandidateVerifyCard(mount, ref, () => loadFailResult());
+          SmartHR.renderCandidateVerifyCard(mount, ref, () => loadFailResult(), err.data?.hr_whatsapp_phone);
           return;
         }
         mount.innerHTML = `<div style="color:var(--terracotta);text-align:center;">${SmartHR.escapeHtml(err.message)}</div>`;
