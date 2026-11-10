@@ -273,9 +273,11 @@
     const TEMPLATE_STAGES = [
       { key: 'interview_invite', when: 'بعد تعيين الموعد', title: 'دعوة مقابلة (أونلاين)' },
       { key: 'interview_inperson', when: 'مقابلة في المقر', title: 'دعوة حضورية + الموقع' },
+      { key: 'reschedule_notice', when: 'عند تعديل الموعد', title: 'إشعار تحديث الموعد' },
       { key: 'confirm_booking', when: 'بعد تأكيد المرشح', title: 'تأكيد الموعد' },
       { key: 'reminder_day_before', when: 'قبل الموعد بيوم', title: 'تذكير بالموعد' },
       { key: 'send_room_now', when: 'عند حلول الموعد', title: 'إرسال رابط القاعة' },
+      { key: 'pass_notification', when: 'بعد اجتياز الاختبار', title: 'إشعار اجتياز الفرز' },
       { key: 'thank_followup', when: 'بعد المقابلة', title: 'شكر ومتابعة' }
     ];
 
@@ -367,6 +369,10 @@
         document.getElementById('pv-avatar').textContent = String(cand.recipient_name || 'م').trim().charAt(0);
         document.getElementById('pv-phone').textContent = '+' + cand.recipient_phone;
       }
+      if (previewCandidate && previewCandidate.template_key === 'portal_recovery') {
+        document.getElementById('pv-bubble').textContent = previewCandidate.message_body;
+        return;
+      }
       document.getElementById('pv-bubble').textContent = applyTemplateClient(rawTpl, cand);
     }
 
@@ -435,14 +441,34 @@
 
     function VisitUrlSafe(u) { return SmartHR.escapeHtml(u); }
 
+    function resolveDraftPayload(item, stageKeyOverride) {
+      // الحفاظ التام على نص الرسالة الأصلي ما لم يقم الموظف بتغيير القالب يدوياً في رسالة مقابلة عادية
+      const isLockedRecovery = item.template_key === 'portal_recovery';
+      const isExplicitTemplateSwitch =
+        !isLockedRecovery &&
+        Boolean(stageKeyOverride) &&
+        stageKeyOverride !== item.template_key &&
+        Boolean(templatesState[stageKeyOverride]);
+
+      if (!isExplicitTemplateSwitch) {
+        return {
+          bodyToSend: item.message_body,
+          patchPayload: { action: 'open_draft' }
+        };
+      }
+
+      const rendered = applyTemplateClient(templatesState[stageKeyOverride], item);
+      return {
+        bodyToSend: rendered,
+        patchPayload: { action: 'open_draft', message_body: rendered }
+      };
+    }
+
     async function openDraftInWhatsApp(msgId, stageKeyOverride) {
       const item = queueList.find((x) => x.id === msgId);
       if (!item) return;
 
-      let bodyToSend = item.message_body;
-      if (stageKeyOverride && templatesState[stageKeyOverride]) {
-        bodyToSend = applyTemplateClient(templatesState[stageKeyOverride], item);
-      }
+      const { bodyToSend, patchPayload } = resolveDraftPayload(item, stageKeyOverride);
       const phoneDigits = String(item.recipient_phone || '').replace(/\D/g, '');
       const waUrl = `https://wa.me/${phoneDigits}?text=${encodeURIComponent(bodyToSend)}`;
       window.open(waUrl, '_blank', 'noopener');
@@ -450,7 +476,7 @@
       try {
         await SmartHR.apiFetch(`/api/wa-messages/${msgId}`, {
           method: 'PATCH',
-          body: JSON.stringify({ action: 'open_draft', message_body: bodyToSend })
+          body: JSON.stringify(patchPayload)
         });
         SmartHR.showToast(`تم فتح مسودة الرسالة لـ ${item.recipient_name} — اضغط «تأكيد الإرسال ✓» بعد إرسالها فعلياً.`, 'info');
         loadAllData();
@@ -505,12 +531,21 @@
             </td>
             <td dir="ltr" class="mono" style="font-size:12px;text-align:right;">+${SmartHR.escapeHtml(q.recipient_phone)}</td>
             <td onclick="event.stopPropagation()">
-              <div style="margin-bottom:4px;">
-                ${isInPerson ? '<span class="badge badge-terracotta">🏢 حضوري</span>' : '<span class="badge badge-charcoal">🎥 عن بُعد</span>'}
-              </div>
-              <select class="form-select row-tpl-sel" data-id="${q.id}" style="padding:4px 8px;font-size:11.5px;min-width:150px;" ${isCancelledMsg ? 'disabled' : ''}>
-                ${TEMPLATE_STAGES.map((s) => `<option value="${s.key}" ${q.template_key === s.key ? 'selected' : ''}>${s.title}</option>`).join('')}
-              </select>
+              ${
+                q.template_key === 'portal_recovery'
+                  ? '<span class="badge badge-saffron">🔑 استعادة دخول (نص محمي)</span>'
+                  : `<div style="margin-bottom:4px;">
+                      ${isInPerson ? '<span class="badge badge-terracotta">🏢 حضوري</span>' : '<span class="badge badge-charcoal">🎥 عن بُعد</span>'}
+                    </div>
+                    <select class="form-select row-tpl-sel" data-id="${q.id}" style="padding:4px 8px;font-size:11.5px;min-width:150px;" ${isCancelledMsg ? 'disabled' : ''}>
+                      ${
+                        TEMPLATE_STAGES.some((s) => s.key === q.template_key)
+                          ? ''
+                          : `<option value="${SmartHR.escapeHtml(q.template_key || 'custom')}" selected>النص المحفوظ (${SmartHR.escapeHtml(q.template_key || 'custom')})</option>`
+                      }
+                      ${TEMPLATE_STAGES.map((s) => `<option value="${s.key}" ${q.template_key === s.key ? 'selected' : ''}>${s.title}</option>`).join('')}
+                    </select>`
+              }
             </td>
             <td style="font-size:12px;">
               ${q.scheduled_date ? `${SmartHR.formatDate(q.scheduled_date)}<br/><span class="mono">${String(q.start_time || '').slice(0,5)}</span>` : '—'}

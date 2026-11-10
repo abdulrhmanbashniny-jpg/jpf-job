@@ -107,7 +107,9 @@
 
               <div style="display:flex;gap:8px;flex-wrap:wrap;">
                 ${currentApp.cv_stored_path ? `<a href="${SmartHR.escapeHtml(currentApp.cv_stored_path)}" target="_blank" rel="noopener" class="btn btn-outline btn-sm">📄 معاينة السيرة الذاتية ↗</a>` : ''}
-                <button class="btn btn-outline btn-sm" onclick="prepareCandidateRecovery()" title="تدوير الرمز السري وتجهيز مسودة واتساب للجوال المسجل فقط">🔑 استعادة دخول المتقدم</button>
+                ${(!window.__CURRENT_USER || ['super_admin', 'hr_coordinator'].includes(window.__CURRENT_USER.role))
+                  ? `<button class="btn btn-outline btn-sm" onclick="prepareCandidateRecovery()" title="تدوير الرمز السري وتجهيز مسودة واتساب للجوال المسجل فقط">🔑 استعادة دخول المتقدم</button>`
+                  : ''}
                 <button class="btn btn-olive btn-sm" onclick="changeAppStatus('offered')">اعتماد عرض وظيفي ✓</button>
                 <button class="btn btn-outline btn-sm" style="color:var(--terracotta);border-color:var(--terracotta);" onclick="changeAppStatus('rejected')">اعتذار للمرشح</button>
               </div>

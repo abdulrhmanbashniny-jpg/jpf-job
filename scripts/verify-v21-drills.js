@@ -11,6 +11,7 @@
 
 const fs = require('fs');
 const path = require('path');
+const vm = require('vm');
 const crypto = require('crypto');
 const { execSync, spawn } = require('child_process');
 const { Client, Pool } = require('pg');
@@ -490,6 +491,219 @@ function spawnServer(cwd, port, dbName, uploadDir) {
     assert((await fetch(`${base}/api/public/visit/${encodeURIComponent(vt3)}`)).status === 200, 'New vt3 must return 200!');
     assert(patchResched.wa_message && patchResched.wa_message.queue_status === 'queued', 'PATCH reschedule must queue reschedule_notice!');
     console.log('[OK] WhatsApp state transitions & reschedule visit_token/message revocation verified!');
+
+    console.log('\n=== [DRILL 2C] RBAC RECOVERY SECRET ISOLATION, DRAFT PRESERVATION & ATOMIC CONCURRENCY ===');
+    // 1. إنشاء حساب عضو لجنة (committee_member) وحساب منسق موارد بشرية (hr_coordinator) والتحقق من عزل أسرار الاستعادة
+    const createCommResp = await fetch(`${base}/api/users`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Cookie: staffCookie },
+      body: JSON.stringify({
+        username: 'comm_audit',
+        full_name: 'عضو لجنة فحص الصلاحيات',
+        role: 'committee_member',
+        password: 'CommPass-2026-Strong'
+      })
+    });
+    assert(createCommResp.status === 201, 'Creating committee_member failed: ' + createCommResp.status);
+
+    const createHrResp = await fetch(`${base}/api/users`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Cookie: staffCookie },
+      body: JSON.stringify({
+        username: 'hr_audit',
+        full_name: 'منسق موارد فحص الصلاحيات',
+        role: 'hr_coordinator',
+        password: 'HrCoordPass-2026-Strong'
+      })
+    });
+    assert(createHrResp.status === 201, 'Creating hr_coordinator failed: ' + createHrResp.status);
+
+    const commLogin = await fetch(`${base}/api/auth/login`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username: 'comm_audit', password: 'CommPass-2026-Strong' })
+    });
+    const commCookie = commLogin.headers.get('set-cookie').split(';')[0];
+
+    const hrLogin = await fetch(`${base}/api/auth/login`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username: 'hr_audit', password: 'HrCoordPass-2026-Strong' })
+    });
+    const hrCookie = hrLogin.headers.get('set-cookie').split(';')[0];
+
+    // منع عضو اللجنة من توليد رابط استعادة أو قراءة رسائل الاستعادة أو فتحها أو الاطلاع على التوكن الخام
+    const commGenRec = await fetch(`${base}/api/applications/${aliceAppId}/recovery-link`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Cookie: commCookie },
+      body: JSON.stringify({})
+    });
+    assert(commGenRec.status === 403, 'committee_member must get 403 on POST recovery-link!');
+
+    const commWaList = await fetch(`${base}/api/wa-messages`, {
+      headers: { Cookie: commCookie }
+    }).then((r) => r.json());
+    const commRawStr = JSON.stringify(commWaList);
+    assert(
+      !commWaList.messages.some((m) => m.template_key === 'portal_recovery') &&
+        !commRawStr.includes(recJson.access_key) &&
+        !commRawStr.includes(recCt),
+      'committee_member leaked portal_recovery secrets in GET /api/wa-messages!'
+    );
+
+    const commPatchRec = await fetch(`${base}/api/wa-messages/${recJson.wa_message.id}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json', Cookie: commCookie },
+      body: JSON.stringify({ action: 'open_draft' })
+    });
+    assert(commPatchRec.status === 403, 'committee_member must get 403 on PATCH portal_recovery message!');
+
+    const commPostRec = await fetch(`${base}/api/wa-messages`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Cookie: commCookie },
+      body: JSON.stringify({
+        application_id: aliceAppId,
+        template_key: 'portal_recovery',
+        recipient_name: 'أليس',
+        recipient_phone: '0558887766',
+        message_body: 'test'
+      })
+    });
+    assert(commPostRec.status === 403, 'committee_member must get 403 on POST portal_recovery message!');
+
+    const commAppDetail = await fetch(`${base}/api/applications/${aliceAppId}?mode=committee`, {
+      headers: { Cookie: commCookie }
+    }).then((r) => r.json());
+    assert(
+      commAppDetail.application.candidate_access_token === undefined &&
+        (!commAppDetail.interview || commAppDetail.interview.visit_token === undefined),
+      'Raw candidate_access_token or visit_token leaked in GET /api/applications/:id!'
+    );
+
+    // التأكد أن منسق الموارد البشرية (hr_coordinator) يستطيع قراءة مسودة الاستعادة
+    const hrWaList = await fetch(`${base}/api/wa-messages`, {
+      headers: { Cookie: hrCookie }
+    }).then((r) => r.json());
+    const hrRecMsg = hrWaList.messages.find((m) => m.id === recJson.wa_message.id);
+    assert(Boolean(hrRecMsg), 'hr_coordinator must be able to view portal_recovery message!');
+
+    // 2. التحقق من الحفاظ على النص الأصلي لمسودتَي portal_recovery و reschedule_notice في الواجهة والـ API
+    const interviewsHtml = fs.readFileSync(path.join(process.cwd(), 'public', 'Interviews.dc.html'), 'utf8');
+    assert(interviewsHtml.includes("key: 'reschedule_notice'"), 'reschedule_notice missing from TEMPLATE_STAGES in Interviews.dc.html!');
+    assert(
+      interviewsHtml.includes("q.template_key === 'portal_recovery'"),
+      'portal_recovery locked template guard missing in Interviews.dc.html!'
+    );
+
+    const fnMatch = interviewsHtml.match(/function resolveDraftPayload\(item, stageKeyOverride\)\s*\{[\s\S]*?\n    \}/);
+    assert(Boolean(fnMatch), 'resolveDraftPayload function not found in Interviews.dc.html!');
+    const uiSandbox = {
+      templatesState: hrWaList.templates,
+      applyTemplateClient: () => 'OVERWRITTEN_BY_DEFAULT_INVITE_TEMPLATE'
+    };
+    vm.createContext(uiSandbox);
+    vm.runInContext(`${fnMatch[0]}; this.resolveDraftPayload = resolveDraftPayload;`, uiSandbox);
+
+    // حتى لو مُرر interview_invite بالخطأ مع portal_recovery، ترفض دالة الواجهة استبدال النص وتبقي الرابط والمفتاح السري
+    const uiRecDraft = uiSandbox.resolveDraftPayload(hrRecMsg, 'interview_invite');
+    assert(
+      uiRecDraft.bodyToSend.includes(recJson.recovery_url) &&
+        uiRecDraft.bodyToSend.includes(recJson.access_key) &&
+        uiRecDraft.patchPayload.message_body === undefined,
+      'UI resolveDraftPayload overwrote portal_recovery body!'
+    );
+
+    // ومع reschedule_notice يكون الخيار المحدد هو reschedule_notice نفسه فيبقى النص المولّد والرمز الجديد vt3 كما هو
+    const hrReschedMsg = hrWaList.messages.find((m) => m.id === patchResched.wa_message.id);
+    const uiReschedDraft = uiSandbox.resolveDraftPayload(hrReschedMsg, 'reschedule_notice');
+    assert(
+      uiReschedDraft.bodyToSend === hrReschedMsg.message_body &&
+        uiReschedDraft.bodyToSend.includes(encodeURIComponent(vt3)) &&
+        uiReschedDraft.patchPayload.message_body === undefined,
+      'UI resolveDraftPayload overwrote reschedule_notice body!'
+    );
+
+    // اختبار الـ API الفعلي عند فتح مسودة portal_recovery و reschedule_notice
+    const openRecApi = await fetch(`${base}/api/wa-messages/${recJson.wa_message.id}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json', Cookie: hrCookie },
+      body: JSON.stringify({ action: 'open_draft', message_body: 'MALICIOUS_OR_ACCIDENTAL_OVERWRITE' })
+    }).then((r) => r.json());
+    assert(
+      openRecApi.message.message_body.includes(recJson.recovery_url) &&
+        openRecApi.message.message_body.includes(recJson.access_key) &&
+        openRecApi.message.prepared_at !== null,
+      'Backend failed to protect portal_recovery message_body on open_draft!'
+    );
+
+    const openReschedApi = await fetch(`${base}/api/wa-messages/${patchResched.wa_message.id}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json', Cookie: hrCookie },
+      body: JSON.stringify(uiReschedDraft.patchPayload)
+    }).then((r) => r.json());
+    assert(
+      openReschedApi.message.message_body.includes(encodeURIComponent(vt3)) && openReschedApi.message.queue_status === 'queued',
+      'Reschedule draft lost vt3 on open_draft!'
+    );
+
+    // 3. منع التعيين المباشر لـ invitation_sent و confirmed في PATCH /api/interviews/:id + اختبار التزامن الذري
+    const illegalInvSent = await fetch(`${base}/api/interviews/${sch1.interview.id}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json', Cookie: staffCookie },
+      body: JSON.stringify({ booking_status: 'invitation_sent' })
+    });
+    assert(illegalInvSent.status === 400, 'Direct PATCH booking_status=invitation_sent must return 400!');
+
+    const illegalDirectConf1 = await fetch(`${base}/api/interviews/${sch1.interview.id}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json', Cookie: staffCookie },
+      body: JSON.stringify({ booking_status: 'confirmed' })
+    });
+    assert(illegalDirectConf1.status === 400, 'Direct PATCH booking_status=confirmed must return 400!');
+
+    const illegalPrematureComp = await fetch(`${base}/api/interviews/${sch1.interview.id}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json', Cookie: staffCookie },
+      body: JSON.stringify({ booking_status: 'completed' })
+    });
+    assert(illegalPrematureComp.status === 400, 'Direct PATCH booking_status=completed before invitation_sent must return 400!');
+
+    // تأكيد إرسال دعوة vt3 لتصبح الحالة invitation_sent، ثم التحقق من استمرار منع التعيين اليدوي لـ confirmed
+    await fetch(`${base}/api/wa-messages/${patchResched.wa_message.id}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json', Cookie: hrCookie },
+      body: JSON.stringify({ action: 'confirm_sent' })
+    });
+    const illegalDirectConf2 = await fetch(`${base}/api/interviews/${sch1.interview.id}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json', Cookie: staffCookie },
+      body: JSON.stringify({ booking_status: 'confirmed' })
+    });
+    assert(illegalDirectConf2.status === 400, 'Direct PATCH booking_status=confirmed even after invitation_sent must return 400!');
+
+    // سباق تزامن فعلي: تأكيد المرشح بالرابط القديم vt3 بالتزامن مع إعادة جدولة الموعد إلى 15:30
+    const [raceReschedResp, raceOldConfirmResp] = await Promise.all([
+      fetch(`${base}/api/interviews/${sch1.interview.id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json', Cookie: staffCookie },
+        body: JSON.stringify({ start_time: '15:30' })
+      }),
+      fetch(`${base}/api/public/visit/${encodeURIComponent(vt3)}/confirm`, { method: 'POST' })
+    ]);
+    assert(raceReschedResp.status === 200, 'Concurrent reschedule failed!');
+    assert([200, 403, 409].includes(raceOldConfirmResp.status), 'Unexpected status in concurrent confirm: ' + raceOldConfirmResp.status);
+
+    // أياً كان ترتيب حصول الطلبين على قفل الصف (FOR UPDATE)، يجب أن تكون النتيجة النهائية للموعد الجديد هي rescheduled وليس confirmed أبداً!
+    const afterRaceDb = (await pMig.query('SELECT booking_status FROM interviews WHERE id = $1', [sch1.interview.id])).rows[0];
+    assert(
+      afterRaceDb.booking_status === 'rescheduled',
+      `Race condition bug: old token confirmed newly rescheduled interview (got ${afterRaceDb.booking_status})!`
+    );
+    assert(
+      (await fetch(`${base}/api/public/visit/${encodeURIComponent(vt3)}/confirm`, { method: 'POST' })).status === 403,
+      'Old vt3 must return 403 after concurrent reschedule!'
+    );
+    console.log('[OK] Committee RBAC secret isolation, draft body preservation & atomic FOR UPDATE concurrency verified!');
 
     console.log('\n=== [DRILL 3] ISOLATED pg_dump -Fc + SEPARATE -c psql RESTORE + UPLOADS ARCHIVE ===');
     const dumpFile = path.join(backupDir, 'db_drill.dump');

@@ -1220,7 +1220,8 @@ app.get('/api/applications', requireAuth(), async (req, res) => {
       params
     );
 
-    res.json({ applications: rows });
+    const safeApplications = rows.map(({ candidate_access_token: _cat, ...row }) => row);
+    res.json({ applications: safeApplications });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -1463,16 +1464,27 @@ app.get('/api/applications/:idOrRef', async (req, res) => {
       query('SELECT * FROM interviews WHERE application_id = $1', [application.id])
     ]);
 
+    const { candidate_access_token: _staffHiddenCat, ...safeStaffApp } = application;
+    const rawInt = interviewRes.rows[0] || null;
+    let safeStaffInt = null;
+    if (rawInt) {
+      const { visit_token: rawVt, ...restInt } = rawInt;
+      safeStaffInt = {
+        ...restInt,
+        visit_url: buildVisitPassUrl(getBaseOrigin(req), rawInt.id, rawVt)
+      };
+    }
+
     res.json({
       application: {
-        ...application,
+        ...safeStaffApp,
         job_questions: isCommittee
           ? application.job_questions
           : sanitizeQuestionsForCandidate(application.job_questions)
       },
       answers: answersRes.rows,
       evaluations: evalsRes.rows,
-      interview: interviewRes.rows[0] || null
+      interview: safeStaffInt
     });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -1556,26 +1568,36 @@ app.get('/api/public/visit/:vt', async (req, res) => {
 });
 
 app.post('/api/public/visit/:vt/confirm', candidateVerifyLimiter, async (req, res) => {
-  try {
-    const rawToken = String(req.params.vt || '').trim();
-    const parsed = verifyVisitPassToken(rawToken);
-    if (!parsed) {
-      return res.status(403).json({
-        error: 'رمز تأكيد الحضور غير صالح أو غير مصرح به.',
-        code: 'INVALID_VISIT_TOKEN'
-      });
-    }
+  const rawToken = String(req.params.vt || '').trim();
+  const parsed = verifyVisitPassToken(rawToken);
+  if (!parsed) {
+    return res.status(403).json({
+      error: 'رمز تأكيد الحضور غير صالح أو غير مصرح به.',
+      code: 'INVALID_VISIT_TOKEN'
+    });
+  }
 
-    const intId = parseInt(parsed.sub, 10);
-    const checkRes = await query(
+  const intId = parseInt(parsed.sub, 10);
+  if (!Number.isInteger(intId) || intId <= 0) {
+    return res.status(403).json({ error: 'رمز تأكيد الحضور غير صالح.', code: 'INVALID_VISIT_TOKEN' });
+  }
+
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+
+    // قفل صف الموعد ذرياً (FOR UPDATE) لمنع تعارض التأكيد المتزامن مع إعادة الجدولة أو تدوير الرمز
+    const checkRes = await client.query(
       `SELECT i.id, i.visit_token, i.booking_status, a.reference_no, c.full_name
        FROM interviews i
        JOIN applications a ON a.id = i.application_id
        JOIN candidates c ON c.id = a.candidate_id
-       WHERE i.id = $1`,
+       WHERE i.id = $1
+       FOR UPDATE OF i`,
       [intId]
     );
     if (!checkRes.rows.length) {
+      await client.query('ROLLBACK');
       return res.status(404).json({ error: 'المقابلة غير موجودة.' });
     }
 
@@ -1584,31 +1606,46 @@ app.post('/api/public/visit/:vt/confirm', candidateVerifyLimiter, async (req, re
     const aBuf = Buffer.from(String(parsed.n));
     const bBuf = Buffer.from(expectedNonce);
     if (!expectedNonce || aBuf.length !== bBuf.length || !crypto.timingSafeEqual(aBuf, bBuf)) {
+      await client.query('ROLLBACK');
       return res.status(403).json({ error: 'رمز تأكيد الحضور ملغى أو منتهي الصلاحية.', code: 'REVOKED_VISIT_TOKEN' });
     }
 
     if (['cancelled', 'completed', 'no_show'].includes(currentInt.booking_status)) {
+      await client.query('ROLLBACK');
       return res.status(400).json({ error: 'هذا الموعد غير متاح للتأكيد حالياً، يرجى التواصل مع منسق التوظيف.' });
     }
 
     // لا يُسمح بتأكيد حضور موعد لم تُرسل دعوته فعلياً بعد (scheduled / rescheduled)
     if (!['invitation_sent', 'confirmed'].includes(currentInt.booking_status)) {
+      await client.query('ROLLBACK');
       return res.status(409).json({
         error: 'لم يتم تفعيل تأكيد الحضور لهذا الموعد بعد؛ بانتظار إرسال الدعوة الرسمية المحدّثة من منسق التوظيف.',
         code: 'INVITATION_NOT_SENT_YET'
       });
     }
 
-    await query(
-      `UPDATE interviews SET booking_status = 'confirmed', updated_at = NOW() WHERE id = $1`,
-      [currentInt.id]
+    // تحديث ذري مقيد بشرط مطابقة الرمز والحالة في نفس الجملة داخل المعاملة المقفلة
+    const updInt = await client.query(
+      `UPDATE interviews
+       SET booking_status = 'confirmed', updated_at = NOW()
+       WHERE id = $1
+         AND LEFT(visit_token, 32) = $2
+         AND booking_status IN ('invitation_sent', 'confirmed')
+       RETURNING id`,
+      [currentInt.id, expectedNonce]
     );
+    if (!updInt.rows.length) {
+      await client.query('ROLLBACK');
+      return res.status(403).json({ error: 'تعذر التأكيد لتحديث الموعد بالتزامن؛ يرجى فتح الرابط الجديد.', code: 'REVOKED_VISIT_TOKEN' });
+    }
 
     // تحديث الرسائل المرسلة فعلياً فقط (sent) إلى confirmed — لا تتحول رسائل الطابور غير المرسلة (queued) إلى confirmed أبداً
-    await query(
+    await client.query(
       `UPDATE wa_messages SET queue_status = 'confirmed' WHERE interview_id = $1 AND queue_status = 'sent'`,
       [currentInt.id]
     );
+
+    await client.query('COMMIT');
 
     await logAudit({
       actor: currentInt.full_name,
@@ -1621,7 +1658,10 @@ app.post('/api/public/visit/:vt/confirm', candidateVerifyLimiter, async (req, re
 
     res.json({ message: 'تم تأكيد حضورك للمقابلة بنجاح! نتطلع للقائك.', booking_status: 'confirmed' });
   } catch (err) {
+    await client.query('ROLLBACK').catch(() => {});
     res.status(500).json({ error: err.message });
+  } finally {
+    client.release();
   }
 });
 
@@ -2755,6 +2795,39 @@ app.patch('/api/interviews/:id', requireAuth(['super_admin', 'hr_coordinator', '
       booking_status === 'rescheduled';
 
     const isCancelled = booking_status === 'cancelled';
+
+    // منع تعيين invitation_sent أو confirmed أو تجاوز آلة الحالات يدوياً من مسار تعديل الموعد
+    if (booking_status && booking_status !== cur.booking_status && !scheduleChanged) {
+      if (booking_status === 'invitation_sent') {
+        await client.query('ROLLBACK');
+        return res.status(400).json({
+          error: 'لا يمكن تعيين حالة (أُرسلت الدعوة) مباشرةً من تعديل الموعد؛ تتحول الحالة تلقائياً بعد تأكيد إرسال الدعوة من طابور واتساب.',
+          code: 'INVALID_INTERVIEW_TRANSITION'
+        });
+      }
+      if (booking_status === 'confirmed') {
+        await client.query('ROLLBACK');
+        return res.status(400).json({
+          error: 'لا يمكن تعيين حالة (مؤكدة الحضور) مباشرةً من تعديل الموعد؛ يتم التأكيد عبر رابط الزيارة الموقّع أو تأكيد الرد على رسالة مرسلة.',
+          code: 'INVALID_INTERVIEW_TRANSITION'
+        });
+      }
+      if (['completed', 'no_show'].includes(booking_status) && !['invitation_sent', 'confirmed', 'completed', 'no_show'].includes(cur.booking_status)) {
+        await client.query('ROLLBACK');
+        return res.status(400).json({
+          error: 'لا يمكن تسجيل إتمام المقابلة أو عدم الحضور قبل إرسال الدعوة الرسمية للمرشح.',
+          code: 'INVALID_INTERVIEW_TRANSITION'
+        });
+      }
+      if (cur.booking_status === 'cancelled' && booking_status !== 'cancelled') {
+        await client.query('ROLLBACK');
+        return res.status(400).json({
+          error: 'لا يمكن إعادة تفعيل موعد ملغى دون تحديد تاريخ أو وقت جديد لإعادة الجدولة وإصدار رمز زيارة جديد.',
+          code: 'INVALID_INTERVIEW_TRANSITION'
+        });
+      }
+    }
+
     const shouldRevokePriorPass = scheduleChanged || isCancelled;
     const nextVisitToken = shouldRevokePriorPass ? crypto.randomBytes(32).toString('hex') : cur.visit_token;
     const effectiveStatus = isCancelled
@@ -2877,15 +2950,24 @@ app.get('/api/wa-messages', requireAuth(), async (req, res) => {
   try {
     const { status } = req.query;
     const params = [];
-    let whereSql = '';
+    const conditions = [];
+
+    // حصر قراءة رسائل ومفاتيح استعادة المتقدمين (portal_recovery) بالمدير ومنسق الموارد البشرية فقط
+    const canReadRecoverySecrets = ['super_admin', 'hr_coordinator'].includes(req.user.role);
+    if (!canReadRecoverySecrets) {
+      conditions.push("wm.template_key <> 'portal_recovery'");
+    }
+
     if (status === 'ready') {
-      whereSql = "WHERE wm.queue_status = 'queued' AND wm.prepared_at IS NULL";
+      conditions.push("wm.queue_status = 'queued' AND wm.prepared_at IS NULL");
     } else if (status === 'draft_opened') {
-      whereSql = "WHERE wm.queue_status = 'queued' AND wm.prepared_at IS NOT NULL";
+      conditions.push("wm.queue_status = 'queued' AND wm.prepared_at IS NOT NULL");
     } else if (status && status !== 'all') {
       params.push(status);
-      whereSql = 'WHERE wm.queue_status = $1';
+      conditions.push(`wm.queue_status = $${params.length}`);
     }
+
+    const whereSql = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
 
     const [msgRes, tplRes, locCfg] = await Promise.all([
       query(
@@ -2955,6 +3037,12 @@ app.put('/api/wa-templates', requireAuth(['super_admin', 'hr_coordinator']), asy
 app.post('/api/wa-messages', requireAuth(['super_admin', 'hr_coordinator', 'committee_member']), async (req, res) => {
   try {
     const { application_id, interview_id, recipient_name, recipient_phone, message_body, template_key = 'custom', open_draft = false } = req.body;
+    if (template_key === 'portal_recovery' && !['super_admin', 'hr_coordinator'].includes(req.user.role)) {
+      return res.status(403).json({
+        error: 'صلاحية رسائل استعادة دخول المتقدمين محصورة بالمدير والموارد البشرية.',
+        code: 'FORBIDDEN_ROLE'
+      });
+    }
     if (!recipient_name || !recipient_phone || !message_body) {
       return res.status(400).json({ error: 'اسم المستلم ورقم الجوال ونص الرسالة مطلوبة.' });
     }
@@ -2992,6 +3080,13 @@ app.patch('/api/wa-messages/:id', requireAuth(['super_admin', 'hr_coordinator', 
     if (!existing.rows.length) return res.status(404).json({ error: 'الرسالة غير موجودة في الطابور.' });
 
     const current = existing.rows[0];
+    if (current.template_key === 'portal_recovery' && !['super_admin', 'hr_coordinator'].includes(req.user.role)) {
+      return res.status(403).json({
+        error: 'حساب عضو اللجنة غير مخوّل بالاطلاع على أسرار وروابط استعادة المتقدمين أو تعديلها.',
+        code: 'FORBIDDEN_ROLE'
+      });
+    }
+
     if (current.queue_status === 'cancelled' && queue_status !== 'cancelled') {
       return res.status(400).json({
         error: 'هذه الرسالة ملغاة بسبب تحديث أو إلغاء الموعد؛ يرجى استخدام الرسالة المحدّثة الجديدة.',
@@ -2999,7 +3094,11 @@ app.patch('/api/wa-messages/:id', requireAuth(['super_admin', 'hr_coordinator', 
       });
     }
 
-    const updatedBody = message_body !== undefined ? message_body : current.message_body;
+    // حماية نص رسائل portal_recovery من أي استبدال بقالب آخر للحفاظ على رابط الاستعادة والمفتاح السري المولّدين
+    const updatedBody =
+      current.template_key === 'portal_recovery'
+        ? current.message_body
+        : (message_body !== undefined ? message_body : current.message_body);
     const updatedLink = buildWaLink(current.recipient_phone, updatedBody);
 
     // 1. فتح رابط wa.me كمسودة لا يُسجّل الرسالة كـ sent؛ يحدّث prepared_at فقط وتبقى queued («بانتظار تأكيد الإرسال»)

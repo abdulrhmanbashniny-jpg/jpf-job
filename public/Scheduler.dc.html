@@ -195,9 +195,11 @@
             <td>
               <select class="form-select int-status-sel" data-id="${i.id}" style="padding:6px 10px;font-size:12px;min-width:130px;">
                 <option value="scheduled" ${i.booking_status==='scheduled'?'selected':''}>مجدولة</option>
-                <option value="invitation_sent" ${i.booking_status==='invitation_sent'?'selected':''}>أُرسلت الدعوة</option>
-                <option value="confirmed" ${i.booking_status==='confirmed'?'selected':''}>مؤكدة الحضور</option>
+                <option value="rescheduled" disabled ${i.booking_status==='rescheduled'?'selected':''}>مُعاد جدولتها (بانتظار الإرسال)</option>
+                <option value="invitation_sent" disabled ${i.booking_status==='invitation_sent'?'selected':''}>أُرسلت الدعوة (من واتساب)</option>
+                <option value="confirmed" disabled ${i.booking_status==='confirmed'?'selected':''}>مؤكدة الحضور (عبر الرابط)</option>
                 <option value="completed" ${i.booking_status==='completed'?'selected':''}>تمت المقابلة</option>
+                <option value="no_show" ${i.booking_status==='no_show'?'selected':''}>لم يحضر</option>
                 <option value="cancelled" ${i.booking_status==='cancelled'?'selected':''}>ملغاة</option>
               </select>
             </td>
@@ -216,6 +218,7 @@
               loadSchedulerData();
             } catch (err) {
               SmartHR.showToast(err.message, 'error');
+              loadSchedulerData();
             }
           });
         });
