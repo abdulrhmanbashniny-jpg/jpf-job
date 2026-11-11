@@ -304,12 +304,25 @@ CREATE TABLE IF NOT EXISTS wa_messages (
                             'cancelled'
                         )),
     sent_by             VARCHAR(120),
+    delivery_channel    VARCHAR(30) NOT NULL DEFAULT 'wa_me' CHECK (delivery_channel IN (
+                            'wa_me',
+                            'waha_dry_run',
+                            'waha_live',
+                            'wa_me_fallback'
+                        )),
+    idempotency_key     VARCHAR(140),
+    external_message_id VARCHAR(140),
+    attempt_count       INTEGER NOT NULL DEFAULT 0 CHECK (attempt_count >= 0),
+    last_attempt_at     TIMESTAMPTZ,
+    last_error          TEXT,
+    dry_run_payload     JSONB,
     prepared_at         TIMESTAMPTZ,
     sent_at             TIMESTAMPTZ,
     created_at          TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
 CREATE INDEX IF NOT EXISTS idx_wa_messages_status ON wa_messages (queue_status, created_at DESC);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_wa_messages_idempotency_key ON wa_messages (idempotency_key) WHERE idempotency_key IS NOT NULL;
 
 -- =================================================================================
 -- الدوال والمحفزات الذكية (PostgreSQL Functions & Triggers)

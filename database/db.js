@@ -233,14 +233,80 @@ async function ensureDatabaseInitialized() {
       CREATE INDEX IF NOT EXISTS idx_applications_voice_retention
         ON applications (voice_retention_expires_at)
         WHERE voice_pitch_path IS NOT NULL;
+
+      -- v2.3: بوابة رسائل واتساب التشغيلية عبر WAHA مع قفل Dry-Run الإلزامي ومفتاح الإيقاف الفوري ومنع الرسائل الرجعية
+      ALTER TABLE wa_messages
+        ADD COLUMN IF NOT EXISTS delivery_channel VARCHAR(30) NOT NULL DEFAULT 'wa_me',
+        ADD COLUMN IF NOT EXISTS idempotency_key VARCHAR(140),
+        ADD COLUMN IF NOT EXISTS external_message_id VARCHAR(140),
+        ADD COLUMN IF NOT EXISTS attempt_count INTEGER NOT NULL DEFAULT 0,
+        ADD COLUMN IF NOT EXISTS last_attempt_at TIMESTAMPTZ,
+        ADD COLUMN IF NOT EXISTS last_error TEXT,
+        ADD COLUMN IF NOT EXISTS dry_run_payload JSONB;
+      UPDATE wa_messages SET delivery_channel = 'wa_me' WHERE delivery_channel IS NULL;
+      UPDATE wa_messages SET attempt_count = 0 WHERE attempt_count IS NULL;
+      ALTER TABLE wa_messages
+        ALTER COLUMN delivery_channel TYPE VARCHAR(30),
+        ALTER COLUMN delivery_channel SET DEFAULT 'wa_me',
+        ALTER COLUMN delivery_channel SET NOT NULL,
+        ALTER COLUMN idempotency_key TYPE VARCHAR(140),
+        ALTER COLUMN external_message_id TYPE VARCHAR(140),
+        ALTER COLUMN attempt_count SET DEFAULT 0,
+        ALTER COLUMN attempt_count SET NOT NULL;
+      DO $$
+      BEGIN
+        IF NOT EXISTS (
+          SELECT 1 FROM pg_constraint WHERE conname = 'chk_wa_messages_delivery_channel'
+        ) AND NOT EXISTS (
+          SELECT 1 FROM pg_constraint
+          WHERE conrelid = 'wa_messages'::regclass
+            AND pg_get_constraintdef(oid) LIKE '%delivery_channel%'
+        ) THEN
+          ALTER TABLE wa_messages
+            ADD CONSTRAINT chk_wa_messages_delivery_channel
+            CHECK (delivery_channel IN ('wa_me', 'waha_dry_run', 'waha_live', 'wa_me_fallback'));
+        END IF;
+
+        IF NOT EXISTS (
+          SELECT 1 FROM pg_constraint WHERE conname = 'chk_wa_messages_attempt_count'
+        ) AND NOT EXISTS (
+          SELECT 1 FROM pg_constraint
+          WHERE conrelid = 'wa_messages'::regclass
+            AND pg_get_constraintdef(oid) LIKE '%attempt_count%'
+        ) THEN
+          ALTER TABLE wa_messages
+            ADD CONSTRAINT chk_wa_messages_attempt_count
+            CHECK (attempt_count >= 0);
+        END IF;
+      END $$;
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_wa_messages_idempotency_key
+        ON wa_messages (idempotency_key)
+        WHERE idempotency_key IS NOT NULL;
     `);
 
-    // 3. إعداد افتراضي لبطاقة المقر الحضوري دون الكتابة فوق أي قيمة موجودة
+    // 3. إعداد افتراضي لبطاقة المقر الحضورية دون الكتابة فوق أي قيمة موجودة
     await client.query(
       `INSERT INTO system_settings (setting_key, setting_value, category, description, updated_by)
        VALUES ('company_location', $1::jsonb, 'scheduler', 'بيانات مقر المقابلات الحضورية ورقم تواصل واتساب الموارد البشرية', 'system')
        ON CONFLICT (setting_key) DO NOTHING`,
       [JSON.stringify(DEFAULT_COMPANY_LOCATION)]
+    );
+
+    // 3B. إعداد افتراضي لبوابة WAHA التشغيلية بوضع Dry-Run الإلزامي ومفتاح الإيقاف الفوري
+    await client.query(
+      `INSERT INTO system_settings (setting_key, setting_value, category, description, updated_by)
+       VALUES ('waha_config', $1::jsonb, 'security_governance', 'حوكمة بوابة WAHA التشغيلية (Dry-Run افتراضي + منع الرسائل الرجعية + مفتاح إيقاف فوري)', 'system')
+       ON CONFLICT (setting_key) DO NOTHING`,
+      [
+        JSON.stringify({
+          enabled: false,
+          dry_run: true,
+          kill_switch_tripped: false,
+          waha_activated_at: null,
+          max_per_minute: 6,
+          max_per_hour: 25
+        })
+      ]
     );
 
     // 4. ترقية قوالب واتساب بالدمج الآمن ($1::jsonb || setting_value) بحيث تحتفظ بجميع المفاتيح والقيم الحالية دون حذف أو استبدال
