@@ -96,7 +96,8 @@ function startServer() {
       DATABASE_URL: `${dbBaseOrigin}/${dbName}`,
       UPLOAD_DIR: uploadsDir,
       ADMIN_ACCESS_CODE: ADMIN_PASS,
-      SESSION_SECRET
+      SESSION_SECRET,
+      VOICE_UPLOAD_MAX_PER_WINDOW: '14'
     },
     stdio: 'pipe'
   });
@@ -326,17 +327,57 @@ async function createCandidateApplication(email, phone, fullName) {
       [dbRowB.id]
     );
 
+    // 4B. التحقق من منع اللجنة من الاستماع لتسجيل منتهي الصلاحية حتى قبل تشغيل دورة التطهير الدورية (410 VOICE_RETENTION_EXPIRED + حذف فوري)
+    const expiredStreamTry = await fetch(`${BASE}/api/applications/${dbRowB.id}/voice-stream`, {
+      headers: { Cookie: commCookie }
+    });
+    assert.strictEqual(expiredStreamTry.status, 410, 'Streaming an expired voice recording MUST return 410 Gone');
+    assert.strictEqual((await expiredStreamTry.json()).code, 'VOICE_RETENTION_EXPIRED');
+    assert(!fs.existsSync(diskPathB), 'Expired voice file B must be unlinked from disk immediately upon expiry guard');
+    assert(fs.existsSync(diskPathA), 'Selected (offered) candidate voice file A must remain intact on disk');
+
+    // 4C. التحقق من كنس الملفات اليتيمة على القرص (Orphan File Sweep بعد مهلة السماح)
+    const orphanFile = path.join(uploadsDir, 'voice_pitches', 'voice-999999-orphan.wav');
+    fs.writeFileSync(orphanFile, wavBuf);
+    const tenMinAgo = new Date(Date.now() - 10 * 60 * 1000);
+    fs.utimesSync(orphanFile, tenMinAgo, tenMinAgo);
+    assert(fs.existsSync(orphanFile));
+
     const purgeRes = await fetch(`${BASE}/api/system/purge-expired-voice`, {
       method: 'POST',
       headers: { Cookie: hrCookie }
     });
     assert.strictEqual(purgeRes.status, 200);
     const purgeBody = await purgeRes.json();
-    assert.strictEqual(purgeBody.purged_count, 1);
-    assert(purgeBody.purged_references.includes(refB));
+    assert(purgeBody.swept_orphan_count >= 1, 'Orphan voice file must be swept');
+    assert(!fs.existsSync(orphanFile), 'Orphan file must be deleted from disk');
 
-    assert(!fs.existsSync(diskPathB), 'Expired non-selected voice file B must be deleted from disk');
-    assert(fs.existsSync(diskPathA), 'Selected (offered) candidate voice file A must remain intact on disk');
+    // 4D. التحقق من علم تعطيل الميزة (503 VOICE_PITCH_DISABLED قبل استهلاك الذاكرة أو القرص)
+    const disableCfgRes = await fetch(`${BASE}/api/system/voice-pitch-config`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json', Cookie: hrCookie },
+      body: JSON.stringify({ enabled: false })
+    });
+    assert.strictEqual(disableCfgRes.status, 200);
+
+    const fdWhenDisabled = new FormData();
+    fdWhenDisabled.append('voice_consent', 'true');
+    fdWhenDisabled.append('duration_sec', '15');
+    fdWhenDisabled.append('voice_file', new Blob([wavBuf], { type: 'audio/wav' }), 'disabled.wav');
+    const disabledUploadRes = await fetch(`${BASE}/api/applications/${refB}/voice-pitch`, {
+      method: 'POST',
+      headers: { 'X-Candidate-Key': keyB },
+      body: fdWhenDisabled
+    });
+    assert.strictEqual(disabledUploadRes.status, 503, 'Disabled voice feature must reject uploads with 503');
+    assert.strictEqual((await disabledUploadRes.json()).code, 'VOICE_PITCH_DISABLED');
+
+    // إعادة تفعيل الميزة لاختبار المتصفح وحدود المعدل
+    await fetch(`${BASE}/api/system/voice-pitch-config`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json', Cookie: hrCookie },
+      body: JSON.stringify({ enabled: true, max_uploads_per_application: 3 })
+    });
 
     console.log('=== [v2.2b] 5. HEADLESS CHROMIUM E2E: CANDIDATE VOICE WIDGET & COMMITTEE REVIEW ===');
     browser = await chromium.launch({ headless: true });
@@ -378,7 +419,55 @@ async function createCandidateApplication(email, phone, fullName) {
     await commPage.click('#save-voice-review-btn');
     await commPage.waitForSelector('input[value="عضو لجنة التوظيف"]', { timeout: 8000 });
 
-    console.log('ALL_V22B_VOICE_PITCH_SECURITY_RETENTION_AND_CHROMIUM_E2E_PASSED');
+    console.log('=== [v2.2b] 6. PER-APPLICATION CAP & DEDICATED IP RATE LIMITER (429) ===');
+    // المرشح الثالث رفع مرة واحدة عبر المتصفح؛ نرفع مرتين إضافيتين ليصل إلى السقف (3)، والمحاولة الرابعة تُرفض بـ 429 VOICE_APPLICATION_UPLOAD_CAP_REACHED
+    for (let k = 0; k < 2; k++) {
+      const fdExtra = new FormData();
+      fdExtra.append('voice_consent', 'true');
+      fdExtra.append('duration_sec', '18');
+      fdExtra.append('voice_file', new Blob([wavBuf], { type: 'audio/wav' }), `extra-${k}.wav`);
+      const rExtra = await fetch(`${BASE}/api/applications/${refC}/voice-pitch`, {
+        method: 'POST',
+        headers: { 'X-Candidate-Key': keyC },
+        body: fdExtra
+      });
+      assert.strictEqual(rExtra.status, 201);
+    }
+    const fdCap = new FormData();
+    fdCap.append('voice_consent', 'true');
+    fdCap.append('duration_sec', '18');
+    fdCap.append('voice_file', new Blob([wavBuf], { type: 'audio/wav' }), 'cap-exceeded.wav');
+    const capRes = await fetch(`${BASE}/api/applications/${refC}/voice-pitch`, {
+      method: 'POST',
+      headers: { 'X-Candidate-Key': keyC },
+      body: fdCap
+    });
+    assert.strictEqual(capRes.status, 429, '4th upload on same application must hit 429 VOICE_APPLICATION_UPLOAD_CAP_REACHED');
+    assert.strictEqual((await capRes.json()).code, 'VOICE_APPLICATION_UPLOAD_CAP_REACHED');
+
+    // استنفاد نافذة معدل الـ IP المخصصة (VOICE_UPLOAD_MAX_PER_WINDOW=14) والتأكد من رجوع 429 VOICE_UPLOAD_RATE_LIMITED
+    let sawIpRateLimit = false;
+    for (let m = 0; m < 10; m++) {
+      const fdBurst = new FormData();
+      fdBurst.append('voice_consent', 'true');
+      fdBurst.append('duration_sec', '10');
+      fdBurst.append('voice_file', new Blob([wavBuf], { type: 'audio/wav' }), 'burst.wav');
+      const burstRes = await fetch(`${BASE}/api/applications/${refB}/voice-pitch`, {
+        method: 'POST',
+        headers: { 'X-Candidate-Key': keyB },
+        body: fdBurst
+      });
+      if (burstRes.status === 429) {
+        const bJson = await burstRes.json();
+        if (bJson.code === 'VOICE_UPLOAD_RATE_LIMITED') {
+          sawIpRateLimit = true;
+          break;
+        }
+      }
+    }
+    assert(sawIpRateLimit, 'Burst voice uploads must trigger 429 VOICE_UPLOAD_RATE_LIMITED');
+
+    console.log('ALL_V22B_VOICE_PITCH_SECURITY_RETENTION_RATELIMIT_AND_CHROMIUM_E2E_PASSED');
   } finally {
     if (browser) await browser.close().catch(() => {});
     if (srv && srv.proc) srv.proc.kill('SIGTERM');

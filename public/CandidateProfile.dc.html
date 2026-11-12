@@ -94,7 +94,8 @@
                   <span class="code-chip">${SmartHR.escapeHtml(currentApp.reference_no)}</span>
                   <span class="code-chip" style="background:var(--terracotta);">${SmartHR.escapeHtml(currentApp.job_code)}</span>
                   ${SmartHR.statusBadge(currentApp.status)}
-                  ${currentInterview && currentInterview.lobby_status === 'checked_in' ? '<span class="badge badge-olive">🔔 حاضر في الاستقبال</span>' : ''}
+                  ${currentInterview && currentInterview.lobby_status === 'checked_in' && !['completed', 'cancelled', 'no_show'].includes(currentInterview.booking_status) ? '<span class="badge badge-olive">🔔 حاضر في الاستقبال</span>' : ''}
+                  ${currentInterview && currentInterview.lobby_status === 'in_room' && !['completed', 'cancelled', 'no_show'].includes(currentInterview.booking_status) ? '<span class="badge badge-saffron">🚪 داخل قاعة المقابلة</span>' : ''}
                   ${currentInterview ? SmartHR.punctualityBadge(currentInterview.punctuality_minutes) : ''}
                   ${report.blind_code ? `<span class="badge badge-saffron mono">${SmartHR.escapeHtml(report.blind_code)}</span>` : ''}
                 </div>

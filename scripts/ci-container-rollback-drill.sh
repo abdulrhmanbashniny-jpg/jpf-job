@@ -194,6 +194,43 @@ test "${RESTORED_CANDS}" = "1"
 "${DC[@]}" exec -T db sh -c 'psql -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d postgres -c "DROP DATABASE IF EXISTS smart_hr_restore_verify WITH (FORCE);"'
 echo "[OK] Isolated DB restore check inside db container passed cleanly"
 
+echo "=== [CONTAINER DRILL 4B] CONTAINER ROLLBACK TO v2.1 (d0eb509) ON MIGRATED DB + UPLOAD LEAK PROTECTION ==="
+# التحقق من حجب المحتوى المرفوع عن الزوار غير المصرحين (401) قبل وبعد الرجوع إلى v2.1
+test "$(curl -s -o /dev/null -w "%{http_code}" "http://127.0.0.1:${SIM_PORT}${V20_CV_PATH}")" = "401"
+test "$(curl -s -o /dev/null -w "%{http_code}" "http://127.0.0.1:${SIM_PORT}${V21_CV_PATH}")" = "401"
+
+git -C "${SIM_APP}" checkout --quiet d0eb5091cb72adc2066909a5048c9b54ed043428
+"${DC[@]}" up -d --build app
+RB21_OK=0
+for i in $(seq 1 45); do
+  if curl -fsS "http://127.0.0.1:${SIM_PORT}/api/health" 2>/dev/null | grep '"version":"2.1.0"' >/dev/null; then
+    RB21_OK=1
+    break
+  fi
+  sleep 1
+done
+test "${RB21_OK}" = "1"
+test "$(curl -s -o /dev/null -w "%{http_code}" "http://127.0.0.1:${SIM_PORT}${V21_CV_PATH}")" = "401"
+
+curl -fsS -c "${SIM_ROOT}/rb21_staff.cookies" -X POST "http://127.0.0.1:${SIM_PORT}/api/auth/login" \
+  -H "Content-Type: application/json" \
+  -d '{"username":"admin","password":"SIM-PROD-ADMIN-2026"}' >/dev/null
+test "$(curl -s -o /dev/null -w "%{http_code}" -b "${SIM_ROOT}/rb21_staff.cookies" "http://127.0.0.1:${SIM_PORT}${V21_CV_PATH}")" = "200"
+
+RB21_NEW_HTTP=$(curl -s -o /dev/null -w "%{http_code}" -X POST "http://127.0.0.1:${SIM_PORT}/api/applications" \
+  -F "job_id=1" \
+  -F "full_name=مرشح بعد الرجوع إلى 2.1" \
+  -F "email=after_v21_rb@jpf.sa" \
+  -F "phone=0557118229" \
+  -F "city=جدة" \
+  -F "qualification=بكالوريوس" \
+  -F "specialization=مبيعات" \
+  -F "years_experience=4" \
+  -F "privacy_consent=true" \
+  -F "cv_file=@${SIM_ROOT}/v21_cand.pdf;type=application/pdf")
+test "${RB21_NEW_HTTP}" = "201"
+echo "[OK] Container rolled back to v2.1 (d0eb509) on migrated DB: health=2.1.0, anon upload=401, staff upload=200, new apply=201"
+
 echo "=== [CONTAINER DRILL 5] FULL CONTAINER ROLLBACK TO v2.0 (70be659 + HOTFIX + OVERRIDE + UPLOADS) ==="
 git -C "${SIM_APP}" checkout --quiet 70be659
 cp "${SIM_BAK}/aiEvaluator_pre_v21.js" "${SIM_APP}/services/aiEvaluator.js"

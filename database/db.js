@@ -181,6 +181,32 @@ async function ensureDatabaseInitialized() {
         END IF;
       END $$;
 
+      -- محفز قاعدة بيانات يضمن عدم بقاء أي مرشح مكتمل أو ملغى أو متغيب في حالة checked_in أو in_room
+      CREATE OR REPLACE FUNCTION fn_sync_interview_lobby_status()
+      RETURNS TRIGGER AS $fn$
+      BEGIN
+        IF NEW.booking_status = 'completed' THEN
+          NEW.lobby_status := 'completed';
+        ELSIF NEW.booking_status IN ('cancelled', 'no_show') THEN
+          NEW.lobby_status := 'not_arrived';
+          NEW.checked_in_at := NULL;
+          NEW.checked_in_by := NULL;
+          NEW.punctuality_minutes := NULL;
+        END IF;
+        RETURN NEW;
+      END;
+      $fn$ LANGUAGE plpgsql;
+
+      DROP TRIGGER IF EXISTS trg_sync_interview_lobby_status ON interviews;
+      CREATE TRIGGER trg_sync_interview_lobby_status
+      BEFORE INSERT OR UPDATE ON interviews
+      FOR EACH ROW EXECUTE FUNCTION fn_sync_interview_lobby_status();
+
+      UPDATE interviews SET lobby_status = 'completed' WHERE booking_status = 'completed' AND lobby_status <> 'completed';
+      UPDATE interviews
+        SET lobby_status = 'not_arrived', checked_in_at = NULL, checked_in_by = NULL, punctuality_minutes = NULL
+        WHERE booking_status IN ('cancelled', 'no_show') AND lobby_status <> 'not_arrived';
+
       -- v2.2b: السؤال الصوتي الاختياري (60 ثانية) مع حوكمة الموافقة والمراجعة البشرية والحذف التلقائي بعد 30 يوماً
       ALTER TABLE applications
         ADD COLUMN IF NOT EXISTS voice_pitch_path VARCHAR(350),
@@ -235,12 +261,19 @@ async function ensureDatabaseInitialized() {
         WHERE voice_pitch_path IS NOT NULL;
     `);
 
-    // 3. إعداد افتراضي لبطاقة المقر الحضوري دون الكتابة فوق أي قيمة موجودة
+    // 3. إعداد افتراضي لبطاقة المقر الحضوري وعلم ميزة التعريف الصوتي دون الكتابة فوق أي قيمة موجودة
     await client.query(
       `INSERT INTO system_settings (setting_key, setting_value, category, description, updated_by)
        VALUES ('company_location', $1::jsonb, 'scheduler', 'بيانات مقر المقابلات الحضورية ورقم تواصل واتساب الموارد البشرية', 'system')
        ON CONFLICT (setting_key) DO NOTHING`,
       [JSON.stringify(DEFAULT_COMPANY_LOCATION)]
+    );
+
+    await client.query(
+      `INSERT INTO system_settings (setting_key, setting_value, category, description, updated_by)
+       VALUES ('voice_pitch_config', $1::jsonb, 'security_governance', 'علم تشغيل وحوكمة ميزة التعريف الصوتي الاختياري (60 ثانية)', 'system')
+       ON CONFLICT (setting_key) DO NOTHING`,
+      [JSON.stringify({ enabled: true, max_duration_sec: 60, retention_days: 30, max_uploads_per_application: 3 })]
     );
 
     // 4. ترقية قوالب واتساب بالدمج الآمن ($1::jsonb || setting_value) بحيث تحتفظ بجميع المفاتيح والقيم الحالية دون حذف أو استبدال
