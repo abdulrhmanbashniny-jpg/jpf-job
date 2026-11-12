@@ -180,6 +180,32 @@ async function ensureDatabaseInitialized() {
             CHECK (lobby_status IN ('not_arrived', 'checked_in', 'in_room', 'completed'));
         END IF;
       END $$;
+
+      -- محفز قاعدة بيانات يضمن عدم بقاء أي مرشح مكتمل أو ملغى أو متغيب في حالة checked_in أو in_room
+      CREATE OR REPLACE FUNCTION fn_sync_interview_lobby_status()
+      RETURNS TRIGGER AS $fn$
+      BEGIN
+        IF NEW.booking_status = 'completed' THEN
+          NEW.lobby_status := 'completed';
+        ELSIF NEW.booking_status IN ('cancelled', 'no_show') THEN
+          NEW.lobby_status := 'not_arrived';
+          NEW.checked_in_at := NULL;
+          NEW.checked_in_by := NULL;
+          NEW.punctuality_minutes := NULL;
+        END IF;
+        RETURN NEW;
+      END;
+      $fn$ LANGUAGE plpgsql;
+
+      DROP TRIGGER IF EXISTS trg_sync_interview_lobby_status ON interviews;
+      CREATE TRIGGER trg_sync_interview_lobby_status
+      BEFORE INSERT OR UPDATE ON interviews
+      FOR EACH ROW EXECUTE FUNCTION fn_sync_interview_lobby_status();
+
+      UPDATE interviews SET lobby_status = 'completed' WHERE booking_status = 'completed' AND lobby_status <> 'completed';
+      UPDATE interviews
+        SET lobby_status = 'not_arrived', checked_in_at = NULL, checked_in_by = NULL, punctuality_minutes = NULL
+        WHERE booking_status IN ('cancelled', 'no_show') AND lobby_status <> 'not_arrived';
     `);
 
     // 3. إعداد افتراضي لبطاقة المقر الحضوري دون الكتابة فوق أي قيمة موجودة

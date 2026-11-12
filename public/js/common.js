@@ -349,6 +349,45 @@ const SmartHR = (() => {
   }
 
   let _arrivalTimer = null;
+  let _lastRenderedArrivalSig = '';
+  let _arrivalToastFireCount = 0;
+
+  function _readSessionSet(storageKey) {
+    try {
+      const raw = sessionStorage.getItem(storageKey);
+      const arr = raw ? JSON.parse(raw) : [];
+      return new Set(Array.isArray(arr) ? arr : []);
+    } catch (_e) {
+      return new Set();
+    }
+  }
+
+  function _writeSessionSet(storageKey, setObj) {
+    try {
+      sessionStorage.setItem(storageKey, JSON.stringify(Array.from(setObj).slice(-100)));
+    } catch (_e) {}
+  }
+
+  function _arrivalEventKey(w) {
+    return `${w.interview_id}:${w.checked_in_at || ''}`;
+  }
+
+  async function acknowledgeCandidateArrival(interviewId, appId) {
+    try {
+      await apiFetch(`/api/reception/arrivals/${encodeURIComponent(interviewId)}/acknowledge`, {
+        method: 'POST',
+        body: JSON.stringify({})
+      });
+      _lastRenderedArrivalSig = '';
+      await refreshLobbyArrivalBanner();
+      if (appId) {
+        window.location.href = `CandidateProfile.dc.html?app_id=${encodeURIComponent(appId)}`;
+      }
+    } catch (err) {
+      showToast(err.message, 'error');
+    }
+  }
+
   async function refreshLobbyArrivalBanner() {
     const mainEl = document.querySelector('.admin-main');
     if (!mainEl) return;
@@ -356,12 +395,40 @@ const SmartHR = (() => {
       const r = await fetch('/api/reception/arrivals');
       if (!r.ok) return;
       const data = await r.json();
-      const waiting = data.waiting_candidates || [];
+      const dismissedSet = _readSessionSet('jpf_dismissed_arrival_keys');
+      const notifiedSet = _readSessionSet('jpf_notified_arrival_keys');
+
+      const allWaiting = data.waiting_candidates || [];
+      const waiting = allWaiting.filter((w) => !dismissedSet.has(_arrivalEventKey(w)));
+
+      // إشعار منبثق لمرة واحدة فقط لكل حدث وصول فريد (حماية كاملة من تكرار التنبيه كل 15 ثانية)
+      let notifiedChanged = false;
+      for (const w of waiting) {
+        const evKey = _arrivalEventKey(w);
+        if (!notifiedSet.has(evKey)) {
+          notifiedSet.add(evKey);
+          notifiedChanged = true;
+          _arrivalToastFireCount += 1;
+          window.__ARRIVAL_TOAST_COUNT = _arrivalToastFireCount;
+          showToast(`🔔 وصل المرشح ${w.full_name} في الاستقبال (${w.office || 'المقر الرئيسي'})`, 'info');
+        }
+      }
+      if (notifiedChanged) _writeSessionSet('jpf_notified_arrival_keys', notifiedSet);
+
+      const currentSig = waiting.map((w) => `${_arrivalEventKey(w)}:${w.lobby_status}`).join('|');
       let bar = document.getElementById('committee-arrival-alert-bar');
       if (!waiting.length) {
+        _lastRenderedArrivalSig = '';
         if (bar) bar.remove();
         return;
       }
+
+      // منع إعادة الرسم المتكررة كل 15 ثانية طالما لم تتغير قائمة المنتظرين
+      if (bar && currentSig === _lastRenderedArrivalSig) {
+        return;
+      }
+      _lastRenderedArrivalSig = currentSig;
+
       if (!bar) {
         bar = document.createElement('div');
         bar.id = 'committee-arrival-alert-bar';
@@ -369,7 +436,9 @@ const SmartHR = (() => {
         mainEl.prepend(bar);
       }
       const latest = waiting[0];
+      const latestKey = _arrivalEventKey(latest);
       const extraCnt = waiting.length > 1 ? ` (+${waiting.length - 1} آخرين في الانتظار)` : '';
+      bar.dataset.arrivalSig = currentSig;
       bar.innerHTML = `
         <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
           <span style="font-size:20px;">🔔</span>
@@ -383,10 +452,30 @@ const SmartHR = (() => {
           </div>
           ${punctualityBadge(latest.punctuality_minutes)}
         </div>
-        <a href="CandidateProfile.dc.html?app_id=${encodeURIComponent(latest.application_id)}" class="btn btn-saffron btn-sm" style="font-weight:700;">
-          فتح ملف المرشح واستقباله ←
-        </a>
+        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+          <button type="button" id="ack-arrival-btn" class="btn btn-saffron btn-sm" style="font-weight:700;">
+            استقبال المرشح وإدخاله القاعة ←
+          </button>
+          <button type="button" id="dismiss-arrival-btn" class="btn btn-outline btn-sm" style="color:#FFF;border-color:rgba(255,255,255,0.35);">
+            إخفاء ✕
+          </button>
+        </div>
       `;
+
+      const ackBtn = bar.querySelector('#ack-arrival-btn');
+      if (ackBtn) {
+        ackBtn.addEventListener('click', () => acknowledgeCandidateArrival(latest.interview_id, latest.application_id));
+      }
+      const dismissBtn = bar.querySelector('#dismiss-arrival-btn');
+      if (dismissBtn) {
+        dismissBtn.addEventListener('click', () => {
+          const ds = _readSessionSet('jpf_dismissed_arrival_keys');
+          ds.add(latestKey);
+          _writeSessionSet('jpf_dismissed_arrival_keys', ds);
+          _lastRenderedArrivalSig = '';
+          refreshLobbyArrivalBanner();
+        });
+      }
     } catch (_e) {}
   }
 

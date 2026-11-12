@@ -3161,13 +3161,13 @@ app.patch('/api/interviews/:id', requireAuth(['super_admin', 'hr_coordinator', '
         visit_token = $7,
         meeting_url = $8,
         lobby_status = CASE
-          WHEN $10::boolean THEN 'not_arrived'
-          WHEN $1::varchar = 'completed' AND lobby_status = 'checked_in' THEN 'completed'
+          WHEN $1::varchar = 'completed' THEN 'completed'
+          WHEN $1::varchar IN ('cancelled', 'no_show') OR $10::boolean THEN 'not_arrived'
           ELSE lobby_status
         END,
-        checked_in_at = CASE WHEN $10::boolean THEN NULL ELSE checked_in_at END,
-        checked_in_by = CASE WHEN $10::boolean THEN NULL ELSE checked_in_by END,
-        punctuality_minutes = CASE WHEN $10::boolean THEN NULL ELSE punctuality_minutes END,
+        checked_in_at = CASE WHEN $1::varchar IN ('cancelled', 'no_show') OR $10::boolean THEN NULL ELSE checked_in_at END,
+        checked_in_by = CASE WHEN $1::varchar IN ('cancelled', 'no_show') OR $10::boolean THEN NULL ELSE checked_in_by END,
+        punctuality_minutes = CASE WHEN $1::varchar IN ('cancelled', 'no_show') OR $10::boolean THEN NULL ELSE punctuality_minutes END,
         updated_at = NOW()
       WHERE id = $9
       RETURNING *`,
@@ -4139,6 +4139,73 @@ app.post('/api/reception/check-in', requireAuth(['super_admin', 'hr_coordinator'
   }
 });
 
+app.post('/api/reception/arrivals/:interviewId/acknowledge', requireAuth(['super_admin', 'hr_coordinator', 'committee_member']), async (req, res) => {
+  const client = await pool.connect();
+  try {
+    const intvId = parseInt(req.params.interviewId, 10);
+    if (!intvId) {
+      return res.status(400).json({ error: 'معرّف المقابلة غير صالح.' });
+    }
+
+    await client.query('BEGIN');
+    const curRes = await client.query(
+      `SELECT i.*, a.reference_no, c.full_name, j.code AS job_code, j.title AS job_title, j.department
+       FROM interviews i
+       JOIN applications a ON a.id = i.application_id
+       JOIN candidates c ON c.id = a.candidate_id
+       JOIN jobs j ON j.id = a.job_id
+       WHERE i.id = $1
+       FOR UPDATE OF i`,
+      [intvId]
+    );
+    if (!curRes.rows.length) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({ error: 'الموعد غير موجود.' });
+    }
+    const cur = curRes.rows[0];
+
+    if (['completed', 'cancelled', 'no_show'].includes(cur.booking_status) || cur.lobby_status !== 'checked_in') {
+      await client.query('ROLLBACK');
+      return res.json({
+        already_acknowledged: true,
+        lobby_status: cur.lobby_status,
+        message: 'تم استلام إشعار وصول المرشح مسبقاً.'
+      });
+    }
+
+    const upd = await client.query(
+      `UPDATE interviews
+       SET lobby_status = 'in_room',
+           updated_at = NOW()
+       WHERE id = $1
+       RETURNING lobby_status`,
+      [intvId]
+    );
+    await client.query('COMMIT');
+
+    await logAudit({
+      actor: req.user.full_name,
+      actorRole: req.user.role,
+      action: 'CANDIDATE_LOBBY_ACKNOWLEDGED',
+      entityType: 'interview',
+      entityId: cur.reference_no,
+      metadata: { interview_id: intvId, new_lobby_status: upd.rows[0].lobby_status },
+      ipAddress: req.ip
+    });
+
+    res.json({
+      already_acknowledged: false,
+      lobby_status: upd.rows[0].lobby_status,
+      message: `تم استلام إشعار وصول ${cur.full_name} وإدخاله إلى القاعة ✓`
+    });
+  } catch (err) {
+    await client.query('ROLLBACK').catch(() => {});
+    res.status(500).json({ error: err.message });
+  } finally {
+    client.release();
+  }
+});
+
 app.get('/api/reception/arrivals', requireAuth(), async (_req, res) => {
   try {
     const [locCfg, waitingRes, todayListRes] = await Promise.all([
@@ -4162,7 +4229,7 @@ app.get('/api/reception/arrivals', requireAuth(), async (_req, res) => {
          JOIN candidates c ON c.id = a.candidate_id
          JOIN jobs j ON j.id = a.job_id
          WHERE i.scheduled_date = (NOW() AT TIME ZONE 'Asia/Riyadh')::date
-           AND i.booking_status <> 'cancelled'
+           AND i.booking_status NOT IN ('cancelled', 'completed', 'no_show')
          ORDER BY i.start_time ASC`
       )
     ]);

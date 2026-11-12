@@ -16,7 +16,7 @@ const assert = require('assert');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
-const { spawn } = require('child_process');
+const { spawn, execSync } = require('child_process');
 const { Client, Pool } = require('pg');
 const QRCode = require('qrcode');
 const { chromium } = require('playwright');
@@ -407,14 +407,190 @@ function getRiyadhTodayStr() {
     const bannerText = await commPage.textContent('#committee-arrival-alert-bar');
     assert(bannerText.includes('وصل الآن في الاستقبال'), 'Committee live arrival banner missing expected Arabic alert');
 
-    await commPage.goto(`${BASE}/CandidateProfile.dc.html?app_id=${encodeURIComponent(app1.reference_no)}`, { waitUntil: 'networkidle' });
-    await commPage.waitForSelector('text=حاضر في الاستقبال', { timeout: 8000 });
+    // ج-2) التحقق من منع تكرار التنبيه كل 15 ثانية (Committee Alert Dedup): استدعاء التحديث 4 مرات متتالية لا يطلق أي Toast مكرر
+    const toastCountBefore = await commPage.evaluate(() => window.__ARRIVAL_TOAST_COUNT || 0);
+    assert.strictEqual(toastCountBefore, 1, 'Initial arrival toast must fire exactly once');
+    await commPage.evaluate(async () => {
+      await SmartHR.refreshLobbyArrivalBanner();
+      await SmartHR.refreshLobbyArrivalBanner();
+      await SmartHR.refreshLobbyArrivalBanner();
+    });
+    const toastCountAfter = await commPage.evaluate(() => window.__ARRIVAL_TOAST_COUNT || 0);
+    assert.strictEqual(toastCountAfter, 1, 'Repeated 15s polling must NOT duplicate committee arrival alerts');
 
-    // د) المرشح يحدث بطاقة الزيارة فيرى شارة تسجيل الوصول في الاستقبال
+    // ج-3) استلام عضو اللجنة للمرشح ينقل lobby_status إلى in_room ويزيله من قائمة الانتظار فوراً
+    await Promise.all([
+      commPage.waitForURL('**/CandidateProfile.dc.html**'),
+      commPage.click('#ack-arrival-btn')
+    ]);
+    await commPage.waitForSelector('text=داخل قاعة المقابلة', { timeout: 8000 });
+
+    const arrAfterAck = await (await fetch(`${BASE}/api/reception/arrivals`, { headers: { Cookie: commCookie } })).json();
+    assert.strictEqual(arrAfterAck.waiting_count, 0, 'Acknowledged in_room candidate must not remain in waiting_candidates');
+
+    // د) المرشح يحدث بطاقة الزيارة
     await candPage.reload({ waitUntil: 'networkidle' });
-    await candPage.waitForSelector('#checked-in-pill', { timeout: 8000 });
 
-    console.log('ALL_V22A_QR_RECEPTION_SECURITY_CONCURRENCY_AND_CHROMIUM_E2E_PASSED');
+    console.log('=== [v2.2a] 6. COMPLETED INTERVIEW LOBBY SYNC INVARIANT (NO STALE CHECKED_IN) ===');
+    // إرسال الدعوة أولاً ليسمح آلة حالات المواعيد بتحويلها إلى completed، ثم التحقق أن lobby_status يصبح completed تلقائياً
+    const waRows1 = (await pool.query(`SELECT id FROM wa_messages WHERE interview_id = $1 AND queue_status = 'queued' ORDER BY id DESC LIMIT 1`, [intvId])).rows;
+    if (waRows1.length) {
+      await fetch(`${BASE}/api/wa-messages/${waRows1[0].id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json', Cookie: hrCookie },
+        body: JSON.stringify({ action: 'confirm_sent' })
+      });
+    }
+    const compRes = await fetch(`${BASE}/api/interviews/${intvId}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json', Cookie: commCookie },
+      body: JSON.stringify({ booking_status: 'completed', notes: 'تمت المقابلة بنجاح' })
+    });
+    assert.strictEqual(compRes.status, 200);
+    const compIntRow = (await pool.query('SELECT booking_status, lobby_status FROM interviews WHERE id = $1', [intvId])).rows[0];
+    assert.strictEqual(compIntRow.booking_status, 'completed');
+    assert.strictEqual(compIntRow.lobby_status, 'completed', 'Completed interview MUST transition lobby_status to completed');
+
+    const arrAfterComplete = await (await fetch(`${BASE}/api/reception/arrivals`, { headers: { Cookie: hrCookie } })).json();
+    assert.strictEqual(arrAfterComplete.waiting_count, 0);
+    assert(
+      arrAfterComplete.today_schedule.every((x) => x.interview_id !== intvId),
+      'Completed interview must not remain on active today arrival schedule'
+    );
+
+    console.log('=== [v2.2a] 7. UPLOADED CONTENT LEAK PROTECTION & PII ISOLATION ===');
+    // رفض رفع صيغ قابلة للتنفيذ أو HTML/SVG كسيرة ذاتية (400)
+    const badUploadFd = new FormData();
+    badUploadFd.append('job_id', '1');
+    badUploadFd.append('full_name', 'اختبار ملف خبيث');
+    badUploadFd.append('email', 'xss_upload_try@jpf.sa');
+    badUploadFd.append('phone', '0559100911');
+    badUploadFd.append('city', 'جدة');
+    badUploadFd.append('qualification', 'بكالوريوس');
+    badUploadFd.append('years_experience', '3');
+    badUploadFd.append('privacy_consent', 'true');
+    badUploadFd.append('cv_file', new Blob(['<script>alert("xss")</script>'], { type: 'text/html' }), 'exploit.html');
+    const badUploadRes = await fetch(`${BASE}/api/applications`, { method: 'POST', body: badUploadFd });
+    assert.strictEqual(badUploadRes.status, 400, 'Disallowed HTML upload must be rejected with 400');
+
+    // رفع سيرة ذاتية حقيقية تحتوي على بيانات شخصية حساسة (PII) والتحقق من عدم تسربها للزوار أو واجهات البطاقة العامة
+    const piiPdfBytes = '%PDF-1.4 SECRET_CANDIDATE_PII_NID_1099887766_SALARY_25000';
+    const piiFd = new FormData();
+    piiFd.append('job_id', '1');
+    piiFd.append('full_name', 'مرشح فحص حماية الخصوصية');
+    piiFd.append('email', 'secret_pii_cand@jpf.sa');
+    piiFd.append('phone', '0559200922');
+    piiFd.append('city', 'جدة');
+    piiFd.append('qualification', 'ماجستير');
+    piiFd.append('specialization', 'إدارة جودة');
+    piiFd.append('years_experience', '6');
+    piiFd.append('privacy_consent', 'true');
+    piiFd.append('cv_file', new Blob([piiPdfBytes], { type: 'application/pdf' }), 'pii-cv.pdf');
+    const piiApplyRes = await fetch(`${BASE}/api/applications`, { method: 'POST', body: piiFd });
+    assert.strictEqual(piiApplyRes.status, 201);
+    const piiApplyBody = await piiApplyRes.json();
+    const piiRef = piiApplyBody.application.reference_no;
+
+    const piiDb = (
+      await pool.query(
+        `SELECT c.cv_stored_path FROM candidates c JOIN applications a ON a.candidate_id = c.id WHERE a.reference_no = $1`,
+        [piiRef]
+      )
+    ).rows[0];
+    assert(piiDb && piiDb.cv_stored_path.startsWith('/uploads/'));
+
+    // الزائر غير المصرح له يُحجب فوراً (401) عن قراءة الملف المرفوع أو محاولة اجتياز المسار
+    const anonCvTry = await fetch(`${BASE}${piiDb.cv_stored_path}`);
+    assert.strictEqual(anonCvTry.status, 401, 'Anonymous access to uploaded CV must return 401');
+    const traversalTry = await fetch(`${BASE}/uploads/..%2fpackage.json`);
+    assert([400, 401, 403, 404].includes(traversalTry.status), 'Path traversal must never return 200');
+
+    // مسار الزيارة العام لا يسرب الإيميل أو الجوال أو مسار السيرة أو الرمز السري
+    const pubVisitRaw = JSON.stringify(visitData2);
+    assert(!pubVisitRaw.includes('cv_stored_path') && !pubVisitRaw.includes('candidate_access_token') && !pubVisitRaw.includes('@'), 'Public visit endpoint leaked PII');
+
+    // الموظف المصرح له يقرأ الملف المرفوع بسلام (200)
+    const staffCvOk = await fetch(`${BASE}${piiDb.cv_stored_path}`, { headers: { Cookie: hrCookie } });
+    assert.strictEqual(staffCvOk.status, 200);
+
+    console.log('=== [v2.2a] 8. LIVE ROLLBACK TO v2.1 (d0eb509) ON MIGRATED v2.2a DATABASE ===');
+    await browser.close();
+    browser = null;
+    srv.proc.kill('SIGTERM');
+    await new Promise((r) => setTimeout(r, 400));
+    srv = null;
+
+    const v21Worktree = path.join(tmpRoot, 'v21_wt');
+    execSync(`git worktree add --detach "${v21Worktree}" d0eb5091cb72adc2066909a5048c9b54ed043428`, { stdio: 'pipe' });
+    // ربط node_modules لتشغيل خادم v2.1 المعزول على نفس قاعدة البيانات المرقاة ومجلد المرفقات المشترك
+    fs.symlinkSync(path.join(process.cwd(), 'node_modules'), path.join(v21Worktree, 'node_modules'), 'dir');
+
+    const rbPort = PORT + 10;
+    const rbBase = `http://127.0.0.1:${rbPort}`;
+    const rbProc = spawn(process.execPath, ['server.js'], {
+      cwd: v21Worktree,
+      env: {
+        PATH: process.env.PATH,
+        NODE_ENV: 'test',
+        PORT: String(rbPort),
+        HOST: '127.0.0.1',
+        DATABASE_URL: `${dbBaseOrigin}/${dbName}`,
+        UPLOAD_DIR: uploadsDir,
+        ADMIN_ACCESS_CODE: ADMIN_PASS,
+        SESSION_SECRET
+      },
+      stdio: 'pipe'
+    });
+
+    try {
+      await new Promise((resolve, reject) => {
+        const t = setTimeout(() => reject(new Error('v2.1 rollback boot timeout')), 12000);
+        rbProc.stdout.on('data', (d) => {
+          if (String(d).includes(String(rbPort))) {
+            clearTimeout(t);
+            resolve();
+          }
+        });
+        rbProc.on('exit', (code) => {
+          clearTimeout(t);
+          if (code !== null && code !== 0) reject(new Error(`v2.1 exited ${code}`));
+        });
+      });
+
+      const rbHealth = await (await fetch(`${rbBase}/api/health`)).json();
+      assert.strictEqual(rbHealth.version, '2.1.0', 'Rolled-back server must report version 2.1.0');
+
+      // بقاء حماية المرفقات بعد الرجوع إلى v2.1 (401 للزائر و 200 للموظف)
+      assert.strictEqual((await fetch(`${rbBase}${piiDb.cv_stored_path}`)).status, 401);
+      const rbLoginRes = await fetch(`${rbBase}/api/auth/login`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ username: 'admin', password: ADMIN_PASS })
+      });
+      assert.strictEqual(rbLoginRes.status, 200);
+      const rbCookie = (rbLoginRes.headers.get('set-cookie') || '').split(';')[0];
+      assert.strictEqual((await fetch(`${rbBase}${piiDb.cv_stored_path}`, { headers: { Cookie: rbCookie } })).status, 200);
+
+      // تقديم طلب توظيف جديد مع رفع سيرة ذاتية على v2.1 فوق قاعدة البيانات المرقاة من v2.2a
+      const rbFd = new FormData();
+      rbFd.append('job_id', '2');
+      rbFd.append('full_name', 'مرشح بعد الرجوع إلى v2.1');
+      rbFd.append('email', 'post_rollback_v21@jpf.sa');
+      rbFd.append('phone', '0559300933');
+      rbFd.append('city', 'الرياض');
+      rbFd.append('qualification', 'بكالوريوس');
+      rbFd.append('specialization', 'تسويق');
+      rbFd.append('years_experience', '4');
+      rbFd.append('privacy_consent', 'true');
+      rbFd.append('cv_file', new Blob(['%PDF-1.4 Post Rollback CV'], { type: 'application/pdf' }), 'rb.pdf');
+      const rbApply = await fetch(`${rbBase}/api/applications`, { method: 'POST', body: rbFd });
+      assert.strictEqual(rbApply.status, 201, 'New application on rolled-back v2.1 over migrated DB must return 201');
+    } finally {
+      rbProc.kill('SIGTERM');
+      execSync(`git worktree remove --force "${v21Worktree}"`, { stdio: 'pipe' });
+    }
+
+    console.log('ALL_V22A_QR_RECEPTION_SECURITY_CONCURRENCY_PII_ROLLBACK_AND_CHROMIUM_E2E_PASSED');
   } finally {
     if (browser) await browser.close().catch(() => {});
     if (srv && srv.proc) srv.proc.kill('SIGTERM');
