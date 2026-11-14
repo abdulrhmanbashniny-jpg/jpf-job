@@ -327,6 +327,19 @@ app.use('/uploads', async (req, res, next) => {
         code: 'DIRECT_VOICE_ACCESS_FORBIDDEN'
       });
     }
+    // v2.5-R1: ملفات العروض الوظيفية تُسلَّم حصراً عبر /api/offers/:id/pdf
+    // (مصادقة + سجل تدقيق) أو عبر توكن العرض للمرشح — لا عبر مسار ثابت.
+    // هذا الحجب قبل التحقق من الجلسة عمداً: حتى المدير لا يصل مباشرة.
+    // نطبّع المسار قبل الفحص: req.path لا يفكّ ترميز %6Fffers ⇒ تجاوز الفحص.
+    let decodedPath = req.path;
+    try { decodedPath = decodeURIComponent(req.path); } catch (_e) { /* مسار غير صالح */ }
+    decodedPath = decodedPath.replace(/\\/g, '/').replace(/\/{2,}/g, '/');
+    if (/^\/+(?:offers?)(\/|$)/i.test(decodedPath)) {
+      return res.status(403).json({
+        error: 'يُمنع الوصول المباشر لملفات العروض الوظيفية؛ التنزيل عبر المسارات المصرّح بها فقط.',
+        code: 'DIRECT_OFFER_ACCESS_FORBIDDEN'
+      });
+    }
     const session = await resolveActiveStaffSession(req, query);
     if (!session) {
       clearSessionCookie(res);

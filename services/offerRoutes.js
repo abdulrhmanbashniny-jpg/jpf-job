@@ -60,6 +60,32 @@ function createOfferRoutes({
   }
 
   // ---------------------------------------------------------------------------
+  // 0) تسجيل حدث الأتمتة داخل معاملة قائمة — بلا أي قدرة على إفسادها.
+  //
+  //    الفخ الذي نتحمّى منه: في PostgreSQL، أي عبارة تفشل داخل معاملة تُجهض
+  //    المعاملة كلها، فيتحول COMMIT إلى ROLLBACK **بصمت** ويفقد المستخدم
+  //    عملية التوظيف بينما الاستجابة تعلن النجاح. لذلك نعزل الإدخال داخل
+  //    SAVEPOINT: فشله يتراجع إلى نقطة الحفظ وحدها، وتبقى معاملة التوظيف سليمة.
+  // ---------------------------------------------------------------------------
+  async function safeEnqueueEvent(client, event) {
+    try {
+      await client.query('SAVEPOINT sp_outbox');
+    } catch (_e) {
+      // خارج معاملة (autocommit) — الإدخال آمن مباشرة
+      return outbox.enqueueEvent((sql, params) => client.query(sql, params), event);
+    }
+    try {
+      const result = await outbox.enqueueEvent((sql, params) => client.query(sql, params), event);
+      await client.query('RELEASE SAVEPOINT sp_outbox');
+      return result;
+    } catch (err) {
+      try { await client.query('ROLLBACK TO SAVEPOINT sp_outbox'); } catch (_e) { /* المعاملة منهارة */ }
+      try { await client.query('RELEASE SAVEPOINT sp_outbox'); } catch (_e) { /* تجاهل */ }
+      return { enqueued: false, error: 'ENQUEUE_FAILED', detail: String(err && err.message).slice(0, 200) };
+    }
+  }
+
+  // ---------------------------------------------------------------------------
   // 1) مصفوفة المقارنة
   // ---------------------------------------------------------------------------
   router.get('/compare', requireAuth(), async (req, res) => {
@@ -352,7 +378,15 @@ function createOfferRoutes({
       );
       const template = offerPdf.normalizeTemplate(tplRes.rows[0] ? tplRes.rows[0].setting_value : null);
 
-      const seqRes = await client.query('SELECT COALESCE(MAX(id), 0) + 1 AS next FROM job_offers');
+      // ---------------------------------------------------------------------
+      // تخصيص المرجع: ذري بالكامل عبر تسلسل PostgreSQL.
+      // كان `MAX(id)+1` يُقرأ خارج المعاملة، فعمليتان متزامنتان تحصلان على نفس
+      // الرقم ⇒ نفس اسم الملف ⇒ يكتب أحدهما فوق الآخر قبل أن يرفض القيد.
+      // nextval() ذري ولا يحجب القراءة؛ وUNIQUE(offer_ref) يبقى خط الدفاع الأخير.
+      // ولا يوجد أي مسار يكتب ملفاً قبل نجاح الإدخال.
+      // ---------------------------------------------------------------------
+      await client.query('BEGIN');
+      const seqRes = await client.query("SELECT nextval('job_offers_ref_seq') AS next");
       const offerRef = buildOfferRef(Number(seqRes.rows[0].next));
 
       const token = generateOfferToken();
@@ -382,31 +416,57 @@ function createOfferRoutes({
       const renderedHtml = offerPdf.buildOfferHtml(offerData, template);
       const pdfResult = await offerPdf.buildOfferPdf(offerData, template);
 
-      // تخزين الـ PDF: المسار نسبي داخل مجلد الرفع (لا مسار نظام مطلق في القاعدة)
-      const dir = ensureOffersDir();
-      const fileName = `${offerRef}.pdf`;
-      fs.writeFileSync(path.join(dir, fileName), pdfResult.bytes);
-      const storedPath = path.posix.join('offers', fileName);
-
-      await client.query('BEGIN');
-
       const inserted = await client.query(
         `INSERT INTO job_offers (
            offer_ref, application_id, job_title_snapshot, department_snapshot,
            basic_salary, housing_allowance, transport_allowance, other_allowances,
            probation_days, annual_leave_days, expected_start_date, valid_until, special_terms,
-           template_version, rendered_html, pdf_stored_path, pdf_sha256,
+           template_version, rendered_html, pdf_sha256,
            offer_token, offer_status, created_by
-         ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11::date,$12::date,$13,$14,$15,$16,$17,$18,'issued',$19)
+         ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11::date,$12::date,$13,$14,$15,$16,$17,'issued',$18)
          RETURNING id, offer_ref, offer_status, total_monthly_salary, valid_until`,
         [
           offerRef, applicationId, app.job_title, app.department,
           basicSalary, housing, transport, others,
           offerData.probation_days, offerData.annual_leave_days, startDate, validUntilStr,
           offerData.special_terms || null, template.template_version,
-          renderedHtml, storedPath, pdfResult.sha256,
+          renderedHtml, pdfResult.sha256,
           tokenHash, req.user.full_name
         ]
+      );
+
+      // ---------------------------------------------------------------------
+      // كتابة الملف: بعد نجاح الإدخال وقبل الـ COMMIT.
+      // لو فشلت الكتابة نُرجِع المعاملة فلا يبقى صف يشير إلى ملف غير موجود.
+      // العلم 'wx' يرفض الاستبدال: لا يمكن لأي عرض أن يطمس مستند عرض آخر.
+      // المسار يحمل بصمة المحتوى أيضاً، فحتى لو تكرّر اسم مفترض يستحيل التعارض.
+      // ---------------------------------------------------------------------
+      const dir = ensureOffersDir();
+      const fileName = `${offerRef}-${String(pdfResult.sha256).slice(0, 12)}.pdf`;
+      const absPdfPath = path.join(dir, fileName);
+      try {
+        fs.writeFileSync(absPdfPath, pdfResult.bytes, { flag: 'wx' });
+      } catch (fsErr) {
+        if (fsErr && fsErr.code === 'EEXIST') {
+          await client.query('ROLLBACK');
+          released = false;
+          return res.status(409).json({
+            error: 'تعذّر حجز مسار ملف فريد للعرض. أعد المحاولة.',
+            code: 'OFFER_PDF_PATH_CONFLICT'
+          });
+        }
+        await client.query('ROLLBACK');
+        released = false;
+        return res.status(500).json({
+          error: 'تعذّر تخزين ملف العرض الوظيفي. لم يُسجَّل أي عرض.',
+          code: 'OFFER_PDF_WRITE_FAILED'
+        });
+      }
+      const storedPath = path.posix.join('offers', fileName);
+
+      await client.query(
+        'UPDATE job_offers SET pdf_stored_path = $2, updated_at = NOW() WHERE id = $1',
+        [inserted.rows[0].id, storedPath]
       );
 
       await client.query(
@@ -415,9 +475,7 @@ function createOfferRoutes({
       );
 
       // الحدث يُكتب داخل نفس المعاملة — n8n لا يُفشل الإصدار
-      await outbox.enqueueEvent(
-        (sql, params) => client.query(sql, params),
-        {
+      await safeEnqueueEvent(client, {
           eventType: 'offer.issued',
           aggregateType: 'job_offer',
           aggregateId: String(inserted.rows[0].id),
@@ -435,8 +493,7 @@ function createOfferRoutes({
             pdf_sha256: pdfResult.sha256
           },
           idempotencyKey: `offer.issued:${offerRef}`
-        }
-      );
+        });
 
       await client.query('COMMIT');
       released = false;
@@ -512,8 +569,32 @@ function createOfferRoutes({
   });
 
   // ---------------------------------------------------------------------------
-  // 6) تنزيل PDF من المخزن (موظفون فقط، والمسار مُقيَّد بمجلد العروض)
+  // 6) بث ملف PDF — المسار الوحيد المصرّح به لتسليم مستند العرض
+  //    يستخدمه: المسار الموظفي (جلسة) والمسار العام (توكن العرض).
+  //    المسار المخزَّن نسبي داخل مجلد العروض حصراً، ويُرفض أي خروج عنه.
   // ---------------------------------------------------------------------------
+  function streamStoredPdf(res, row) {
+    if (!row || !row.pdf_stored_path) {
+      return res.status(404).json({ error: 'ملف العرض غير موجود.', code: 'OFFER_PDF_NOT_FOUND' });
+    }
+    const offersRoot = path.resolve(ensureOffersDir());
+    const base = path.resolve(offersRoot, '..');
+    const full = path.resolve(base, row.pdf_stored_path);
+    // منع الخروج من مجلد العروض (../ أو مسار مطلق)
+    if (!full.startsWith(offersRoot + path.sep)) {
+      return res.status(400).json({ error: 'مسار غير مسموح.', code: 'PATH_NOT_ALLOWED' });
+    }
+    if (!fs.existsSync(full)) {
+      return res.status(404).json({ error: 'ملف العرض غير موجود على القرص.', code: 'OFFER_PDF_MISSING' });
+    }
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', `inline; filename="${row.offer_ref}.pdf"`);
+    res.setHeader('X-Content-SHA256', row.pdf_sha256 || '');
+    // منع تخزين الوسيط للنسخة: المستند يخضع لصلاحية العرض
+    res.setHeader('Cache-Control', 'private, no-store');
+    return fs.createReadStream(full).pipe(res);
+  }
+
   router.get('/offers/:id/pdf', requireAuth(OFFER_ISSUE_ROLES), async (req, res) => {
     try {
       const id = safeInt(req.params.id);
@@ -524,22 +605,19 @@ function createOfferRoutes({
         'SELECT offer_ref, pdf_stored_path, pdf_sha256 FROM job_offers WHERE id = $1',
         [id]
       );
-      if (!rows.length || !rows[0].pdf_stored_path) {
+      if (!rows.length) {
         return res.status(404).json({ error: 'ملف العرض غير موجود.', code: 'OFFER_PDF_NOT_FOUND' });
       }
-      const base = path.resolve(ensureOffersDir(), '..');
-      const full = path.resolve(base, rows[0].pdf_stored_path);
-      // منع الخروج من مجلد العروض
-      if (!full.startsWith(path.resolve(ensureOffersDir()))) {
-        return res.status(400).json({ error: 'مسار غير مسموح.', code: 'PATH_NOT_ALLOWED' });
-      }
-      if (!fs.existsSync(full)) {
-        return res.status(404).json({ error: 'ملف العرض غير موجود على القرص.', code: 'OFFER_PDF_MISSING' });
-      }
-      res.setHeader('Content-Type', 'application/pdf');
-      res.setHeader('Content-Disposition', `inline; filename="${rows[0].offer_ref}.pdf"`);
-      res.setHeader('X-Content-SHA256', rows[0].pdf_sha256 || '');
-      fs.createReadStream(full).pipe(res);
+      await logAudit({
+        actor: req.user.full_name,
+        actorRole: req.user.role,
+        action: 'OFFER_PDF_DOWNLOADED',
+        entityType: 'job_offer',
+        entityId: id,
+        metadata: { offer_ref: rows[0].offer_ref },
+        ipAddress: req.ip
+      }).catch(() => {});
+      return streamStoredPdf(res, rows[0]);
     } catch (err) {
       res.status(500).json({ error: err.message, code: 'OFFER_PDF_FAILED' });
     }
@@ -562,6 +640,32 @@ function createOfferRoutes({
     );
     return rows[0] || null;
   }
+
+  // ---------------------------------------------------------------------------
+  // 6-ب) تنزيل PDF بتوكن العرض — للمرشح نفسه فقط.
+  //      التوكن 256-بت ويُطابق بصمة مخزَّنة، فلا يكشف عرض غيره.
+  //      لا يكشف المسار الداخلي ولا يسمح بالوصول عبر /uploads/offers/*.
+  // ---------------------------------------------------------------------------
+  router.get('/public/offers/:ot/pdf', async (req, res) => {
+    try {
+      const offer = await loadByToken(req.params.ot);
+      if (!offer) {
+        return res.status(404).json({ error: 'رابط العرض غير صالح.', code: 'OFFER_TOKEN_INVALID' });
+      }
+      await logAudit({
+        actor: offer.full_name,
+        actorRole: 'candidate',
+        action: 'OFFER_PDF_DOWNLOADED_BY_CANDIDATE',
+        entityType: 'job_offer',
+        entityId: offer.id,
+        metadata: { offer_ref: offer.offer_ref },
+        ipAddress: req.ip
+      }).catch(() => {});
+      return streamStoredPdf(res, offer);
+    } catch (err) {
+      res.status(500).json({ error: err.message, code: 'OFFER_PDF_FAILED' });
+    }
+  });
 
   router.get('/public/offers/:ot', async (req, res) => {
     try {
@@ -689,9 +793,7 @@ function createOfferRoutes({
           "UPDATE applications SET status='hired', updated_at=NOW() WHERE id=$1",
           [offer.application_id]
         );
-        await outbox.enqueueEvent(
-          (sql, params) => client.query(sql, params),
-          {
+        await safeEnqueueEvent(client, {
             eventType: 'offer.accepted',
             aggregateType: 'job_offer',
             aggregateId: String(row.id),
@@ -710,8 +812,7 @@ function createOfferRoutes({
               application_status: 'hired'
             },
             idempotencyKey: `offer.accepted:${offer.offer_ref}`
-          }
-        );
+          });
         await client.query('COMMIT');
 
         await logAudit({
@@ -744,9 +845,7 @@ function createOfferRoutes({
         "UPDATE applications SET status='offer_declined', updated_at=NOW() WHERE id=$1",
         [offer.application_id]
       );
-      await outbox.enqueueEvent(
-        (sql, params) => client.query(sql, params),
-        {
+      await safeEnqueueEvent(client, {
           eventType: 'offer.declined',
           aggregateType: 'job_offer',
           aggregateId: String(row.id),
@@ -759,8 +858,7 @@ function createOfferRoutes({
             offer_status: 'declined'
           },
           idempotencyKey: `offer.declined:${offer.offer_ref}`
-        }
-      );
+        });
       await client.query('COMMIT');
 
       await logAudit({

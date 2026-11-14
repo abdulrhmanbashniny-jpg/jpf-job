@@ -258,6 +258,20 @@ CREATE TABLE IF NOT EXISTS job_offers (
     CONSTRAINT chk_offer_dates CHECK (valid_until >= expected_start_date)
 );
 
+-- تسلسل مستقل لأرقام العروض: تخصيص ذري بلا سباق وبلا حجب للقراءة.
+-- لا يُستخدم MAX(id)+1 لأن عمليتين متزامنتين تحصلان على الرقم نفسه.
+CREATE SEQUENCE IF NOT EXISTS job_offers_ref_seq AS BIGINT START WITH 1 INCREMENT BY 1;
+-- مزامنة مع أي عروض قائمة (سكربت التهيئة يُنشئ من الصفر، لكن هذا يجعل الملف آمن الإعادة)
+SELECT setval(
+  'job_offers_ref_seq',
+  GREATEST(
+    (SELECT COALESCE(MAX(id), 0) FROM job_offers),
+    (SELECT COALESCE(MAX(NULLIF(regexp_replace(offer_ref, '^.*-', ''), '')::bigint), 0)
+       FROM job_offers WHERE offer_ref ~ '^OFR-[0-9]{4}-[0-9]+$')
+  ) + 1,
+  false
+) WHERE (SELECT COALESCE(MAX(id), 0) FROM job_offers) > 0;
+
 CREATE INDEX IF NOT EXISTS idx_job_offers_status ON job_offers (offer_status);
 CREATE INDEX IF NOT EXISTS idx_job_offers_app ON job_offers (application_id);
 CREATE INDEX IF NOT EXISTS idx_job_offers_n8n ON job_offers (n8n_sync_status) WHERE n8n_sync_status IN ('pending','failed');

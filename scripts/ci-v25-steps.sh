@@ -44,4 +44,10 @@ DRILL_PG_ADMIN_URL="${DRILL_PG_ADMIN_URL:-postgresql://postgres:postgres@127.0.0
   node scripts/verify-v25-live.js
 
 echo
+echo "=== [CI v2.5] 3/3 إصلاحات مراجعة R1 (تعارض الإصدار + صلاحية PDF) ==="
+ALLOW_ISOLATED_DRILL=1 \
+DRILL_PG_ADMIN_URL="${DRILL_PG_ADMIN_URL:-postgresql://postgres:postgres@127.0.0.1:5432/postgres}" \
+  node scripts/verify-v25-r1-live.js
+
+echo
 echo "CI_V25_STEPS_PASSED"

@@ -341,6 +341,19 @@ async function ensureDatabaseInitialized() {
         updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
         CONSTRAINT chk_offer_dates CHECK (valid_until >= expected_start_date)
       );
+      -- v2.5-R1: تسلسل ذري لأرقام العروض (بديل MAX(id)+1 غير الآمن للسباق)
+      CREATE SEQUENCE IF NOT EXISTS job_offers_ref_seq AS BIGINT START WITH 1 INCREMENT BY 1;
+      -- مزامنة التسلسل مع أي عروض قائمة مسبقاً حتى لا يتكرر رقم عرض
+      -- (آمن للتنفيذ المتكرر: لا يُنقص أبداً، ويرفع فقط عند الحاجة)
+      SELECT setval(
+        'job_offers_ref_seq',
+        GREATEST(
+          (SELECT COALESCE(MAX(id), 0) FROM job_offers),
+          (SELECT COALESCE(MAX(NULLIF(regexp_replace(offer_ref, '^.*-', ''), '')::bigint), 0)
+             FROM job_offers WHERE offer_ref ~ '^OFR-[0-9]{4}-[0-9]+$')
+        ) + 1,
+        false
+      ) WHERE (SELECT COALESCE(MAX(id), 0) FROM job_offers) > 0;
       CREATE INDEX IF NOT EXISTS idx_job_offers_status ON job_offers (offer_status);
       CREATE INDEX IF NOT EXISTS idx_job_offers_app ON job_offers (application_id);
       CREATE INDEX IF NOT EXISTS idx_job_offers_n8n ON job_offers (n8n_sync_status)

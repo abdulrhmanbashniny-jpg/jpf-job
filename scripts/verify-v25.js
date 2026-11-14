@@ -340,9 +340,17 @@ async function main() {
     const listBlock = src.split("router.get('/offers',")[1].split('router.get(')[0];
     assert.ok(!/\boffer_token\b/.test(listBlock), 'قائمة العروض تكشف التوكن');
     assert.ok(!/pdf_stored_path: r\.pdf_stored_path/.test(listBlock), 'قائمة العروض تكشف المسار الداخلي');
-    // مسار PDF محصور بمجلد العروض
+    // مسار PDF محصور بمجلد العروض — عبر باث مشترك واحد فقط (v2.5-R1)
     assert.ok(src.includes('PATH_NOT_ALLOWED'), 'لا حماية من الخروج من مجلد العروض');
-    assert.ok(src.includes('startsWith(path.resolve(ensureOffersDir()))'), 'التحقق من المسار غير محكم');
+    assert.ok(/full\.startsWith\(offersRoot \+ path\.sep\)/.test(src),
+      'التحقق من المسار غير محكم (يجب أن يمنع البادئة المشتركة مثل offers_evil/)');
+    // كل بث للملف يمر عبر المساعد الوحيد streamStoredPdf
+    const streamCalls = (src.match(/streamStoredPdf\(res,/g) || []).length;
+    // تعريف واحد + استدعاءان (موظفي عبر الجلسة، وعام عبر توكن العرض)
+    assert.strictEqual(streamCalls, 3, `تعريف + استدعاءان متوقعان، وجدنا ${streamCalls}`);
+    // ولا اتصال مباشر بمسار دون التحقق
+    assert.ok(!/fs\.createReadStream\(full\)/.test(src.replace(/return fs\.createReadStream\(full\)\.pipe\(res\);/, '')),
+      'بث ملف دون المرور بالمساعد المحمي');
     // لا كلمة مرور/سر في أي استجابة
     for (const bad of ['password_hash', 'N8N_WEBHOOK_SECRET:', 'JITSI_JWT_SECRET:']) {
       assert.ok(!src.includes(bad), `تسريب محتمل: ${bad}`);

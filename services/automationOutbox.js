@@ -30,9 +30,50 @@ function isDeliveryEnabled(env = process.env) {
   return String(env.N8N_WEBHOOK_ENABLED || '').toLowerCase() === DEFAULTS.enabledWhenEnv;
 }
 
+/**
+ * هل الاسم يشير إلى الجهاز نفسه أو شبكة داخلية؟
+ * القاعدة: n8n خدمة خارجية يجب أن تكون على شبكة حقيقية. أي عنوان يُوجَّه
+ * إلى الجهاز المحلي أو إلى نطاق خاص/رابط محلي يُرفض.
+ */
 function isLoopbackHostname(hostname) {
-  const h = String(hostname || '').toLowerCase();
-  return h === 'localhost' || h === '127.0.0.1' || h === '::1' || h === '[::1]';
+  const h = String(hostname || '').toLowerCase().replace(/^\[|\]$/g, '');
+  if (!h) return true;
+  // أسماء محلية صريحة
+  if (h === 'localhost' || h.endsWith('.localhost')) return true;
+  // IPv6: ::1 وأي عنوان loopback آخر (::، 0:0:0:0:0:0:0:1 …)
+  if (h === '::' || h === '::1' || /^0*(:0*)*:0*1$/.test(h)) return true;
+  // IPv4 mapped في IPv6  (::ffff:127.0.0.1 أو ::ffff:7f00:1)
+  const mapped = /^::ffff:(.+)$/.exec(h);
+  if (mapped) {
+    const inner = mapped[1];
+    if (inner.includes('.')) return isLoopbackHostname(inner);
+    // صيغة سداسية عشرية: aabb:ccdd
+    const hexPair = /^([0-9a-f]{1,4}):([0-9a-f]{1,4})$/.exec(inner);
+    if (hexPair) {
+      const hi = parseInt(hexPair[1], 16);
+      const lo = parseInt(hexPair[2], 16);
+      const ip = `${(hi >> 8) & 255}.${hi & 255}.${(lo >> 8) & 255}.${lo & 255}`;
+      return isLoopbackHostname(ip);
+    }
+    return true; // صيغة غير مفهومة ⇒ نرفضها احتياطاً
+  }
+  // IPv4: كامل نطاق 127.0.0.0/8 لا 127.0.0.1 فقط
+  const v4 = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(h);
+  if (v4) {
+    const [a, b] = [Number(v4[1]), Number(v4[2])];
+    if (a === 127) return true;              // loopback كامل
+    if (a === 0) return true;                // 0.0.0.0/8
+    if (a === 169 && b === 254) return true; // link-local
+    if (a === 10) return true;               // RFC1918
+    if (a === 192 && b === 168) return true; // RFC1918
+    if (a === 172 && b >= 16 && b <= 31) return true; // RFC1918
+    if (a === 100 && b >= 64 && b <= 127) return true; // CGNAT
+    if (a >= 224) return true;               // multicast / reserved
+    return false;
+  }
+  // نطاقات محلية/رابط محلي بأسماء
+  if (h.endsWith('.local') || h.endsWith('.internal') || h.endsWith('.home.arpa')) return true;
+  return false;
 }
 
 /**
