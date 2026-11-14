@@ -33,15 +33,21 @@
   ],
   "license": "MIT",
   "dependencies": {
+    "@pdf-lib/fontkit": "^1.1.1",
+    "arabic-reshaper": "^1.1.0",
+    "bidi-js": "^1.0.3",
     "compression": "^1.7.5",
     "dotenv": "^16.4.7",
     "express": "^4.21.2",
     "express-rate-limit": "^7.5.0",
     "multer": "^2.5.0",
+    "pdf-lib": "^1.17.1",
     "pg": "^8.13.3",
     "qrcode": "^1.5.4"
   },
   "devDependencies": {
+    "@napi-rs/canvas": "^1.1.1",
+    "pdfjs-dist": "^4.0.379",
     "playwright": "^1.65.0"
   }
 }

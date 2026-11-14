@@ -1,0 +1,291 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>إصدار عرض وظيفي | رُواء للتوظيف الذكي</title>
+  <link rel="stylesheet" href="css/design-system.css" />
+  <style>
+    .offer-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; align-items: start; }
+    .money-row { display: flex; justify-content: space-between; font-size: 13px; padding: 7px 0; border-bottom: 1px dashed #EDEFEF; }
+    .money-total { font-weight: 800; color: #1F6B55; font-size: 15px; }
+    .preview-frame { width: 100%; height: 640px; border: 1.5px solid var(--border-color); border-radius: 14px; background: #fff; }
+    .issued-box { background: #EAF3EF; border: 1.5px solid rgba(31,107,85,0.35); border-radius: 14px; padding: 16px; }
+    @media (max-width: 980px) { .offer-grid { grid-template-columns: 1fr; } }
+  </style>
+</head>
+<body>
+  <div class="admin-shell">
+    <div id="admin-sidebar-mount"></div>
+    <main class="admin-main">
+      <div class="admin-topbar">
+        <div>
+          <h1 class="page-title">إصدار عرض وظيفي رسمي</h1>
+          <p class="page-subtitle">تعبئة البيانات المالية والإدارية ← معاينة ← إصدار PDF عربي موقّع ببصمة SHA-256. لا يُرسل أي شيء تلقائياً.</p>
+        </div>
+        <a href="Compare.dc.html" class="btn btn-outline">↩︎ رجوع للمقارنة</a>
+      </div>
+
+      <div id="access-denied" style="display:none;" class="card">
+        <strong>⛔ لا تملك صلاحية إصدار العروض الوظيفية.</strong>
+        <p class="pill-note" style="margin-top:8px;">إصدار العروض متاح لمدير النظام ومنسق الموارد البشرية فقط.</p>
+      </div>
+
+      <div id="issuer" style="display:none;">
+        <div class="offer-grid">
+          <!-- نموذج التعبئة -->
+          <section class="card">
+            <strong style="font-size:15px;">📝 بيانات العرض</strong>
+            <div id="candidate-summary" style="margin-top:10px;font-size:13px;line-height:1.9;"></div>
+
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:12px;">
+              <div class="form-group">
+                <label class="form-label">الراتب الأساسي *</label>
+                <input type="number" class="form-input" id="basic_salary" min="0" step="0.01" value="0" />
+              </div>
+              <div class="form-group">
+                <label class="form-label">بدل السكن</label>
+                <input type="number" class="form-input" id="housing_allowance" min="0" step="0.01" value="0" />
+              </div>
+              <div class="form-group">
+                <label class="form-label">بدل النقل</label>
+                <input type="number" class="form-input" id="transport_allowance" min="0" step="0.01" value="0" />
+              </div>
+              <div class="form-group">
+                <label class="form-label">بدلات أخرى</label>
+                <input type="number" class="form-input" id="other_allowances" min="0" step="0.01" value="0" />
+              </div>
+              <div class="form-group">
+                <label class="form-label">مدة التجربة (يوم)</label>
+                <input type="number" class="form-input" id="probation_days" min="0" max="365" value="90" />
+              </div>
+              <div class="form-group">
+                <label class="form-label">الإجازة السنوية (يوم)</label>
+                <input type="number" class="form-input" id="annual_leave_days" min="0" max="60" value="21" />
+              </div>
+              <div class="form-group">
+                <label class="form-label">تاريخ المباشرة *</label>
+                <input type="date" class="form-input" id="expected_start_date" />
+              </div>
+              <div class="form-group">
+                <label class="form-label">صلاحية العرض (يوم)</label>
+                <input type="number" class="form-input" id="validity_days" min="1" max="90" value="14" />
+              </div>
+            </div>
+
+            <div class="form-group" style="margin-top:6px;">
+              <label class="form-label">شروط خاصة (اختياري)</label>
+              <textarea class="form-textarea" id="special_terms" style="min-height:70px;" placeholder="مثال: العمل عن بُعد يومان أسبوعياً بعد اجتياز التجربة."></textarea>
+            </div>
+
+            <div style="background:#F7F8F8;border-radius:12px;padding:12px;margin-top:10px;">
+              <div class="money-row"><span>الراتب الأساسي</span><b id="sum-basic" class="mono">0.00</b></div>
+              <div class="money-row"><span>بدل السكن</span><b id="sum-housing" class="mono">0.00</b></div>
+              <div class="money-row"><span>بدل النقل</span><b id="sum-transport" class="mono">0.00</b></div>
+              <div class="money-row"><span>بدلات أخرى</span><b id="sum-other" class="mono">0.00</b></div>
+              <div class="money-row" style="border-bottom:none;"><span class="money-total">الإجمالي الشهري</span><b id="sum-total" class="money-total mono">0.00</b></div>
+            </div>
+
+            <button type="button" id="btn-issue" class="btn btn-olive" style="width:100%;margin-top:14px;">📄 إصدار العرض وتوليد PDF</button>
+            <p class="pill-note" style="margin-top:8px;" id="issue-hint"></p>
+          </section>
+
+          <!-- المعاينة -->
+          <section class="card">
+            <strong style="font-size:15px;">👁️ معاينة الوثيقة</strong>
+            <iframe id="preview" class="preview-frame" style="margin-top:10px;" data-testid="offer-preview"></iframe>
+            <p class="pill-note" style="margin-top:8px;">المعاينة تُحدَّث أثناء الكتابة. ملف الـ PDF النهائي يُولَّد على الخادم بخط عربي مضمَّن.</p>
+          </section>
+        </div>
+
+        <!-- نتيجة الإصدار -->
+        <section id="issued-panel" class="issued-box" style="display:none;margin-top:18px;">
+          <strong style="font-size:15px;">✅ تم إصدار العرض</strong>
+          <div id="issued-details" style="margin-top:10px;font-size:13px;line-height:2;"></div>
+          <div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:12px;">
+            <a id="pdf-link" class="btn btn-olive" href="#" target="_blank" rel="noopener">📥 فتح ملف PDF</a>
+            <input id="candidate-url" class="form-input mono" style="flex:1;min-width:260px;font-size:12px;" readonly />
+            <button type="button" id="btn-copy-url" class="btn btn-outline">📋 نسخ رابط المرشح</button>
+            <a id="wa-link" class="btn btn-outline" href="#" target="_blank" rel="noopener">💬 واتساب يدوي (wa.me)</a>
+          </div>
+          <p class="pill-note" style="margin-top:10px;">⚠️ لم يُرسل شيء تلقائياً. سلّم الرابط للمرشح يدوياً — الإرسال الحقيقي عبر واتساب معطّل (Dry-Run).</p>
+        </section>
+      </div>
+    </main>
+  </div>
+
+  <script src="js/common.js"></script>
+  <script>
+    SmartHR.renderAdminSidebar('ranking');
+
+    const params = new URLSearchParams(window.location.search);
+    const applicationId = parseInt(params.get('application_id') || '', 10);
+    let template = null;
+    let candidate = null;
+
+    const money = (v) => (Number(v) || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    const val = (id) => Number(document.getElementById(id).value) || 0;
+
+    function updateTotals() {
+      document.getElementById('sum-basic').textContent = money(val('basic_salary'));
+      document.getElementById('sum-housing').textContent = money(val('housing_allowance'));
+      document.getElementById('sum-transport').textContent = money(val('transport_allowance'));
+      document.getElementById('sum-other').textContent = money(val('other_allowances'));
+      document.getElementById('sum-total').textContent = money(
+        val('basic_salary') + val('housing_allowance') + val('transport_allowance') + val('other_allowances')
+      );
+      renderPreview();
+    }
+
+    /** معاينة محلية بنفس شكل قالب الخادم (بلا استدعاء شبكي) */
+    function renderPreview() {
+      if (!candidate) return;
+      const total = val('basic_salary') + val('housing_allowance') + val('transport_allowance') + val('other_allowances');
+      const html = `<!DOCTYPE html><html lang="ar" dir="rtl"><head><meta charset="utf-8">
+        <style>
+          body{font-family:"Amiri",serif;padding:16px;color:#161B1C;font-size:12px}
+          h1{text-align:center;font-size:19px;margin:6px 0}
+          .meta{text-align:center;color:#6B7173;font-size:10px}
+          table{width:100%;border-collapse:collapse;margin-top:10px}
+          td{padding:5px 3px;border-bottom:1px solid #E3E6E7;font-size:11px}
+          td.v{text-align:left}
+          .tot{font-weight:800;color:#1F6B55}
+        </style></head><body>
+        <div>${SmartHR.escapeHtml(template ? template.company_name : '')}</div>
+        <div class="meta">${SmartHR.escapeHtml(template ? template.company_address : '')}</div>
+        <h1>عرض وظيفي</h1>
+        <div class="meta">مسودة معاينة — لم تصدر بعد</div>
+        <table>
+          <tr><td>الاسم</td><td class="v">${SmartHR.escapeHtml(candidate.full_name || '')}</td></tr>
+          <tr><td>المسمى الوظيفي</td><td class="v">${SmartHR.escapeHtml(candidate.job_title || '')}</td></tr>
+          <tr><td>القسم</td><td class="v">${SmartHR.escapeHtml(candidate.department || '')}</td></tr>
+          <tr><td>تاريخ المباشرة</td><td class="v">${SmartHR.escapeHtml(document.getElementById('expected_start_date').value || '—')}</td></tr>
+          <tr><td>الراتب الأساسي</td><td class="v">${money(val('basic_salary'))}</td></tr>
+          <tr><td>بدل السكن</td><td class="v">${money(val('housing_allowance'))}</td></tr>
+          <tr><td>بدل النقل</td><td class="v">${money(val('transport_allowance'))}</td></tr>
+          <tr><td>بدلات أخرى</td><td class="v">${money(val('other_allowances'))}</td></tr>
+          <tr class="tot"><td>الإجمالي الشهري</td><td class="v">${money(total)}</td></tr>
+          <tr><td>مدة التجربة</td><td class="v">${val('probation_days')} يوماً</td></tr>
+          <tr><td>الإجازة السنوية</td><td class="v">${val('annual_leave_days')} يوماً</td></tr>
+        </table>
+        <p>${SmartHR.escapeHtml(template ? template.intro_text : '')}</p>
+        </body></html>`;
+      document.getElementById('preview').srcdoc = html;
+    }
+
+    async function loadCandidate() {
+      try {
+        const data = await SmartHR.apiFetch('/api/ranking');
+        const rows = data.ranked_candidates || [];
+        candidate = rows.find((r) => Number(r.id ?? r.application_id) === applicationId) || null;
+        if (!candidate) {
+          SmartHR.showToast('لم يُعثر على المرشح المطلوب.', 'error');
+          return;
+        }
+        document.getElementById('candidate-summary').innerHTML = `
+          <div><strong>${SmartHR.escapeHtml(candidate.full_name || '')}</strong></div>
+          <div class="mono" style="font-size:12px;">${SmartHR.escapeHtml(candidate.reference_no || '')}</div>
+          <div style="color:var(--text-muted);">${SmartHR.escapeHtml(candidate.job_title || '')} — ${SmartHR.escapeHtml(candidate.department || '')}</div>`;
+        renderPreview();
+      } catch (err) {
+        SmartHR.showToast(err.message, 'error');
+      }
+    }
+
+    async function issue() {
+      const startDate = document.getElementById('expected_start_date').value;
+      if (!startDate) {
+        SmartHR.showToast('أدخل تاريخ المباشرة.', 'error');
+        return;
+      }
+      if (val('basic_salary') <= 0) {
+        SmartHR.showToast('الراتب الأساسي يجب أن يكون أكبر من صفر.', 'error');
+        return;
+      }
+      const btn = document.getElementById('btn-issue');
+      btn.disabled = true;
+      btn.textContent = '... جاري الإصدار';
+      try {
+        const res = await SmartHR.apiFetch('/api/offers', {
+          method: 'POST',
+          body: JSON.stringify({
+            application_id: applicationId,
+            basic_salary: val('basic_salary'),
+            housing_allowance: val('housing_allowance'),
+            transport_allowance: val('transport_allowance'),
+            other_allowances: val('other_allowances'),
+            probation_days: val('probation_days'),
+            annual_leave_days: val('annual_leave_days'),
+            expected_start_date: startDate,
+            validity_days: val('validity_days'),
+            special_terms: document.getElementById('special_terms').value
+          })
+        });
+        const offer = res.offer;
+        const panel = document.getElementById('issued-panel');
+        panel.style.display = '';
+        document.getElementById('issued-details').innerHTML = `
+          <div>رقم العرض: <strong class="mono">${SmartHR.escapeHtml(offer.offer_ref)}</strong></div>
+          <div>الإجمالي الشهري: <strong>${money(offer.total_monthly_salary)}</strong> ريال</div>
+          <div>صلاحية العرض حتى: <span class="mono">${SmartHR.escapeHtml(offer.valid_until)}</span></div>
+          <div>بصمة PDF (SHA-256): <span class="mono" style="font-size:11px;">${SmartHR.escapeHtml(offer.pdf_sha256)}</span></div>
+          <div>حجم الملف: ${offer.pdf_bytes} بايت</div>`;
+        document.getElementById('pdf-link').href = `/api/offers/${offer.id}/pdf`;
+        const fullUrl = `${window.location.origin}${offer.candidate_url}`;
+        document.getElementById('candidate-url').value = fullUrl;
+        document.getElementById('wa-link').href =
+          `https://wa.me/?text=${encodeURIComponent(`عرض وظيفي رسمي رقم ${offer.offer_ref}: ${fullUrl}`)}`;
+        SmartHR.showToast('✓ تم إصدار العرض وتوليد ملف PDF.', 'success');
+      } catch (err) {
+        SmartHR.showToast(err.message, 'error');
+      } finally {
+        btn.disabled = false;
+        btn.textContent = '📄 إصدار العرض وتوليد PDF';
+      }
+    }
+
+    document.getElementById('btn-copy-url').addEventListener('click', async () => {
+      const input = document.getElementById('candidate-url');
+      try {
+        await navigator.clipboard.writeText(input.value);
+        SmartHR.showToast('نُسخ الرابط.', 'success');
+      } catch (_e) {
+        input.select();
+        SmartHR.showToast('انسخ يدوياً (Ctrl+C).', 'info');
+      }
+    });
+
+    ['basic_salary', 'housing_allowance', 'transport_allowance', 'other_allowances',
+     'probation_days', 'annual_leave_days', 'expected_start_date', 'validity_days']
+      .forEach((id) => {
+        const el = document.getElementById(id);
+        el.addEventListener('input', updateTotals);
+        el.addEventListener('change', updateTotals);
+      });
+    document.getElementById('btn-issue').addEventListener('click', issue);
+
+    (async function boot() {
+      try {
+        const me = await SmartHR.apiFetch('/api/auth/me');
+        const role = me && me.user && me.user.role;
+        if (!['super_admin', 'hr_coordinator'].includes(role)) {
+          document.getElementById('access-denied').style.display = '';
+          return;
+        }
+        const t = await SmartHR.apiFetch('/api/offers/template');
+        template = t.template;
+        document.getElementById('probation_days').value = template.default_probation_days || 90;
+        document.getElementById('annual_leave_days').value = template.default_annual_leave_days || 21;
+        document.getElementById('validity_days').value = template.validity_days || 14;
+        document.getElementById('issue-hint').textContent =
+          `القالب: ${template.template_version} · ${template.company_name}`;
+        document.getElementById('issuer').style.display = '';
+        if (Number.isInteger(applicationId)) await loadCandidate();
+        updateTotals();
+      } catch (err) {
+        SmartHR.showToast(err.message, 'error');
+      }
+    })();
+  </script>
+</body>
+</html>
