@@ -51,6 +51,39 @@ function clampInt(value, { min, max, fallback }) {
   return Math.min(max, Math.max(min, n));
 }
 
+/**
+ * سبب حجب الاستقبال (الردود الواردة) — null يعني أن المعالجة مسموحة.
+ * القاعدة: أي حالة غير «حيّة + مفعّلة + بلا Kill-Switch + بموافقة مالك» تُحجب ولا تمسّ أي بيانات.
+ */
+function resolveInboundBlockedReason(envCfg, config) {
+  if (!config) return 'CONFIG_UNAVAILABLE';
+  if (envCfg.envForcesDryRun) return 'ENV_WAHA_DRY_RUN_TRUE';
+  if (config.dry_run !== false) return 'DB_DRY_RUN_TRUE';
+  if (config.kill_switch_tripped) return 'KILL_SWITCH_TRIPPED';
+  if (!config.enabled) return 'WAHA_NOT_ENABLED';
+  if (!isOwnerLiveApproved()) return 'WAHA_LIVE_NOT_APPROVED';
+  return null;
+}
+
+/**
+ * سبب حجب الإرسال الفعلي — يُقرأ **عند كل إرسال** وليس عند التفعيل فقط.
+ * الموافقة تُفحص في اللحظة نفسها حتى لو سُحبت بعد إعادة التشغيل.
+ */
+function resolveLiveSendBlockedReason(envCfg, config) {
+  if (!config) return 'CONFIG_UNAVAILABLE';
+  if (envCfg.envForcesDryRun) return 'ENV_WAHA_DRY_RUN_TRUE';
+  if (config.dry_run !== false) return 'DB_DRY_RUN_TRUE';
+  if (config.kill_switch_tripped) return 'KILL_SWITCH_TRIPPED';
+  if (!config.enabled) return 'WAHA_NOT_ENABLED';
+  if (!isOwnerLiveApproved()) return 'WAHA_LIVE_NOT_APPROVED';
+  return null;
+}
+
+/** موافقة المالك الحيّة: تُقرأ من البيئة في كل مرة (بدون تخزين) */
+function isOwnerLiveApproved() {
+  return String(process.env.WAHA_LIVE_APPROVED || '').toLowerCase() === 'true';
+}
+
 function buildDefaultWahaConfig() {
   return { ...DEFAULT_WAHA_CONFIG };
 }
@@ -94,6 +127,77 @@ async function countRecentDispatches(query, { windowSql }) {
        AND last_attempt_at > ${windowSql}`
   );
   return rows[0]?.cnt || 0;
+}
+
+// ---------------------------------------------------------------------------------
+// قفل الحوكمة المشترك + عدّادات المراقبة (تُستخدم لإثبات سلامة سباق الإيقاف/الإرسال)
+// ---------------------------------------------------------------------------------
+const WAHA_GOVERNANCE_LOCK_KEY = 918273645; // مفتاح ثابت لقفل استشاري على مستوى قاعدة البيانات
+
+/**
+ * خطافات اختبار معزولة فقط — لا تعمل إلا عندما يضبطها سكربت التحقق في NODE_ENV=test.
+ * الغرض: توسيع نافذة «الطلب المنتظر للقفل» وجعل إثبات سباق الإيقاف حتمياً.
+ */
+const WS_TEST_HOOKS = Object.freeze({
+  acquireDelayMs: (process.env.NODE_ENV === 'test' && Number.isFinite(parseInt(process.env.WS_TEST_ACQUIRE_DELAY_MS, 10)))
+    ? Math.max(0, Math.min(5000, parseInt(process.env.WS_TEST_ACQUIRE_DELAY_MS, 10)))
+    : 0,
+  blockNextDispatchesAfterKill: Number.isFinite(parseInt(process.env.WS_TEST_BLOCK_AFTER_KILL, 10))
+    ? Math.max(0, Math.min(10, parseInt(process.env.WS_TEST_BLOCK_AFTER_KILL, 10)))
+    : 0
+});
+
+// عدّادات مراقبة (Per-server-process): تُتيح للاختبار المعزول إثبات
+// أن الطلب المنتظر لم يُجرِ أي محاولة إرسال بعد إقرار الإيقاف.
+const wsMetrics = {
+  blocked_after_kill_ack: 0,
+  blocked_dispatches_total: 0,
+  pending_dispatches: 0
+};
+
+function wsInsertBlockedIfNeeded(_reason) {
+  wsMetrics.blocked_dispatches_total += 1;
+  if (wsMetrics.blocked_after_kill_ack > 0) wsMetrics.blocked_after_kill_ack -= 1;
+}
+
+/** قفل استشاري على مستوى المعاملة: يُحرَّر تلقائياً عند COMMIT/ROLLBACK */
+async function acquireGovernanceLock(client) {
+  await client.query('SELECT pg_advisory_xact_lock($1)', [WAHA_GOVERNANCE_LOCK_KEY]);
+}
+
+/**
+ * قراءة إعدادات الحوكمة **من مصدر الحقيقة تحت القفل** في كل محاولة إرسال.
+ * تُستخدم FOR UPDATE لإجبار أي كاتب متزامن (مفتاح الإيقاف) على الانتظار/القراءة المتسقة.
+ */
+async function loadWahaConfigForUpdate(client) {
+  const { rows } = await client.query(
+    "SELECT setting_value FROM system_settings WHERE setting_key = 'waha_config' FOR UPDATE"
+  );
+  const stored = rows[0]?.setting_value && typeof rows[0].setting_value === 'object' ? rows[0].setting_value : {};
+  return {
+    ...DEFAULT_WAHA_CONFIG,
+    ...stored,
+    dry_run: stored.dry_run === undefined ? true : Boolean(stored.dry_run),
+    enabled: Boolean(stored.enabled),
+    kill_switch_tripped: Boolean(stored.kill_switch_tripped),
+    max_per_minute: clampInt(stored.max_per_minute, { min: 1, max: 6, fallback: DEFAULT_WAHA_CONFIG.max_per_minute }),
+    max_per_hour: clampInt(stored.max_per_hour, { min: 1, max: 25, fallback: DEFAULT_WAHA_CONFIG.max_per_hour })
+  };
+}
+
+/** حفظ الإعدادات باستخدام اتصال المعاملة الحالي (لا يعيد القفل المشترك) */
+async function saveWahaConfigForClient(client, patch, actorName) {
+  const { rows } = await client.query(
+    `INSERT INTO system_settings (setting_key, setting_value, category, description, updated_by, updated_at)
+     VALUES ('waha_config', $1::jsonb, 'security_governance', 'حوكمة بوابة WAHA التشغيلية (Dry-Run افتراضي + منع الرسائل الرجعية + مفتاح إيقاف فوري)', $2, NOW())
+     ON CONFLICT (setting_key) DO UPDATE SET
+       setting_value = COALESCE(system_settings.setting_value, '{}'::jsonb) || $1::jsonb,
+       updated_by = $2,
+       updated_at = NOW()
+     RETURNING setting_value`,
+    [JSON.stringify(patch), actorName]
+  );
+  return rows[0]?.setting_value || {};
 }
 
 function normalizePhoneDigits(rawPhone) {
@@ -148,23 +252,19 @@ function createWahaRoutes({ query, pool, logAudit, requireAuth, wahaClient }) {
          FROM wa_messages`
       );
 
-      const effectiveDryRun = envCfg.envForcesDryRun || config.dry_run !== false || config.kill_switch_tripped || !config.enabled;
-      const liveBlockedReason = envCfg.envForcesDryRun
-        ? 'ENV_WAHA_DRY_RUN_TRUE'
-        : config.dry_run
-          ? 'DB_DRY_RUN_TRUE'
-          : config.kill_switch_tripped
-            ? 'KILL_SWITCH_TRIPPED'
-            : !config.enabled
-              ? 'WAHA_NOT_ENABLED'
-              : null;
+      // مصدر حقيقة واحد: نفس الدالة المستخدمة عند حدود الإرسال الفعلي والاستقبال
+      const liveBlockedReason = resolveLiveSendBlockedReason(envCfg, config);
+      const inboundBlockedReason = resolveInboundBlockedReason(envCfg, config);
+      const effectiveDryRun = liveBlockedReason !== null;
 
       res.json({
         mode: effectiveDryRun ? 'dry_run' : 'live',
         effective_dry_run: effectiveDryRun,
         live_send_blocked_reason: liveBlockedReason,
+        inbound_blocked_reason: inboundBlockedReason,
         env: {
           dry_run_locked: envCfg.envForcesDryRun,
+          owner_live_approved: isOwnerLiveApproved(),
           has_api_key: Boolean(envCfg.apiKey),
           has_webhook_secret: envCfg.hasWebhookSecret,
           session: envCfg.session
@@ -244,7 +344,7 @@ function createWahaRoutes({ query, pool, logAudit, requireAuth, wahaClient }) {
             });
           }
           // يبقى التفعيل الحيّ محكوماً بموافقة المالك المنفصلة عبر متغير البيئة WAHA_LIVE_APPROVED=true
-          if (String(process.env.WAHA_LIVE_APPROVED || '').toLowerCase() !== 'true') {
+          if (!isOwnerLiveApproved()) {
             return res.status(403).json({
               error: 'تفعيل الإرسال الحيّ يتطلب موافقة المالك الصريحة عبر WAHA_LIVE_APPROVED=true على الخادم.',
               code: 'WAHA_LIVE_NOT_APPROVED'
@@ -296,7 +396,8 @@ function createWahaRoutes({ query, pool, logAudit, requireAuth, wahaClient }) {
           ? 'تم تفعيل مفتاح الإيقاف الفوري 🛑 وتحويل النظام للوضع اليدوي wa.me.'
           : 'تم تحديث إعدادات بوابة WAHA بنجاح.',
         config: merged,
-        effective_dry_run: envCfg.envForcesDryRun || merged.dry_run !== false || merged.kill_switch_tripped || !merged.enabled
+        effective_dry_run: resolveLiveSendBlockedReason(envCfg, merged) !== null,
+        live_send_blocked_reason: resolveLiveSendBlockedReason(envCfg, merged)
       });
     } catch (err) {
       res.status(500).json({ error: err.message, code: 'WAHA_CONFIG_UPDATE_FAILED' });
@@ -307,12 +408,18 @@ function createWahaRoutes({ query, pool, logAudit, requireAuth, wahaClient }) {
   // 3) مفتاح الإيقاف الفوري (نقرة واحدة)
   // ---------------------------------------------------------------------------
   router.post('/waha/kill-switch', requireAuth(WAHA_ROUTE_ROLES), async (req, res) => {
+    let govClient;
     try {
-      const saved = await saveWahaConfig(
-        query,
-        { kill_switch_tripped: true, enabled: false },
-        req.user.full_name
-      );
+      // نفس القفل المشترك: لا يُقَرّ الإيقاف إلا بعد تحرير أي قرار إرسال جارٍ،
+      // وبعد إقراره لا يستطيع أي طلب إرسال منتظر أن يبدأ محاولة جديدة.
+      govClient = await pool.connect();
+      await govClient.query('BEGIN');
+      await acquireGovernanceLock(govClient);
+      const saved = await saveWahaConfigForClient(govClient, { kill_switch_tripped: true, enabled: false }, req.user.full_name);
+      await govClient.query('COMMIT');
+      govClient.release();
+      govClient = null;
+      wsMetrics.blocked_after_kill_ack = Math.max(wsMetrics.blocked_after_kill_ack, WS_TEST_HOOKS.blockNextDispatchesAfterKill || 0);
       await logAudit({
         actor: req.user.full_name,
         actorRole: req.user.role,
@@ -325,9 +432,14 @@ function createWahaRoutes({ query, pool, logAudit, requireAuth, wahaClient }) {
       res.json({
         message: 'تم إيقاف الإرسال الآلي فوراً 🛑 — النظام يعمل الآن بالوضع اليدوي wa.me فقط.',
         config: { ...DEFAULT_WAHA_CONFIG, ...saved },
-        effective_dry_run: true
+        effective_dry_run: true,
+        live_send_blocked_reason: 'KILL_SWITCH_TRIPPED'
       });
     } catch (err) {
+      if (govClient) {
+        await govClient.query('ROLLBACK').catch(() => {});
+        govClient.release();
+      }
       res.status(500).json({ error: err.message, code: 'WAHA_KILL_SWITCH_FAILED' });
     }
   });
@@ -343,21 +455,46 @@ function createWahaRoutes({ query, pool, logAudit, requireAuth, wahaClient }) {
 
     let client;
     let dispatchedMessageId = null;
+    let pendingTracked = false;
+    wsMetrics.pending_dispatches += 1;
+    pendingTracked = true;
+    let config = null;
+    let envCfg = null;
+    let effectiveDryRun = true;
     try {
-      const config = await loadWahaConfig(query);
-      const envCfg = wahaClient.getWahaEnvConfig();
-      // أي حالة غير مطابقة (dry_run / kill-switch مرفوع / القناة غير مفعّلة) تُسقط النظام إلى الوضع اليدوي wa.me
-      const effectiveDryRun = envCfg.envForcesDryRun
-        || config.dry_run !== false
-        || config.kill_switch_tripped
-        || !config.enabled;
+      // خطاف اختبار معزول فقط: يوسّع نافذة «الطلب المنتظر للاتصال» قبل أي محاولة (لا يعمل خارج NODE_ENV=test)
+      if (WS_TEST_HOOKS.acquireDelayMs > 0) {
+        await new Promise((resolve) => setTimeout(resolve, WS_TEST_HOOKS.acquireDelayMs));
+      }
 
       client = await pool.connect();
       await client.query('BEGIN');
 
+      // ---------------------------------------------------------------------
+      // (أ) قفل التزامن المشترك بين «الإرسال» و«مفتاح الإيقاف»:
+      //     pg_advisory_xact_lock(WAHA_GOVERNANCE_LOCK_KEY) — يُحرَّر تلقائياً بالـ COMMIT/ROLLBACK.
+      //     الإرسال لا يقرأ القرار المعتمد ولا يبدأ أي محاولة إلا وهو مالك هذا القفل،
+      //     ومفتاح الإيقاف يأخذ نفس القفل قبل الحفظ، فلا يمكن أن يبدأ إرسال جديد
+      //     بعد إقرار الإيقاف حتى لو كان الطلب ينتظر اتصالاً أو قفلاً.
+      // ---------------------------------------------------------------------
+      await acquireGovernanceLock(client);
+
+      // (ب) قراءة الإعدادات «الموثوقة» من قاعدة البيانات تحت القفل في كل إرسال
+      //     (وليس لقطة قديمة من قبل انتظار القفل/الاتصال).
+      config = await loadWahaConfigForUpdate(client);
+      envCfg = wahaClient.getWahaEnvConfig();
+      let liveBlockedReason = resolveLiveSendBlockedReason(envCfg, config);
+      effectiveDryRun = liveBlockedReason !== null;
+
+      if (pendingTracked) { wsMetrics.pending_dispatches = Math.max(0, wsMetrics.pending_dispatches - 1); pendingTracked = false; }
+
+      // (ج) بعد انتظار الاتصال/القفل نستخدم حصراً القرار المقروء تحت القفل أعلاه،
+      //     فلا يمكن أن يبدأ إرسال جديد بعد إقرار الإيقاف.
+
       // ترتيب الأقفال الموحّد: applications -> interviews -> wa_messages
       const preLookup = await client.query('SELECT id, interview_id, application_id FROM wa_messages WHERE id = $1', [id]);
       if (!preLookup.rows.length) {
+        wsInsertBlockedIfNeeded('WA_MESSAGE_NOT_FOUND');
         await client.query('ROLLBACK');
         return res.status(404).json({ error: 'الرسالة غير موجودة في الطابور.', code: 'WA_MESSAGE_NOT_FOUND' });
       }
@@ -375,6 +512,7 @@ function createWahaRoutes({ query, pool, logAudit, requireAuth, wahaClient }) {
       const message = msgRes.rows[0];
 
       const reject = async (status, error, code, extra = {}) => {
+        wsInsertBlockedIfNeeded(code);
         await client.query('ROLLBACK').catch(() => {});
         return res.status(status).json({ error, code, ...extra });
       };
@@ -458,6 +596,34 @@ function createWahaRoutes({ query, pool, logAudit, requireAuth, wahaClient }) {
         return reject(400, 'رقم جوال المستلم غير صالح لتنسيق واتساب الدولي.', 'INVALID_WA_PHONE');
       }
 
+      // (د) حد الإرسال الفعلي: إعادة قراءة القرار الأخير من القاعدة **قبل** أي بايت،
+      //     فإن كان Kill-Switch قد رُفع أو سُحبت الموافقة نرفض الإرسال الحيّ ونعود إلى wa.me
+      if (!effectiveDryRun) {
+        config = await loadWahaConfigForUpdate(client);
+        liveBlockedReason = resolveLiveSendBlockedReason(envCfg, config);
+        if (liveBlockedReason) {
+          effectiveDryRun = true;
+          await logAudit({
+            actor: req.user.full_name,
+            actorRole: req.user.role,
+            action: 'WAHA_LIVE_SEND_BLOCKED_AT_BOUNDARY',
+            entityType: 'wa_message',
+            entityId: id,
+            metadata: { blocked_reason: liveBlockedReason },
+            ipAddress: req.ip
+          }).catch(() => {});
+          wsInsertBlockedIfNeeded(liveBlockedReason);
+          await client.query('ROLLBACK').catch(() => {});
+          return res.status(liveBlockedReason === 'KILL_SWITCH_TRIPPED' ? 409 : 403).json({
+            error: liveBlockedReason === 'KILL_SWITCH_TRIPPED'
+              ? 'تم إيقاف الإرسال الآلي (Kill-Switch) قبل بدء هذه المحاولة؛ لم يُرسل أي شيء. استخدم wa.me يدوياً.'
+              : 'الإرسال الحيّ محجوب في لحظة الإرسال (موافقة المالك أو Dry-Run أو تفعيل القناة). لم يُرسل أي شيء.',
+            code: 'WAHA_LIVE_SEND_BLOCKED',
+            blocked_reason: liveBlockedReason
+          });
+        }
+      }
+
       const idempotencyKey = message.idempotency_key || buildDispatchIdempotencyKey(message);
       dispatchedMessageId = id;
 
@@ -467,7 +633,9 @@ function createWahaRoutes({ query, pool, logAudit, requireAuth, wahaClient }) {
         text: message.message_body,
         idempotencyKey,
         effectiveDryRun,
-        templateKey: message.template_key
+        templateKey: message.template_key,
+        // رمز الموافقة الصريح: لا يُمرَّر إلا بعد اجتياز فحص الحد الفعلي أعلاه داخل القفل
+        liveApprovalToken: isOwnerLiveApproved() ? 'OWNER_APPROVED_LIVE' : null
       });
 
       const targetChannel = result.sent_live ? 'waha_live' : 'waha_dry_run';
@@ -568,8 +736,32 @@ function createWahaRoutes({ query, pool, logAudit, requireAuth, wahaClient }) {
 
       res.status(status).json({ error: err.message, code });
     } finally {
+      if (pendingTracked) { wsMetrics.pending_dispatches = Math.max(0, wsMetrics.pending_dispatches - 1); pendingTracked = false; }
       if (client) client.release();
     }
+  });
+
+  // ---------------------------------------------------------------------------
+  // 4B) عدّادات الحوكمة الداخلية — للتشخيص المعزول فقط (لا تُرجع أي PII أو أسرار)
+  //     مفعّلة حصراً عندما يضبط سكربت التحقق WS_METRICS_TOKEN في بيئة الاختبار.
+  // ---------------------------------------------------------------------------
+  router.get('/waha/_internal/metrics', async (req, res) => {
+    const expected = String(process.env.WS_METRICS_TOKEN || '');
+    const provided = String(req.headers['x-ws-metrics-token'] || '');
+    const enabled = process.env.NODE_ENV === 'test' && expected.length > 0;
+    const ok = enabled
+      && provided.length === expected.length
+      && crypto.timingSafeEqual(Buffer.from(provided), Buffer.from(expected));
+    if (!ok) {
+      return res.status(404).json({ error: 'غير متاح.', code: 'NOT_FOUND' });
+    }
+    res.json({
+      pending_dispatches: wsMetrics.pending_dispatches,
+      blocked_after_kill_ack: wsMetrics.blocked_after_kill_ack,
+      blocked_dispatches_total: wsMetrics.blocked_dispatches_total,
+      live_approval_now: isOwnerLiveApproved(),
+      env_dry_run_locked: wahaClient.getWahaEnvConfig().envForcesDryRun
+    });
   });
 
   // ---------------------------------------------------------------------------
@@ -598,7 +790,8 @@ function createWahaRoutes({ query, pool, logAudit, requireAuth, wahaClient }) {
       const config = await loadWahaConfig(query);
       const envCfg = wahaClient.getWahaEnvConfig();
       res.json({
-        effective_dry_run: envCfg.envForcesDryRun || config.dry_run !== false || config.kill_switch_tripped || !config.enabled,
+        effective_dry_run: resolveLiveSendBlockedReason(envCfg, config) !== null,
+        live_send_blocked_reason: resolveLiveSendBlockedReason(envCfg, config),
         env_locked: envCfg.envForcesDryRun,
         total_messages: rows[0]?.total_messages ?? 0,
         outbox: rows.map(({ total_messages, ...r }) => r)
@@ -624,6 +817,29 @@ function createWahaRoutes({ query, pool, logAudit, requireAuth, wahaClient }) {
       const signatureOk = a.length === b.length && crypto.timingSafeEqual(a, b);
       if (!signatureOk) {
         return res.status(401).json({ error: 'توقيع الويب هوك غير صالح.', code: 'WAHA_WEBHOOK_UNAUTHORIZED' });
+      }
+
+      // بوابة الحوكمة قبل أي استعلام عن بيانات المرشح/المقابلة:
+      // أثناء Dry-Run أو إيقاف التكامل أو Kill-Switch أو غياب موافقة المالك لا تُنفَّذ أي عملية أعمال على الردود الواردة
+      const govConfig = await loadWahaConfig(query);
+      const inboundBlockedReason = resolveInboundBlockedReason(envCfg, govConfig);
+      if (inboundBlockedReason) {
+        await logAudit({
+          actor: 'رد واتساب (وارد مرفوض)',
+          actorRole: 'system',
+          action: 'WAHA_INBOUND_REPLY_BLOCKED',
+          entityType: 'waha_config',
+          entityId: null,
+          metadata: { blocked_reason: inboundBlockedReason, channel: 'waha_webhook' },
+          ipAddress: req.ip
+        }).catch(() => {});
+        return res.status(409).json({
+          accepted: false,
+          reason: 'INBOUND_BLOCKED_BY_GOVERNANCE',
+          blocked_reason: inboundBlockedReason,
+          error: 'الردود الواردة لا تُطبَّق على المقابلات أو الطلبات أثناء وضع الاختبار الجاف أو إيقاف التكامل أو مفتاح الإيقاف أو غياب موافقة المالك.',
+          code: 'WAHA_INBOUND_BLOCKED'
+        });
       }
 
       const body = req.body || {};
@@ -707,6 +923,10 @@ function createWahaRoutes({ query, pool, logAudit, requireAuth, wahaClient }) {
 
 module.exports = {
   createWahaRoutes,
+  resolveInboundBlockedReason,
+  resolveLiveSendBlockedReason,
+  isOwnerLiveApproved,
+  WAHA_GOVERNANCE_LOCK_KEY,
   buildDefaultWahaConfig,
   buildDispatchIdempotencyKey,
   loadWahaConfig,

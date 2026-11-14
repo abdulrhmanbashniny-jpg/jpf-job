@@ -144,7 +144,15 @@ async function probeWahaStatus() {
  * في Dry-Run: لا يخرج أي بايت إلى الشبكة، ويُعاد مظروف توصيفي **بدون نص الرسالة ولا رقم المرشح الكامل**
  * (رقم مقنّع فقط) حتى لا تتسرب بيانات المرشح إلى tabel السجل أو السجلات التشغيلية.
  */
-async function sendOrSimulateWahaText({ recipientPhone, text, idempotencyKey, effectiveDryRun, templateKey }) {
+/**
+ * موافقة المالك الحيّة: تُقرأ من البيئة **في لحظة الإرسال نفسها** (بدون أي تخزين مؤقت).
+ * لا يوجد أي مسار حيّ بدونها، حتى لو كانت كل الإعدادات الأخرى تسمح بذلك.
+ */
+function isOwnerLiveApproved() {
+  return String(process.env.WAHA_LIVE_APPROVED || '').toLowerCase() === 'true';
+}
+
+async function sendOrSimulateWahaText({ recipientPhone, text, idempotencyKey, effectiveDryRun, templateKey, liveApprovalToken }) {
   const env = getWahaEnvConfig();
   const chatId = toWahaChatId(recipientPhone);
   if (!chatId) {
@@ -164,8 +172,13 @@ async function sendOrSimulateWahaText({ recipientPhone, text, idempotencyKey, ef
     anti_ban_jitter_ms: suggestedJitterMs
   };
 
-  // حارس الأمان المزدوج: إذا كان WAHA_DRY_RUN مفروضاً من البيئة أو من قاعدة البيانات، لا يخرج أي طلب إرسال فعلي إطلاقاً
-  if (env.envForcesDryRun || effectiveDryRun) {
+  // حارس الأمان الثلاثي عند حد الإرسال الفعلي نفسه:
+  //  1) قفل البيئة WAHA_DRY_RUN (افتراضي true)
+  //  2) قفل قاعدة البيانات (dry_run / kill_switch / enabled) المُمرَّر من طبقة المسارات تحت القفل الاستشاري
+  //  3) موافقة المالك WAHA_LIVE_APPROVED مقروءة الآن + رمز موافقة صريح من طبقة المسارات
+  // أي إخلال بأحدها يُسقط المحاولة إلى محاكاة جافة (صفر بايت) ولا يرمي خطأ تشغيلياً.
+  const approvalOkNow = isOwnerLiveApproved() && liveApprovalToken === 'OWNER_APPROVED_LIVE';
+  if (env.envForcesDryRun || effectiveDryRun || !approvalOkNow) {
     return {
       mode: 'dry_run',
       sent_live: false,
@@ -173,7 +186,12 @@ async function sendOrSimulateWahaText({ recipientPhone, text, idempotencyKey, ef
       envelope: {
         ...auditEnvelope,
         simulated_at: new Date().toISOString(),
-        zero_network_send: true
+        zero_network_send: true,
+        dry_run_reason: env.envForcesDryRun
+          ? 'ENV_WAHA_DRY_RUN_TRUE'
+          : effectiveDryRun
+            ? 'DB_GOVERNANCE_BLOCK'
+            : 'OWNER_APPROVAL_MISSING'
       }
     };
   }
@@ -225,6 +243,7 @@ async function sendOrSimulateWahaText({ recipientPhone, text, idempotencyKey, ef
 }
 
 module.exports = {
+  isOwnerLiveApproved,
   maskPhone,
   getWahaEnvConfig,
   assertInternalWahaUrl,

@@ -36,3 +36,6 @@ Thumbs.db
 *.swp
 *.log
 .gh_device_pending.json
+
+# مخرجات تسليم الباتش بين الوكلاء (لا تُلتزم في المستودع)
+v23-review-fixes.patch

@@ -687,9 +687,16 @@
         ENV_WAHA_DRY_RUN_TRUE: 'القفل مفروض من متغير البيئة WAHA_DRY_RUN=true',
         DB_DRY_RUN_TRUE: 'الاختبار الجاف مفعّل من الإعدادات',
         KILL_SWITCH_TRIPPED: 'مفتاح الإيقاف مرفوع',
-        WAHA_NOT_ENABLED: 'قناة WAHA غير مفعّلة'
+        WAHA_NOT_ENABLED: 'قناة WAHA غير مفعّلة',
+        WAHA_LIVE_NOT_APPROVED: 'موافقة المالك للإرسال الحيّ غير مفعّلة على الخادم'
       };
       reasonEl.textContent = status.live_send_blocked_reason ? `(${reasons[status.live_send_blocked_reason] || status.live_send_blocked_reason})` : '';
+      // بوابة الاستقبال (ردود المرشحين) مستقلة عن بوابة الإرسال — نعرضها بوضوح
+      if (status.inbound_blocked_reason) {
+        reasonEl.textContent += ` · الردود الواردة موقوفة (${reasons[status.inbound_blocked_reason] || status.inbound_blocked_reason})`;
+      } else {
+        reasonEl.textContent += ' · الردود الواردة تعمل';
+      }
 
       if (killBtn) {
         killBtn.disabled = !isQueueManagerRole() || tripped;

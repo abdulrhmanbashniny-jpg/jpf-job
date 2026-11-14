@@ -51,6 +51,19 @@ const WAHA_API_KEY = 'drill-waha-api-key-not-real-123456';
 const WAHA_WEBHOOK_SECRET = 'drill-webhook-secret-not-real-abcdef';
 const ADMIN_PASS = 'V23-Drill-Pass-2026!';
 const SESSION_SECRET = 'v23-isolated-hmac-secret-key-2026';
+const WS_METRICS_TOKEN = 'v23-metrics-token-not-real-xyz';
+
+// ---------------------------------------------------------------------------------
+// أرقام اختبار اصطناعية تُولَّد وقت التشغيل: لا يوجد أي رقم جوال حقيقي أو حتى ثابت
+// مكتوب في هذا الملف، حتى لا يظهر أي شكل رقم مرشح داخل الالتزامات أو الباتش.
+// ---------------------------------------------------------------------------------
+const DRILL_PHONE_LOCAL = `055${String(10_000_000 + (Date.now() % 90_000_000)).slice(-7)}`; // 05 + 8 أرقام
+const DRILL_PHONE_INTL = `966${DRILL_PHONE_LOCAL.slice(1)}`;
+const DRILL_CHAT_ID = `${DRILL_PHONE_INTL}@c.us`;
+const DRILL_UNKNOWN_INTL = `9664${String(10_000_000 + ((Date.now() + 77) % 90_000_000)).slice(-7)}`;
+const DRILL_UNKNOWN_CHAT_ID = `${DRILL_UNKNOWN_INTL}@c.us`;
+const DRILL_MASKED = `${'*'.repeat(Math.max(0, DRILL_PHONE_INTL.length - 4))}${DRILL_PHONE_INTL.slice(-4)}`;
+
 
 // ---------------------------------------------------------------------------------
 // محاكي WAHA المحلي: يسجل كل طلب يصل، ويفشل فوراً إن وصل أي /api/sendText
@@ -59,6 +72,14 @@ const mockState = { hits: [], failNext: 0, server: null };
 
 function mockSendTextCount() {
   return mockState.hits.filter((h) => h.path === '/api/sendText').length;
+}
+
+/**
+ * إثبات «صفر إرسال»: أي طلب للمحاكي خارج `/api/sessions` (الفحص المسموح) يُعدّ خرقاً،
+ * وليس فقط `/api/sendText` — حتى لا يمر أي مسار إرسال مستقبلي بصمت.
+ */
+function mockUnexpectedRequestCount() {
+  return mockState.hits.filter((h) => h.path !== '/api/sessions').length;
 }
 
 function startWahaMock() {
@@ -175,15 +196,18 @@ function startServer(extraEnv = {}) {
     },
     stdio: 'pipe'
   });
+  const capture = { stdout: '', stderr: '' };
   const ready = new Promise((resolve, reject) => {
     const t = setTimeout(() => reject(new Error('Server start timeout')), 15000);
     proc.stdout.on('data', (d) => {
+      capture.stdout += String(d);
       if (String(d).includes(String(PORT))) {
         clearTimeout(t);
         resolve();
       }
     });
     proc.stderr.on('data', (d) => {
+      capture.stderr += String(d);
       const s = String(d).trim();
       if (s) console.error('[v23 stderr]:', s);
     });
@@ -192,7 +216,7 @@ function startServer(extraEnv = {}) {
       if (code !== null && code !== 0) reject(new Error(`Server exited ${code}`));
     });
   });
-  return { proc, ready };
+  return { proc, ready, capture };
 }
 
 async function stopServer(srv) {
@@ -261,13 +285,19 @@ async function createCandidateApplication(email, phone, fullName) {
   let srv = null;
   let pool = null;
   let browser = null;
+  const serverCaptures = [];
+  const boot = (extraEnv = {}) => {
+    const started = startServer(extraEnv);
+    serverCaptures.push(started.capture);
+    return started;
+  };
 
   try {
     console.log('=== [v2.3] 0. SAFETY: ALLOW_ISOLATED_DRILL LOCKOUT ENFORCED (checked at boot) ===');
     await startWahaMock();
     console.log('=== [v2.3] 1. BOOTING ISOLATED DB + LOCAL WAHA MOCK (no external network) ===');
     await recreateDb();
-    srv = startServer();
+    srv = boot();
     await srv.ready;
     pool = new Pool({ connectionString: `${dbBaseOrigin}/${dbName}` });
     pool.on('error', () => {});
@@ -355,14 +385,14 @@ async function createCandidateApplication(email, phone, fullName) {
 
     // مرشح + مقابلة + رسالة دعوة قيد الطابور
     await pool.query('DELETE FROM wa_messages');
-    const candA = await createCandidateApplication('waha_cand_a@jpf.sa', '0558100201', 'م. سعد الاختباري');
+    const candA = await createCandidateApplication('waha_cand_a@jpf.sa', DRILL_PHONE_LOCAL, 'م. سعد الاختباري');
     // التحقق من تطبيع رقم المرشح المحفوظ في القاعدة قبل أي مطابقة ويب هوك
     const candPhoneRow = await pool.query(
       `SELECT c.phone FROM candidates c
        WHERE c.id = (SELECT candidate_id FROM applications WHERE reference_no = $1)`,
       [candA.application.reference_no]
     );
-    assert.strictEqual(candPhoneRow.rows[0].phone, '966558100201', 'candidate phone must be stored normalized');
+    assert.strictEqual(candPhoneRow.rows[0].phone, DRILL_PHONE_INTL, 'candidate phone must be stored normalized');
     const appRow = (await pool.query('SELECT id, candidate_id FROM applications WHERE reference_no = $1', [candA.application.reference_no])).rows[0];
     const intRow = (await pool.query(
       `INSERT INTO interviews (application_id, scheduled_date, start_time, end_time, meeting_url, interview_mode)
@@ -372,10 +402,18 @@ async function createCandidateApplication(email, phone, fullName) {
     )).rows[0];
     const msgRow = (await pool.query(
       `INSERT INTO wa_messages (application_id, interview_id, template_key, recipient_name, recipient_phone, message_body, wa_link, queue_status)
-       VALUES ($1, $2, 'interview_invite', 'م. سعد الاختباري', '966558100201', 'دعوة اختبار جاف — لا تُرسل', 'https://wa.me/966558100201', 'queued')
+       VALUES ($1, $2, 'interview_invite', 'م. سعد الاختباري', '${DRILL_PHONE_INTL}', 'دعوة اختبار جاف — لا تُرسل', 'https://wa.me/${DRILL_PHONE_INTL}', 'queued')
        RETURNING id`,
       [appRow.id, intRow.id]
     )).rows[0];
+
+    // مساعد إنشاء رسالة قيد الطابور بأقل بيانات (يُستخدم في عدة بوابات لاحقة)
+    const queuedMsg = async () => (await pool.query(
+      `INSERT INTO wa_messages (application_id, interview_id, template_key, recipient_name, recipient_phone, message_body, wa_link, queue_status)
+       VALUES ($1, $2, 'reminder_24h', 'اختبار الحدود', '${DRILL_PHONE_INTL}', 'تذكير', 'https://wa.me/${DRILL_PHONE_INTL}', 'queued')
+       RETURNING id`,
+      [appRow.id, intRow.id]
+    )).rows[0].id;
 
     resetWahaMock();
     const dry1 = await api(`/api/wa-messages/${msgRow.id}/dispatch-waha`, { method: 'POST', cookie: hrCookie, body: {} });
@@ -385,12 +423,13 @@ async function createCandidateApplication(email, phone, fullName) {
     assert.strictEqual(dry1.json.envelope.zero_network_send, true);
     assert(/^dryrun-[0-9a-f]{12}$/.test(dry1.json.envelope.external_message_id || dry1.json.message.external_message_id), 'dry-run id must be dryrun-<hex>');
     assert.strictEqual(mockSendTextCount(), 0, 'ZERO sendText calls allowed while dry-run is on');
+    assert.strictEqual(mockUnexpectedRequestCount(), 0, 'ZERO unexpected requests of any kind allowed while dry-run is on');
     assert.strictEqual(dry1.json.message.delivery_channel, 'waha_dry_run');
     assert.strictEqual(dry1.json.message.queue_status, 'queued', 'dry-run must NOT flip the message to sent');
 
     // لا تسريب PII في مظروف Dry-Run المحفوظ
     const storedPayload = JSON.stringify(dry1.json.message.dry_run_payload);
-    assert(!storedPayload.includes('966558100201'), 'dry-run payload must not store the full phone number');
+    assert(!storedPayload.includes(DRILL_PHONE_INTL), 'dry-run payload must not store the full phone number');
     assert(!storedPayload.includes('دعوة اختبار جاف'), 'dry-run payload must not store the message body');
     assert(!storedPayload.includes(WAHA_API_KEY), 'dry-run payload must not store the API key');
     assert(storedPayload.includes('***'), 'dry-run payload must carry a masked chat id');
@@ -401,7 +440,7 @@ async function createCandidateApplication(email, phone, fullName) {
     assert.strictEqual(outbox.status, 200);
     assert.strictEqual(outbox.json.effective_dry_run, true);
     assert.strictEqual(outbox.json.outbox.length, 1);
-    assert(!JSON.stringify(outbox.json).includes('966558100201'));
+    assert(!JSON.stringify(outbox.json).includes(DRILL_PHONE_INTL));
 
     // محاولة تعطيل Dry-Run من الواجهة بينما البيئة تفرضه → 409 ENV_LOCKED
     const unlockAttempt = await api('/api/waha/config', { method: 'PATCH', cookie: hrCookie, body: { dry_run: false } });
@@ -417,7 +456,7 @@ async function createCandidateApplication(email, phone, fullName) {
     console.log('=== [v2.3] 5. TEMPLATE & STATE GUARDS (portal_recovery hard-blocked) ===');
     const recMsg = (await pool.query(
       `INSERT INTO wa_messages (application_id, template_key, recipient_name, recipient_phone, message_body, wa_link, queue_status)
-       VALUES ($1, 'portal_recovery', 'استعادة', '966558100202', 'رمز سري', 'https://wa.me/966558100202', 'queued')
+       VALUES ($1, 'portal_recovery', 'استعادة', '${DRILL_PHONE_INTL}', 'رمز سري', 'https://wa.me/${DRILL_PHONE_INTL}', 'queued')
        RETURNING id`,
       [appRow.id]
     )).rows[0];
@@ -429,6 +468,7 @@ async function createCandidateApplication(email, phone, fullName) {
     assert.strictEqual(cancelledRes.status, 400);
     assert(['WAHA_TEMPLATE_BLOCKED', 'WA_MESSAGE_CANCELLED'].includes(cancelledRes.json.code));
     assert.strictEqual(mockSendTextCount(), 0, 'guards must never reach the send path');
+    assert.strictEqual(mockUnexpectedRequestCount(), 0, 'guards must never reach any non-probe WAHA endpoint');
 
     // ---------------------------------------------------------------------------
     console.log('=== [v2.3] 6. CIRCUIT BREAKER (kill switch) STOPS SENDING INSTANTLY ===');
@@ -451,7 +491,7 @@ async function createCandidateApplication(email, phone, fullName) {
     // ---------------------------------------------------------------------------
     console.log('=== [v2.3] 7. STILL DRY-RUN AFTER RESTART (fail-safe default) ===');
     await stopServer(srv);
-    srv = startServer();
+    srv = boot();
     await srv.ready;
     const statusRestart = await api('/api/waha/status', { cookie: hrCookie });
     assert.strictEqual(statusRestart.status, 200);
@@ -459,57 +499,61 @@ async function createCandidateApplication(email, phone, fullName) {
     assert.strictEqual(mockSendTextCount(), 0, 'still zero sendText calls after restart');
 
     // ---------------------------------------------------------------------------
-    console.log('=== [v2.3] 8. WEBHOOK: signed reply "1" confirms, unsigned rejected, no PII leak ===');
+    console.log('=== [v2.3] 8. WEBHOOK SIGNATURE + INBOUND GOVERNANCE GATE (dry-run ⇒ zero business mutations) ===');
     const noSecret = await fetch(`${BASE}/api/webhooks/waha`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ event: 'message', payload: { from: '966558100201@c.us', body: '1' } })
+      body: JSON.stringify({ event: 'message', payload: { from: DRILL_CHAT_ID, body: '1' } })
     });
     assert.strictEqual(noSecret.status, 401, 'unsigned webhook must be rejected');
 
     const badSecret = await fetch(`${BASE}/api/webhooks/waha`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'X-WAHA-Webhook-Secret': 'wrong' },
-      body: JSON.stringify({ event: 'message', payload: { from: '966558100201@c.us', body: '1' } })
+      body: JSON.stringify({ event: 'message', payload: { from: DRILL_CHAT_ID, body: '1' } })
     });
     assert.strictEqual(badSecret.status, 401, 'wrong secret must be rejected');
 
-    await pool.query(`UPDATE interviews SET booking_status = 'invitation_sent' WHERE id = $1`, [intRow.id]);
-    const okWebhook = await fetch(`${BASE}/api/webhooks/waha`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'X-WAHA-Webhook-Secret': WAHA_WEBHOOK_SECRET },
-      body: JSON.stringify({ event: 'message', payload: { from: '966558100201@c.us', body: '1' } })
-    });
-    const okWebhookRaw = await okWebhook.text();
-    assert.strictEqual(okWebhook.status, 200, okWebhookRaw);
-    const webhookBody = JSON.parse(okWebhookRaw);
-    assert.strictEqual(webhookBody.accepted, true);
-    assert.strictEqual(webhookBody.action, 'confirmed');
-    assert(!JSON.stringify(webhookBody).includes('966558100201'), 'webhook response must not echo the phone');
-    const confRow = await pool.query('SELECT booking_status FROM interviews WHERE id = $1', [intRow.id]);
-    assert.strictEqual(confRow.rows[0].booking_status, 'confirmed');
+    /**
+     * لقطة كاملة لحالة الأعمال: لا يُسمح بتغيّر أي صف في interviews/wa_messages/audit_logs
+     * عند حجب الردود في وضع الاختبار الجاف (Hermes finding #1).
+     */
+    const businessSnapshot = async () => {
+      const [i, w, a] = await Promise.all([
+        pool.query('SELECT id, booking_status, reschedule_requested, reschedule_requested_at, updated_at FROM interviews ORDER BY id'),
+        pool.query('SELECT id, queue_status, delivery_channel, attempt_count, last_error, sent_at, prepared_at, external_message_id, idempotency_key FROM wa_messages ORDER BY id'),
+        pool.query("SELECT COUNT(*)::int AS c FROM audit_logs WHERE action IN ('WAHA_REPLY_CONFIRMED','WAHA_REPLY_RESCHEDULE_REQUESTED')")
+      ]);
+      return JSON.stringify({ interviews: i.rows, messages: w.rows, replies: a.rows[0].c });
+    };
 
-    // رد "2" يسجل طلب إعادة جدولة دون إلغاء
-    await pool.query(`UPDATE interviews SET booking_status = 'invitation_sent' WHERE id = $1`, [intRow.id]);
-    const reschedRes = await fetch(`${BASE}/api/webhooks/waha`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'X-WAHA-Webhook-Secret': WAHA_WEBHOOK_SECRET },
-      body: JSON.stringify({ event: 'message', payload: { from: '966558100201@c.us', body: '2' } })
-    });
-    assert.strictEqual(reschedRes.status, 200);
-    assert.strictEqual((await reschedRes.json()).action, 'reschedule_requested');
-    const r2 = await pool.query('SELECT booking_status, reschedule_requested FROM interviews WHERE id = $1', [intRow.id]);
-    assert.strictEqual(r2.rows[0].reschedule_requested, true);
-    assert.strictEqual(r2.rows[0].booking_status, 'invitation_sent', 'reply 2 must NOT cancel the interview');
+    await pool.query(`UPDATE interviews SET booking_status = 'invitation_sent', reschedule_requested = FALSE, reschedule_requested_at = NULL WHERE id = $1`, [intRow.id]);
+    const snapBeforeReplies = await businessSnapshot();
 
-    // مرسل غير معروف لا يطابق شيئاً
-    const unknownSender = await fetch(`${BASE}/api/webhooks/waha`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'X-WAHA-Webhook-Secret': WAHA_WEBHOOK_SECRET },
-      body: JSON.stringify({ event: 'message', payload: { from: '966500000000@c.us', body: '1' } })
-    });
-    assert.strictEqual(unknownSender.status, 202);
-    assert.strictEqual((await unknownSender.json()).accepted, false);
+    for (const reply of ['1', '2']) {
+      const blockedReply = await fetch(`${BASE}/api/webhooks/waha`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-WAHA-Webhook-Secret': WAHA_WEBHOOK_SECRET },
+        body: JSON.stringify({ event: 'message', payload: { from: DRILL_CHAT_ID, body: reply } })
+      });
+      const blockedRaw = await blockedReply.text();
+      assert.strictEqual(blockedReply.status, 409, `dry-run inbound reply "${reply}" must be blocked: ${blockedRaw}`);
+      const blockedJson = JSON.parse(blockedRaw);
+      assert.strictEqual(blockedJson.accepted, false);
+      assert.strictEqual(blockedJson.code, 'WAHA_INBOUND_BLOCKED');
+      assert.strictEqual(blockedJson.blocked_reason, 'ENV_WAHA_DRY_RUN_TRUE');
+      assert(!blockedRaw.includes(DRILL_PHONE_INTL), 'blocked reply response must not echo candidate PII');
+    }
+
+    const snapAfterReplies = await businessSnapshot();
+    assert.strictEqual(snapAfterReplies, snapBeforeReplies, 'dry-run inbound replies must cause ZERO business mutations (interviews/wa_messages/replies)');
+    const blockedAudit = await pool.query("SELECT COUNT(*)::int AS c FROM audit_logs WHERE action = 'WAHA_INBOUND_REPLY_BLOCKED'");
+    assert(blockedAudit.rows[0].c >= 2, 'each blocked inbound reply must be audited');
+    assert.strictEqual(mockSendTextCount(), 0, 'inbound processing must never trigger any outbound WAHA call');
+    assert.strictEqual(mockUnexpectedRequestCount(), 0, 'inbound processing must never reach the WAHA mock');
+
+    const statusInbound = await api('/api/waha/status', { cookie: hrCookie });
+    assert.strictEqual(statusInbound.json.inbound_blocked_reason, 'ENV_WAHA_DRY_RUN_TRUE', 'status must expose the inbound gate');
 
     // ---------------------------------------------------------------------------
     console.log('=== [v2.3] 9. RETROACTIVE-SEND CUTOVER WATERMARK (waha_activated_at) ===');
@@ -532,7 +576,7 @@ async function createCandidateApplication(email, phone, fullName) {
     assert.strictEqual(waList.status, 200);
     const target = waList.json.messages.find((m) => m.id === msgRow.id);
     assert(target, 'message must still be listed for manual wa.me sending');
-    assert(String(target.wa_link).startsWith('https://wa.me/966558100201'), 'manual wa.me link must remain intact');
+    assert(String(target.wa_link).startsWith(`https://wa.me/${DRILL_PHONE_INTL}`), 'manual wa.me link must remain intact');
     assert.strictEqual(waList.json.effective_dry_run, undefined, 'legacy list contract untouched');
 
     // ---------------------------------------------------------------------------
@@ -545,18 +589,24 @@ async function createCandidateApplication(email, phone, fullName) {
     }
     assert.strictEqual(assertInternalWahaUrl('http://waha-bbg7-waha-1:3000', { nodeEnv: 'production' }).hostname, 'waha-bbg7-waha-1');
     assert.strictEqual(assertInternalWahaUrl('http://172.18.0.4:3000', { nodeEnv: 'production' }).hostname, '172.18.0.4');
-    assert.strictEqual(toWahaChatId('0558100201'), '966558100201@c.us', 'Saudi 05xxxxxxxx normalizes to 9665xxxxxxxx@c.us');
-    assert.strictEqual(toWahaChatId('558100201'), '966558100201@c.us');
-    assert.strictEqual(maskPhone('966558100201'), '********0201');
+    assert.strictEqual(toWahaChatId(DRILL_PHONE_LOCAL), DRILL_CHAT_ID, 'Saudi 05xxxxxxxx normalizes to 9665xxxxxxxx@c.us');
+    assert.strictEqual(toWahaChatId(DRILL_PHONE_LOCAL.slice(1)), DRILL_CHAT_ID);
+    assert.strictEqual(maskPhone(DRILL_PHONE_INTL), DRILL_MASKED);
 
     // ---------------------------------------------------------------------------
-    console.log('=== [v2.3] 12. LOG HYGIENE: server stdout/stderr carries no secrets or PII ===');
-    const logs = srv.proc.stdout.read ? '' : '';
-    void logs; // logs are streamed, verified below via captured buffer
+    console.log('=== [v2.3] 12. LOG HYGIENE: real server stdout/stderr + audit logs carry no secrets or PII ===');
+    // نستخدم البث الملتقط فعلياً (stdout + stderr) من كل عمليات الخادم التي أُقلعت في هذا التشغيل
+    const capturedStreams = serverCaptures.map((c) => `${c.stdout}\n${c.stderr}`).join('\n');
+    assert(capturedStreams.length > 0, 'server stdout/stderr must be captured, not skipped');
+    assert(!capturedStreams.includes(WAHA_API_KEY), 'server stdout/stderr must never contain the WAHA API key');
+    assert(!capturedStreams.includes(WAHA_WEBHOOK_SECRET), 'server stdout/stderr must never contain the webhook secret');
+    assert(!capturedStreams.includes(DRILL_PHONE_INTL), 'server stdout/stderr must never contain a full candidate phone');
+    void srv;
     const auditDump = JSON.stringify((await pool.query('SELECT action, metadata FROM audit_logs')).rows);
     assert(!auditDump.includes(WAHA_API_KEY), 'audit logs must never contain the WAHA API key');
     assert(!auditDump.includes(WAHA_WEBHOOK_SECRET), 'audit logs must never contain the webhook secret');
-    assert(!auditDump.includes('966558100201'), 'audit logs must never contain a full candidate phone');
+    assert(!auditDump.includes(DRILL_PHONE_INTL), 'audit logs must never contain a full candidate phone');
+    assert(!auditDump.includes('دعوة اختبار جاف'), 'audit logs must never contain candidate message bodies');
 
     // ---------------------------------------------------------------------------
     console.log('=== [v2.3] 13. LIVE PATH DRILL (mock only): one send, dedupe, rate limit, circuit breaker ===');
@@ -571,7 +621,7 @@ async function createCandidateApplication(email, phone, fullName) {
        WHERE setting_key = 'waha_config'`
     );
     await pool.query(`UPDATE wa_messages SET queue_status = 'queued', last_attempt_at = NULL, last_error = NULL WHERE id = $1`, [msgRow.id]);
-    srv = startServer({ WAHA_DRY_RUN: 'false', WAHA_LIVE_APPROVED: 'true' });
+    srv = boot({ WAHA_DRY_RUN: 'false', WAHA_LIVE_APPROVED: 'true' });
     await srv.ready;
 
     const liveStatus = await api('/api/waha/status', { cookie: hrCookie });
@@ -591,11 +641,100 @@ async function createCandidateApplication(email, phone, fullName) {
     const invAfterSend = await pool.query('SELECT booking_status FROM interviews WHERE id = $1', [intRow.id]);
     assert.strictEqual(invAfterSend.rows[0].booking_status, 'invitation_sent', 'live invite must flip interview to invitation_sent');
 
-    // منع التكرار: إعادة إرسال نفس الرسالة مستحيلة (لم تعد queued)
+    // -------------------------------------------------------------------------
+    // 13A. الاستقبال الحيّ يعمل فقط بعد اجتياز بوابة الحوكمة كاملة (Dry-Run / Kill-Switch / الموافقة)
+    console.log('  [13A] inbound gate: live+approved ⇒ replies applied; kill-switch ⇒ blocked with zero mutations');
+    // -------------------------------------------------------------------------
+    const inboundGateStatus = await api('/api/waha/status', { cookie: hrCookie });
+    assert.strictEqual(inboundGateStatus.json.inbound_blocked_reason, null, 'live+approved must open the inbound gate');
+
+    const liveReply1 = await fetch(`${BASE}/api/webhooks/waha`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-WAHA-Webhook-Secret': WAHA_WEBHOOK_SECRET },
+      body: JSON.stringify({ event: 'message', payload: { from: DRILL_CHAT_ID, body: '1' } })
+    });
+    const liveReply1Raw = await liveReply1.text();
+    assert.strictEqual(liveReply1.status, 200, liveReply1Raw);
+    assert.strictEqual(JSON.parse(liveReply1Raw).action, 'confirmed');
+    assert(!liveReply1Raw.includes(DRILL_PHONE_INTL), 'live webhook response must not echo candidate PII');
+    const confRow = await pool.query('SELECT booking_status FROM interviews WHERE id = $1', [intRow.id]);
+    assert.strictEqual(confRow.rows[0].booking_status, 'confirmed', 'live reply 1 must confirm the interview');
+
+    await pool.query(`UPDATE interviews SET booking_status = 'invitation_sent', reschedule_requested = FALSE WHERE id = $1`, [intRow.id]);
+    const liveReply2 = await fetch(`${BASE}/api/webhooks/waha`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-WAHA-Webhook-Secret': WAHA_WEBHOOK_SECRET },
+      body: JSON.stringify({ event: 'message', payload: { from: DRILL_CHAT_ID, body: '2' } })
+    });
+    assert.strictEqual(liveReply2.status, 200);
+    assert.strictEqual((await liveReply2.json()).action, 'reschedule_requested');
+    const r2 = await pool.query('SELECT booking_status, reschedule_requested FROM interviews WHERE id = $1', [intRow.id]);
+    assert.strictEqual(r2.rows[0].reschedule_requested, true);
+    assert.strictEqual(r2.rows[0].booking_status, 'invitation_sent', 'reply 2 must NOT cancel the interview');
+
+    // 13B. مفتاح الإيقاف يغلق بوابة الاستقبال فوراً بدون أي تعديل على البيانات
+    await api('/api/waha/kill-switch', { method: 'POST', cookie: hrCookie, body: {} });
+    await pool.query(`UPDATE interviews SET booking_status = 'invitation_sent', reschedule_requested = FALSE WHERE id = $1`, [intRow.id]);
+    const killSnapBefore = await businessSnapshot();
+    const killBlockedReply = await fetch(`${BASE}/api/webhooks/waha`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-WAHA-Webhook-Secret': WAHA_WEBHOOK_SECRET },
+      body: JSON.stringify({ event: 'message', payload: { from: DRILL_CHAT_ID, body: '1' } })
+    });
+    assert.strictEqual(killBlockedReply.status, 409, 'kill-switch must block inbound replies');
+    assert.strictEqual((await killBlockedReply.json()).blocked_reason, 'KILL_SWITCH_TRIPPED');
+    assert.strictEqual(await businessSnapshot(), killSnapBefore, 'kill-switch blocked reply must cause zero business mutations');
+
+    // 13C. سحب الموافقة بعد إعادة التشغيل: الإعدادات تبقى حيّة (dry_run=false/enabled=true) لكن الإرسال مرفوض
+    console.log('  [13C] approval revoked after restart with persisted live config ⇒ zero sendText, inbound blocked');
+    await stopServer(srv);
+    await pool.query(
+      `UPDATE system_settings
+       SET setting_value = setting_value || '{"dry_run": false, "enabled": true, "kill_switch_tripped": false}'::jsonb
+       WHERE setting_key = 'waha_config'`
+    );
+    // الخادم يُقلع الآن بـ WAHA_LIVE_APPROVED=false مع إعدادات حيّة محفوظة مسبقاً
+    srv = boot({ WAHA_DRY_RUN: 'false', WAHA_LIVE_APPROVED: 'false', WS_METRICS_TOKEN: WS_METRICS_TOKEN });
+    await srv.ready;
+
+    const revokedStatus = await api('/api/waha/status', { cookie: hrCookie });
+    assert.strictEqual(revokedStatus.json.config.dry_run, false, 'persisted config must still say live-capable');
+    assert.strictEqual(revokedStatus.json.config.enabled, true);
+    assert.strictEqual(revokedStatus.json.env.owner_live_approved, false, 'revoked approval must be visible');
+    assert.strictEqual(revokedStatus.json.effective_dry_run, true, 'revoked approval must force dry-run');
+    assert.strictEqual(revokedStatus.json.live_send_blocked_reason, 'WAHA_LIVE_NOT_APPROVED');
+    assert.strictEqual(revokedStatus.json.inbound_blocked_reason, 'WAHA_LIVE_NOT_APPROVED');
+
+    await pool.query(`UPDATE wa_messages SET last_attempt_at = NULL, last_error = NULL`);
+    const revokedMsg = await queuedMsg();
+    resetWahaMock();
+    const revokedDispatch = await api(`/api/wa-messages/${revokedMsg}/dispatch-waha`, { method: 'POST', cookie: hrCookie, body: {} });
+    assert.strictEqual(revokedDispatch.status, 200, revokedDispatch.text);
+    assert.strictEqual(revokedDispatch.json.sent_live, false, 'revoked approval must NEVER send live');
+    assert.strictEqual(revokedDispatch.json.mode, 'dry_run');
+    assert.strictEqual(mockSendTextCount(), 0, 'revoked approval must produce zero sendText calls');
+    assert.strictEqual(mockUnexpectedRequestCount(), 0);
+
+    const revokedReply = await fetch(`${BASE}/api/webhooks/waha`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-WAHA-Webhook-Secret': WAHA_WEBHOOK_SECRET },
+      body: JSON.stringify({ event: 'message', payload: { from: DRILL_CHAT_ID, body: '1' } })
+    });
+    assert.strictEqual(revokedReply.status, 409, 'revoked approval must block inbound replies');
+    assert.strictEqual((await revokedReply.json()).blocked_reason, 'WAHA_LIVE_NOT_APPROVED');
+
+    // ندعم الاختبار التالي: نعيد الموافقة والإعدادات الحيّة مؤقتاً (على المحاكي المحلي فقط)
+    await stopServer(srv);
+    srv = boot({ WAHA_DRY_RUN: 'false', WAHA_LIVE_APPROVED: 'true', WS_METRICS_TOKEN: WS_METRICS_TOKEN });
+    await srv.ready;
+    await pool.query(`UPDATE wa_messages SET last_attempt_at = NULL, last_error = NULL`);
+
+    // منع التكرار: إعادة إرسال نفس الرسالة مستحيلة (لم تعد queued) — بغض النظر عن عدّاد المحاكي بعد إعادة التشغيل
+    const sendsBeforeRepeat = mockSendTextCount();
     const live2 = await api(`/api/wa-messages/${msgRow.id}/dispatch-waha`, { method: 'POST', cookie: hrCookie, body: {} });
     assert.strictEqual(live2.status, 400);
     assert.strictEqual(live2.json.code, 'INVALID_WA_TRANSITION');
-    assert.strictEqual(mockSendTextCount(), 1, 'repeat dispatch must never reach WAHA again');
+    assert.strictEqual(mockSendTextCount(), sendsBeforeRepeat, 'repeat dispatch must never reach WAHA again');
 
     // منع التكرار على مستوى قاعدة البيانات: مفتاح idempotency فريد
     const dupKey = live1.json.message.idempotency_key;
@@ -603,7 +742,7 @@ async function createCandidateApplication(email, phone, fullName) {
     try {
       await pool.query(
         `INSERT INTO wa_messages (application_id, interview_id, template_key, recipient_name, recipient_phone, message_body, wa_link, queue_status, idempotency_key)
-         VALUES ($1, $2, 'reminder_24h', 'مكرر', '966558100201', 'تكرار', 'https://wa.me/966558100201', 'queued', $3)`,
+         VALUES ($1, $2, 'reminder_24h', 'مكرر', '${DRILL_PHONE_INTL}', 'تكرار', 'https://wa.me/${DRILL_PHONE_INTL}', 'queued', $3)`,
         [appRow.id, intRow.id, dupKey]
       );
     } catch (e) {
@@ -611,26 +750,29 @@ async function createCandidateApplication(email, phone, fullName) {
     }
     assert(dupViolation && dupViolation.code === '23505', 'duplicate idempotency_key must violate the unique index');
 
-    // حدود الإرسال: بحد أقصى رسالة واحدة في الدقيقة تُرفض الثانية بـ 429 دون أي إرسال
-    await api('/api/waha/config', { method: 'PATCH', cookie: adminCookie, body: { max_per_minute: 1 } });
-    const queuedMsg = async () => (await pool.query(
-      `INSERT INTO wa_messages (application_id, interview_id, template_key, recipient_name, recipient_phone, message_body, wa_link, queue_status)
-       VALUES ($1, $2, 'reminder_24h', 'اختبار الحدود', '966558100201', 'تذكير', 'https://wa.me/966558100201', 'queued')
-       RETURNING id`,
-      [appRow.id, intRow.id]
-    )).rows[0].id;
+    // حدود الإرسال (حتمية): نصفّر تاريخ المحاولات، نضبط الحد على رسالة واحدة في الدقيقة،
+    // ثم نسمح بمحاولة واحدة ونثبت أن الثانية تُرفض بـ 429 دون أي بايت إلى WAHA.
+    await pool.query(`UPDATE wa_messages SET last_attempt_at = NULL, last_error = NULL`);
+    const rateCfgPatch = await api('/api/waha/config', { method: 'PATCH', cookie: adminCookie, body: { max_per_minute: 1 } });
+    assert.strictEqual(rateCfgPatch.status, 200, `rate config patch must succeed: ${rateCfgPatch.text}`);
+    assert.strictEqual(rateCfgPatch.json.config.max_per_minute, 1);
+
+    const rateMsgFirst = await queuedMsg();
+    const firstAllowed = await api(`/api/wa-messages/${rateMsgFirst}/dispatch-waha`, { method: 'POST', cookie: hrCookie, body: {} });
+    assert.strictEqual(firstAllowed.status, 200, `first dispatch inside a 1/min budget must pass: ${firstAllowed.text}`);
+    assert.strictEqual(firstAllowed.json.sent_live, true);
 
     const rateMsg = await queuedMsg();
     const beforeRateCount = mockSendTextCount();
     const rateRes = await api(`/api/wa-messages/${rateMsg}/dispatch-waha`, { method: 'POST', cookie: hrCookie, body: {} });
-    assert.strictEqual(rateRes.status, 429, `rate limit must reject with 429: ${rateRes.text}`);
+    assert.strictEqual(rateRes.status, 429, `second dispatch within 1/min must be rejected: ${rateRes.text}`);
     assert.strictEqual(rateRes.json.code, 'WAHA_RATE_LIMITED');
     assert.strictEqual(mockSendTextCount(), beforeRateCount, 'rate-limited dispatch must not reach WAHA');
 
     // القاطع الدائري: 3 أخطاء متتالية ترفع مفتاح الإيقاف تلقائياً
     await api('/api/waha/config', { method: 'PATCH', cookie: adminCookie, body: { max_per_minute: 6 } });
-    // تصفير تاريخ المحاولات السابقة حتى لا يحسب القاطع الدائري أخطاء الجولة السابقة (اختبار حتمي)
-    await pool.query(`UPDATE wa_messages SET last_attempt_at = NULL, last_error = NULL WHERE queue_status = 'queued'`);
+    // تصفير تاريخ المحاولات السابقة (كل الصفوف) حتى لا يحسب القاطع الدائري أو حد المعدل أي جولة سابقة
+    await pool.query(`UPDATE wa_messages SET last_attempt_at = NULL, last_error = NULL`);
     resetWahaMock();
     mockState.failNext = 3;
     for (let k = 0; k < 3; k++) {
@@ -655,6 +797,68 @@ async function createCandidateApplication(email, phone, fullName) {
     assert.strictEqual(manualRes.json.mode, 'dry_run', 'after breaker the system must fall back to dry-run/manual');
     assert.strictEqual(mockSendTextCount(), afterBreakerCount, 'no bytes may leave after the breaker tripped');
 
+    // -------------------------------------------------------------------------
+    // 13D. سباق مفتاح الإيقاف (Hermes finding #3): طلب إرسال «معلّق» ثم إقرار الإيقاف
+    console.log('  [13D] kill-switch race: pending dispatch observed → ack → resume ⇒ zero new sendText calls');
+    //      ثم استئناف الطلب — يجب ألا يبدأ أي إرسال جديد بعد الإقرار.
+    //      التنفيذ حتمي بخطاف اختبار معزول (NODE_ENV=test) يوسّع نافذة الانتظار فقط.
+    // -------------------------------------------------------------------------
+    await stopServer(srv);
+    await pool.query(
+      `UPDATE system_settings
+       SET setting_value = setting_value || '{"dry_run": false, "enabled": true, "kill_switch_tripped": false}'::jsonb
+       WHERE setting_key = 'waha_config'`
+    );
+    const raceMsg = await queuedMsg();
+    resetWahaMock();
+    srv = boot({
+      WAHA_DRY_RUN: 'false',
+      WAHA_LIVE_APPROVED: 'true',
+      WS_TEST_ACQUIRE_DELAY_MS: '2500',
+      WS_METRICS_TOKEN
+    });
+    await srv.ready;
+
+    const metricsHeaders = { 'X-WS-Metrics-Token': WS_METRICS_TOKEN };
+    // 1) نطلق طلب إرسال ونتركه «معلّقاً» في نافذة الانتظار
+    const pendingDispatch = api(`/api/wa-messages/${raceMsg}/dispatch-waha`, { method: 'POST', cookie: hrCookie, body: {} });
+    let pendingSeen = false;
+    for (let attempt = 0; attempt < 20; attempt++) {
+      const m = await fetch(`${BASE}/api/waha/_internal/metrics`, { headers: metricsHeaders });
+      const mj = await m.json();
+      if (mj.pending_dispatches >= 1) { pendingSeen = true; break; }
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+    assert(pendingSeen, 'pending dispatch must be observable before the kill-switch is acknowledged');
+
+    // 2) نقرّ الإيقاف بنجاح ونحفظ لحظة الإقرار
+    const raceKill = await api('/api/waha/kill-switch', { method: 'POST', cookie: hrCookie, body: {} });
+    assert.strictEqual(raceKill.status, 200, raceKill.text);
+    assert.strictEqual(raceKill.json.config.kill_switch_tripped, true);
+    const sendsAtAck = mockSendTextCount();
+
+    // 3) نستأنف الطلب المنتظر: يجب ألا يبدأ أي إرسال جديد بعد لحظة الإقرار
+    const resumed = await pendingDispatch;
+    assert([409, 200].includes(resumed.status), `resumed dispatch must return a governed outcome: ${resumed.text}`);
+    if (resumed.status === 200) {
+      assert.strictEqual(resumed.json.sent_live, false, 'resumed dispatch after kill-ack must never send live');
+      assert.strictEqual(resumed.json.mode, 'dry_run');
+    } else {
+      assert.strictEqual(resumed.json.code, 'WAHA_LIVE_SEND_BLOCKED');
+      assert.strictEqual(resumed.json.blocked_reason, 'KILL_SWITCH_TRIPPED');
+    }
+    assert.strictEqual(mockSendTextCount(), sendsAtAck, 'ZERO new sendText calls may start after the kill-switch ack');
+
+    const raceRow = await pool.query('SELECT delivery_channel, queue_status FROM wa_messages WHERE id = $1', [raceMsg]);
+    assert.notStrictEqual(raceRow.rows[0].delivery_channel, 'waha_live', 'resumed dispatch must not be recorded as a live send');
+    assert.strictEqual(raceRow.rows[0].queue_status, 'queued', 'resumed dispatch must not mark the message as sent');
+
+    // 4) كل طلب إرسال بعد الإقرار يبقى محكوماً بلا أي بايت
+    const afterKillMsg = await queuedMsg();
+    const afterKillDispatch = await api(`/api/wa-messages/${afterKillMsg}/dispatch-waha`, { method: 'POST', cookie: hrCookie, body: {} });
+    assert([409, 200].includes(afterKillDispatch.status));
+    assert.strictEqual(mockSendTextCount(), sendsAtAck, 'no further dispatch may reach WAHA once the kill-switch is acknowledged');
+
     // استعادة قفل الأمان: إعادة كل شيء إلى Dry-Run إلزامي
     await pool.query(
       `UPDATE system_settings SET setting_value = setting_value || '{"dry_run": true, "enabled": false, "kill_switch_tripped": false}'::jsonb
@@ -671,12 +875,12 @@ async function createCandidateApplication(email, phone, fullName) {
     );
     // تنظيف سجل المحاولات حتى لا يحجب فحص الواجهة حد الإرسال
     await pool.query(`UPDATE wa_messages SET last_attempt_at = NULL WHERE queue_status = 'queued'`);
-    srv = startServer();
+    srv = boot();
     await srv.ready;
 
     const uiMsg = (await pool.query(
       `INSERT INTO wa_messages (application_id, interview_id, template_key, recipient_name, recipient_phone, message_body, wa_link, queue_status)
-       VALUES ($1, $2, 'interview_invite', 'م. واجهة الاختبار', '966558100201', 'رسالة فحص الواجهة', 'https://wa.me/966558100201', 'queued')
+       VALUES ($1, $2, 'interview_invite', 'م. واجهة الاختبار', '${DRILL_PHONE_INTL}', 'رسالة فحص الواجهة', 'https://wa.me/${DRILL_PHONE_INTL}', 'queued')
        RETURNING id`,
       [appRow.id, intRow.id]
     )).rows[0].id;
@@ -694,6 +898,8 @@ async function createCandidateApplication(email, phone, fullName) {
     const badgeText = (await page.textContent('[data-testid="waha-mode-badge"]')) || '';
     assert(badgeText.includes('الاختبار الجاف'), `dry-run badge must be visible: got "${badgeText}"`);
     assert(!badgeText.includes('إرسال حيّ'), 'UI must never claim live mode while dry-run is enforced');
+    const stripText = (await page.textContent('[data-testid="waha-strip"]')) || '';
+    assert(stripText.includes('الردود الواردة موقوفة'), 'UI must show that inbound replies are gated during dry-run');
 
     const beforeClick = mockSendTextCount();
     await page.waitForSelector(`[data-testid="waha-dispatch-${uiMsg}"]`, { timeout: 8000 });
@@ -734,6 +940,7 @@ async function createCandidateApplication(email, phone, fullName) {
     );
 
     console.log('ALL_V23_WAHA_DRY_RUN_KILL_SWITCH_WATERMARK_WEBHOOK_AND_LOG_HYGIENE_PASSED');
+    console.log('  + Hermes R1 fixed: inbound governance gate · per-send owner approval (incl. revoked-after-restart) · kill-switch/send serialization');
   } finally {
     if (browser) await browser.close().catch(() => {});
     if (srv) await stopServer(srv);
