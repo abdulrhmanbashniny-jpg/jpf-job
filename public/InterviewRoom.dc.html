@@ -164,6 +164,40 @@
 
     // آخر تقييم محفوظ لهذا العضو (إن وُجد) — يُستخدم لتحميل القيم بدل فرض افتراضيات
     let savedEvaluation = null;
+    // هل طُبِّق التقييم المحفوظ فعلياً على النموذج؟ إن فشل التحميل نمنع الحفظ
+    // كي لا نكتب قيماً افتراضية فوق تقييم حقيقي موجود على الخادم.
+    let hydratedFromSaved = false;
+
+    const SCORE_KEYS = ['technical_competence', 'communication_persuasion', 'problem_solving', 'cultural_fit', 'portfolio_practical'];
+
+    /**
+     * يقرر مصير الحفظ بمقارنة الحقول الفعلية (لا حركة المنزلقات):
+     *   - block-hydration : يوجد تقييم محفوظ لم يُطبَّق على النموذج ⇒ لا حفظ إطلاقاً
+     *   - noop            : لا فرق في أي حقل ⇒ لا طلب شبكي
+     *   - save            : يوجد فرق في أي حقل (درجة/توصية/ملاحظة/ملاحظة صوتية) ⇒ حفظ
+     * الحقول غير المتغيّرة تُرسل بقيمها المحفوظة نفسها، فلا تتغيّر في القاعدة.
+     */
+    function decideEvaluationSave(saved, hydrated, current) {
+      const norm = (v) => (v === undefined || v === null ? '' : String(v).trim());
+      const num = (v) => (v === undefined || v === null || v === '' ? null : Number(v));
+
+      if (saved && !hydrated) {
+        return { action: 'block-hydration', changed: [] };
+      }
+      if (!saved) {
+        return { action: 'save', changed: ['new'] };
+      }
+
+      const changed = [];
+      for (const k of SCORE_KEYS) {
+        if (num(current[k]) !== num(saved[k])) changed.push(k);
+      }
+      if (norm(current.recommendation) !== norm(saved.recommendation)) changed.push('recommendation');
+      if (norm(current.notes) !== norm(saved.notes)) changed.push('notes');
+      if (norm(current.voice_human_note) !== norm(saved.voice_human_note)) changed.push('voice_human_note');
+
+      return { action: changed.length ? 'save' : 'noop', changed };
+    }
 
     function renderScoreRows() {
       const mount = document.getElementById('score-rows');
@@ -212,8 +246,10 @@
         const vn = document.getElementById('voice-human-note');
         if (vn) vn.value = mine.voice_human_note;
       }
+      // نُعلّم أن التحميل تمّ بنجاح — أساس السماح بالحفظ فوق تقييم قائم
+      hydratedFromSaved = true;
       const hint = document.getElementById('eval-hint');
-      if (hint) hint.textContent = 'عُرض تقييمك المحفوظ سابقاً — أي تغيير سيلغيه عند الحفظ.';
+      if (hint) hint.textContent = 'عُرض تقييمك المحفوظ سابقاً — يمكنك حفظ الملاحظة أو التوصية وحدها دون تحريك الدرجات.';
     }
 
     async function sendTelemetry(event, extra) {
@@ -244,19 +280,45 @@
         return;
       }
       const scores = {};
-      const untouched = [];
       document.querySelectorAll('input[data-score-key]').forEach((input) => {
         scores[input.dataset.scoreKey] = Number(input.value);
-        if (input.dataset.touched !== '1') untouched.push(input.dataset.scoreKey);
       });
 
-      // لو كان هناك تقييم محفوظ مسبقاً، لا نسمح بحفظ قيم لم يلمسها العضو (تمنع الاستبدال بأرقام افتراضية)
-      if (savedEvaluation && untouched.length && untouched.length === Object.keys(scores).length) {
-        SmartHR.showToast('لا تغيير في الدرجات — تقييمك المحفوظ باقٍ كما هو.', 'info');
-        return;
+      const recommendation = document.getElementById('eval-recommendation').value;
+      const notes = document.getElementById('eval-notes').value;
+      const voiceNote = (document.getElementById('voice-human-note') || {}).value || '';
+
+      // حماية من فشل التحميل: إن لم يكن لدينا تقييم محفوظ، نتحقق من الخادم قبل الكتابة.
+      // إن وُجد تقييم لم يُطبَّق على النموذج ⇒ نُطبّقه (فلا تُستبدل الدرجات بقيم افتراضية).
+      // وإن تعذّر التحقق ⇒ نمنع الحفظ بدل الكتابة العمياء.
+      if (!savedEvaluation) {
+        let fresh = null;
+        try {
+          fresh = await SmartHR.apiFetch(`/api/interviews/${interviewId}/room-session`);
+        } catch (_e) {
+          SmartHR.showToast('تعذّر التحقق من تقييمك المحفوظ — لم يُحفظ شيء. أعد المحاولة.', 'error');
+          return;
+        }
+        if (fresh && fresh.my_evaluation) {
+          hydrateExistingEvaluation([fresh.my_evaluation]);
+          SmartHR.showToast('وُجد تقييم محفوظ سابقاً — تم تحميله. راجع القيم ثم احفظ التغيير المطلوب فقط.', 'info');
+          return;
+        }
       }
 
-      const recommendation = document.getElementById('eval-recommendation').value;
+      // قرار الحفظ عبر مقارنة الحقول الفعلية — يسمح بحفظ الملاحظة/التوصية وحدها
+      const decision = decideEvaluationSave(savedEvaluation, hydratedFromSaved, {
+        ...scores, recommendation, notes, voice_human_note: voiceNote
+      });
+
+      if (decision.action === 'block-hydration') {
+        SmartHR.showToast('تعذّر تحميل تقييمك المحفوظ — أعد تحميل الصفحة قبل الحفظ حتى لا تُستبدل درجاتك.', 'error');
+        return;
+      }
+      if (decision.action === 'noop') {
+        SmartHR.showToast('لا تغيير في أي حقل — لم يُرسل شيء.', 'info');
+        return;
+      }
       if (!recommendation) {
         SmartHR.showToast('اختر التوصية قبل الحفظ.', 'error');
         return;
@@ -269,10 +331,15 @@
             application_id: roomState.interview ? roomState.interview.application_id : undefined,
             ...scores,
             recommendation,
-            notes: document.getElementById('eval-notes').value,
-            voice_human_note: (document.getElementById('voice-human-note') || {}).value || ''
+            notes,
+            voice_human_note: voiceNote
           })
         });
+        // نُحدّث مرجع المقارنة كي لا يُعاد إرسال ما حُفظ للتو
+        savedEvaluation = {
+          ...scores, recommendation, notes, voice_human_note: voiceNote
+        };
+        hydratedFromSaved = true;
         SmartHR.showToast('✓ تم حفظ التقييم وتحديث درجة اللجنة.', 'success');
       } catch (err) {
         SmartHR.showToast(err.message, 'error');
@@ -389,6 +456,13 @@
         mountFallback(err.message);
       }
     }
+
+    // واجهة قراءة فقط لاختبارات المتصفح (لا تُغيّر سلوكاً ولا تكشف بيانات)
+    window.__roomState = () => ({
+      hasSavedEvaluation: Boolean(savedEvaluation),
+      hydratedFromSaved,
+      recommendation: document.getElementById('eval-recommendation').value
+    });
 
     document.getElementById('btn-save-eval').addEventListener('click', saveEvaluation);
     document.getElementById('btn-end-call').addEventListener('click', endCall);

@@ -846,6 +846,232 @@ async function main() {
     }
   });
 
+  // =========================================================================
+  // R2 — حفظ الملاحظة/الملاحظة الصوتية/التوصية وحدها فوق تقييم قائم
+  // (كل بوابة تتحقق من القيم الفعلية في القاعدة ومن عدد طلبات POST)
+  // =========================================================================
+
+  /** يفتح قاعة حقيقية في Chromium مع عدّاد طلبات POST إلى /api/evaluations */
+  async function openRoomWithCounter(cookie) {
+    const browser = await chromium.launch({ args: ['--no-sandbox', '--disable-dev-shm-usage'] });
+    const ctx = await browser.newContext({ viewport: { width: 1440, height: 900 }, extraHTTPHeaders: { Cookie: cookie } });
+    await ctx.route('https://localhost/**', (r) => r.fulfill({ status: 200, contentType: 'text/html', body: '<html><body>stub</body></html>' }));
+    let posts = 0;
+    const bodies = [];
+    ctx.on('request', (req) => {
+      if (req.method() === 'POST' && req.url().includes('/api/evaluations')) {
+        posts += 1;
+        try { bodies.push(JSON.parse(req.postData() || '{}')); } catch (_e) { bodies.push({}); }
+      }
+    });
+    const page = await ctx.newPage();
+    await page.goto(`${BASE}/InterviewRoom.dc.html?interview_id=${remoteRow.id}`, { waitUntil: 'domcontentloaded' });
+    await page.waitForSelector('[data-testid="jitsi-frame"]', { timeout: 20000 });
+    return { browser, ctx, page, counts: () => posts, bodies };
+  }
+
+  async function seedSavedEvaluation(overrides = {}) {
+    await pool.query('DELETE FROM committee_evaluations WHERE application_id = $1', [remote.applicationId]);
+    const base = {
+      technical_competence: 4.5, communication_persuasion: 2, problem_solving: 5,
+      cultural_fit: 1.5, portfolio_practical: 3.5,
+      recommendation: 'hold', notes: 'ملاحظة أصلية', voice_human_note: 'نبرة أصلية'
+    };
+    const seed = { ...base, ...overrides };
+    const r = await api('/api/evaluations', {
+      method: 'POST', cookie: commCookie,
+      body: { application_id: remote.applicationId, ...seed }
+    });
+    assert.ok([200, 201].includes(r.status), `seed failed: ${r.text.slice(0, 150)}`);
+    return seed;
+  }
+
+  async function readSaved() {
+    const r = await pool.query(
+      `SELECT technical_competence, communication_persuasion, problem_solving, cultural_fit,
+              portfolio_practical, recommendation, notes, voice_human_note
+       FROM committee_evaluations WHERE application_id = $1`,
+      [remote.applicationId]
+    );
+    assert.strictEqual(r.rows.length, 1, 'عدد صفوف التقييم يجب أن يبقى 1');
+    const row = r.rows[0];
+    return {
+      technical_competence: Number(row.technical_competence),
+      communication_persuasion: Number(row.communication_persuasion),
+      problem_solving: Number(row.problem_solving),
+      cultural_fit: Number(row.cultural_fit),
+      portfolio_practical: Number(row.portfolio_practical),
+      recommendation: row.recommendation,
+      notes: row.notes,
+      voice_human_note: row.voice_human_note
+    };
+  }
+
+  await gate('R2-1', 'حفظ الملاحظة النصية وحدها دون تحريك أي درجة', async () => {
+    const seed = await seedSavedEvaluation();
+    const room = await openRoomWithCounter(commCookie);
+    try {
+      await room.page.fill('#eval-notes', 'ملاحظة معدّلة فقط');
+      await room.page.click('[data-testid="save-eval"]');
+      await room.page.waitForTimeout(1200);
+
+      assert.strictEqual(room.counts(), 1, `يجب إرسال طلب حفظ واحد، أُرسل ${room.counts()}`);
+      const saved = await readSaved();
+      assert.strictEqual(saved.notes, 'ملاحظة معدّلة فقط', 'الملاحظة لم تُحفظ');
+      // كل ما عدا الملاحظة يجب أن يبقى كما هو حرفياً
+      assert.deepStrictEqual(
+        [saved.technical_competence, saved.communication_persuasion, saved.problem_solving, saved.cultural_fit, saved.portfolio_practical],
+        [seed.technical_competence, seed.communication_persuasion, seed.problem_solving, seed.cultural_fit, seed.portfolio_practical],
+        'الدرجات تغيّرت عند حفظ الملاحظة وحدها'
+      );
+      assert.strictEqual(saved.recommendation, seed.recommendation, 'التوصية تغيّرت عند حفظ الملاحظة وحدها');
+      assert.strictEqual(saved.voice_human_note, seed.voice_human_note, 'الملاحظة الصوتية تغيّرت عند حفظ الملاحظة وحدها');
+    } finally { await room.ctx.close(); await room.browser.close(); }
+  });
+
+  await gate('R2-2', 'حفظ الملاحظة الصوتية وحدها دون تحريك أي درجة', async () => {
+    const seed = await seedSavedEvaluation();
+    const room = await openRoomWithCounter(commCookie);
+    try {
+      const visible = await room.page.isVisible('#voice-human-note');
+      assert.strictEqual(visible, true, 'حقل الملاحظة الصوتية غير ظاهر مع وجود تسجيل');
+      await room.page.fill('#voice-human-note', 'نبرة معدّلة فقط');
+      await room.page.click('[data-testid="save-eval"]');
+      await room.page.waitForTimeout(1200);
+
+      assert.strictEqual(room.counts(), 1, `يجب إرسال طلب حفظ واحد، أُرسل ${room.counts()}`);
+      const saved = await readSaved();
+      assert.strictEqual(saved.voice_human_note, 'نبرة معدّلة فقط', 'الملاحظة الصوتية لم تُحفظ');
+      assert.deepStrictEqual(
+        [saved.technical_competence, saved.communication_persuasion, saved.problem_solving, saved.cultural_fit, saved.portfolio_practical],
+        [seed.technical_competence, seed.communication_persuasion, seed.problem_solving, seed.cultural_fit, seed.portfolio_practical],
+        'الدرجات تغيّرت عند حفظ الملاحظة الصوتية وحدها'
+      );
+      assert.strictEqual(saved.notes, seed.notes, 'الملاحظة النصية تغيّرت عند حفظ الملاحظة الصوتية وحدها');
+      assert.strictEqual(saved.recommendation, seed.recommendation, 'التوصية تغيّرت');
+    } finally { await room.ctx.close(); await room.browser.close(); }
+  });
+
+  await gate('R2-3', 'تغيير التوصية وحدها دون تحريك أي درجة أو ملاحظة', async () => {
+    const seed = await seedSavedEvaluation();
+    const room = await openRoomWithCounter(commCookie);
+    try {
+      await room.page.selectOption('#eval-recommendation', 'no_hire');
+      await room.page.click('[data-testid="save-eval"]');
+      await room.page.waitForTimeout(1200);
+
+      assert.strictEqual(room.counts(), 1, `يجب إرسال طلب حفظ واحد، أُرسل ${room.counts()}`);
+      const saved = await readSaved();
+      assert.strictEqual(saved.recommendation, 'no_hire', 'التوصية لم تُحفظ');
+      assert.deepStrictEqual(
+        [saved.technical_competence, saved.communication_persuasion, saved.problem_solving, saved.cultural_fit, saved.portfolio_practical],
+        [seed.technical_competence, seed.communication_persuasion, seed.problem_solving, seed.cultural_fit, seed.portfolio_practical],
+        'الدرجات تغيّرت عند حفظ التوصية وحدها'
+      );
+      assert.strictEqual(saved.notes, seed.notes, 'الملاحظة تغيّرت عند حفظ التوصية وحدها');
+      assert.strictEqual(saved.voice_human_note, seed.voice_human_note, 'الملاحظة الصوتية تغيّرت');
+    } finally { await room.ctx.close(); await room.browser.close(); }
+  });
+
+  await gate('R2-4', 'لا تغيير إطلاقاً ⇒ صفر طلبات ولا تعديل على القاعدة', async () => {
+    const seed = await seedSavedEvaluation();
+    const room = await openRoomWithCounter(commCookie);
+    try {
+      await room.page.click('[data-testid="save-eval"]');
+      await room.page.waitForTimeout(1000);
+      assert.strictEqual(room.counts(), 0, `لا يجوز إرسال أي طلب عند عدم التغيير، أُرسل ${room.counts()}`);
+      const saved = await readSaved();
+      assert.strictEqual(saved.notes, seed.notes);
+      assert.strictEqual(saved.recommendation, seed.recommendation);
+      assert.deepStrictEqual(
+        [saved.technical_competence, saved.cultural_fit],
+        [seed.technical_competence, seed.cultural_fit],
+        'القيم تغيّرت رغم عدم وجود أي تغيير'
+      );
+    } finally { await room.ctx.close(); await room.browser.close(); }
+  });
+
+  await gate('R2-5', 'فشل تحميل التقييم ⇒ لا كتابة عمياء فوق القيم المحفوظة', async () => {
+    const seed = await seedSavedEvaluation();
+
+    // (أ) محاكاة فشل التحميل الأولي: نُخفي my_evaluation من استجابة room-session أثناء الفتح
+    const browserA = await chromium.launch({ args: ['--no-sandbox', '--disable-dev-shm-usage'] });
+    let postsA = 0;
+    try {
+      const ctx = await browserA.newContext({ viewport: { width: 1440, height: 900 }, extraHTTPHeaders: { Cookie: commCookie } });
+      await ctx.route('https://localhost/**', (r) => r.fulfill({ status: 200, contentType: 'text/html', body: '<html><body>stub</body></html>' }));
+      let hiddenOnce = false;
+      await ctx.route('**/api/interviews/*/room-session', async (route) => {
+        const resp = await route.fetch();
+        const json = await resp.json();
+        if (!hiddenOnce) { json.my_evaluation = null; hiddenOnce = true; } // فشل التحميل الأولي فقط
+        await route.fulfill({ response: resp, body: JSON.stringify(json) });
+      });
+      ctx.on('request', (req) => {
+        if (req.method() === 'POST' && req.url().includes('/api/evaluations')) postsA += 1;
+      });
+      const page = await ctx.newPage();
+      await page.goto(`${BASE}/InterviewRoom.dc.html?interview_id=${remoteRow.id}`, { waitUntil: 'domcontentloaded' });
+      await page.waitForSelector('[data-testid="jitsi-frame"]', { timeout: 20000 });
+
+      const state = await page.evaluate(() => window.__roomState());
+      assert.strictEqual(state.hasSavedEvaluation, false, 'التحميل الأولي يجب أن يكون قد فشل في هذا الاختبار');
+
+      // يضغط حفظ دون لمس أي شيء: يجب ألا تُستبدل القيم المحفوظة بقيم النموذج الافتراضية
+      await page.click('[data-testid="save-eval"]');
+      await page.waitForTimeout(1500);
+
+      const after = await readSaved();
+      assert.deepStrictEqual(
+        [after.technical_competence, after.communication_persuasion, after.problem_solving, after.cultural_fit, after.portfolio_practical],
+        [seed.technical_competence, seed.communication_persuasion, seed.problem_solving, seed.cultural_fit, seed.portfolio_practical],
+        'فشل التحميل أدّى إلى استبدال الدرجات المحفوظة (الثغرة ما زالت قائمة)'
+      );
+      assert.strictEqual(after.recommendation, seed.recommendation, 'التوصية استُبدلت بعد فشل التحميل');
+      assert.strictEqual(after.notes, seed.notes, 'الملاحظة استُبدلت بعد فشل التحميل');
+      assert.strictEqual(after.voice_human_note, seed.voice_human_note, 'الملاحظة الصوتية استُبدلت');
+
+      // إما منع الكتابة كلياً، أو كتابة القيم المحفوظة نفسها — كلاهما لا يُفسد البيانات.
+      // المهم: لم تُكتب أي قيمة افتراضية.
+      assert.ok(postsA <= 1, `عدد طلبات الحفظ غير متوقع: ${postsA}`);
+      await ctx.close();
+    } finally { await browserA.close(); }
+
+    // (ب) فشل التحقق القبلي: تعطيل كل استدعاءات room-session بعد الفتح ⇒ يجب منع الحفظ
+    const browserB = await chromium.launch({ args: ['--no-sandbox', '--disable-dev-shm-usage'] });
+    let postsB = 0;
+    try {
+      const ctx = await browserB.newContext({ viewport: { width: 1440, height: 900 }, extraHTTPHeaders: { Cookie: commCookie } });
+      await ctx.route('https://localhost/**', (r) => r.fulfill({ status: 200, contentType: 'text/html', body: '<html><body>stub</body></html>' }));
+      let firstDone = false;
+      await ctx.route('**/api/interviews/*/room-session', async (route) => {
+        if (!firstDone) {
+          firstDone = true;
+          const resp = await route.fetch();
+          const json = await resp.json();
+          json.my_evaluation = null;      // لم يُحمَّل شيء
+          await route.fulfill({ response: resp, body: JSON.stringify(json) });
+        } else {
+          await route.fulfill({ status: 503, body: '{"error":"drill: verification down"}' }); // فشل التحقق القبلي
+        }
+      });
+      ctx.on('request', (req) => {
+        if (req.method() === 'POST' && req.url().includes('/api/evaluations')) postsB += 1;
+      });
+      const page = await ctx.newPage();
+      await page.goto(`${BASE}/InterviewRoom.dc.html?interview_id=${remoteRow.id}`, { waitUntil: 'domcontentloaded' });
+      await page.waitForSelector('[data-testid="jitsi-frame"]', { timeout: 20000 });
+
+      await page.click('[data-testid="save-eval"]');
+      await page.waitForTimeout(1500);
+      assert.strictEqual(postsB, 0, 'يجب منع أي كتابة عند تعذّر التحقق القبلي');
+      const after = await readSaved();
+      assert.strictEqual(after.notes, seed.notes, 'القاعدة تغيّرت رغم منع الحفظ');
+      assert.strictEqual(Number(after.technical_competence), seed.technical_competence, 'درجات تغيّرت عند تعذّر التحقق');
+      await ctx.close();
+    } finally { await browserB.close(); }
+  });
+
   // ---------------------------------------------------------------------------
   console.log('\n' + '─'.repeat(72));
   const passed = results.filter((r) => r.ok).length;

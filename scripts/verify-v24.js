@@ -25,7 +25,7 @@ const { execFileSync } = require('child_process');
 
 const ROOT = path.resolve(__dirname, '..');
 const results = [];
-const TOTAL_GATES = 13;
+const TOTAL_GATES = 14;
 let failed = 0;
 
 function gate(id, name, fn) {
@@ -227,7 +227,28 @@ async function main() {
     assert.ok(roomPage.includes('savedEvaluation'), 'لا حالة للتقييم المحفوظ في الواجهة');
     // لا قيم افتراضية عالية تُفرض على العضو
     assert.ok(!/value="4"\s+data-score-key/.test(roomPage), 'المنزلقات ما زالت تُهيَّأ بقيمة 4 افتراضية');
-    assert.ok(roomPage.includes('untouched'), 'لا حماية من حفظ قيم لم يلمسها العضو');
+    // الحماية الآن عبر مقارنة الحقول الفعلية (R2) لا عبر حركة المنزلقات
+    assert.ok(roomPage.includes('decideEvaluationSave'), 'لا آلية قرار حفظ محكمة');
+    assert.ok(roomPage.includes('hydratedFromSaved'), 'لا تتبّع لحالة تحميل التقييم المحفوظ');
+  });
+
+  // ---------------------------------------------------------------------------
+  await gate('6d', 'R2: قرار الحفظ مقارنة حقول لا حركة منزلقات', async () => {
+    const roomPage = read('public/InterviewRoom.dc.html');
+    assert.ok(roomPage.includes('function decideEvaluationSave'), 'دالة قرار الحفظ النقية مفقودة');
+    assert.ok(roomPage.includes("'block-hydration'"), 'لا حماية من فشل التحميل');
+    assert.ok(roomPage.includes("'noop'"), 'لا حالة عدم-تغيير');
+    // الثغرة السابقة: الحفظ كان يُمنع لمجرد أن الدرجات لم تُلمس
+    assert.ok(!/untouched\.length === Object\.keys\(scores\)\.length/.test(roomPage),
+      'شرط "المنزلقات غير الملموسة" ما زال يمنع حفظ الملاحظة وحدها');
+    assert.ok(!/untouched\.length && untouched\.length ===/.test(roomPage),
+      'شرط الحفظ القديم القائم على المنزلقات عاد للظهور');
+    // الحقول الثلاثة القابلة للحفظ وحدها يجب أن تكون في المقارنة
+    for (const f of ['notes', 'voice_human_note', 'recommendation']) {
+      assert.ok(new RegExp(`current\\.${f}`).test(roomPage), `الحقل ${f} غير مشمول في مقارنة التغيير`);
+    }
+    // تحقق قبلي من الخادم عند غياب تقييم محمّل
+    assert.ok(roomPage.includes('fresh.my_evaluation'), 'لا تحقق قبلي من الخادم قبل الكتابة');
   });
 
   // ---------------------------------------------------------------------------
