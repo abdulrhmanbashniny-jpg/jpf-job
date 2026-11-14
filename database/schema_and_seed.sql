@@ -214,6 +214,7 @@ CREATE TABLE IF NOT EXISTS committee_evaluations (
     problem_solving             NUMERIC(3,1) NOT NULL CHECK (problem_solving BETWEEN 1.0 AND 5.0),
     cultural_fit                NUMERIC(3,1) NOT NULL CHECK (cultural_fit BETWEEN 1.0 AND 5.0),
     portfolio_practical         NUMERIC(3,1) NOT NULL CHECK (portfolio_practical BETWEEN 1.0 AND 5.0),
+    voice_human_note            TEXT,
     total_percentage            NUMERIC(5,2) GENERATED ALWAYS AS (
                                     ROUND(
                                         ((technical_competence * 0.25 +
@@ -279,6 +280,11 @@ CREATE TABLE IF NOT EXISTS interviews (
     reschedule_requested_at TIMESTAMPTZ,
     reminder_24h_sent_at TIMESTAMPTZ,
     reminder_15m_sent_at TIMESTAMPTZ,
+    jitsi_room_name     VARCHAR(120),
+    room_opened_by_staff_at TIMESTAMPTZ,
+    candidate_joined_room_at TIMESTAMPTZ,
+    actual_call_minutes INTEGER,
+    room_telemetry      JSONB NOT NULL DEFAULT '{}'::jsonb,
     notes               TEXT,
     created_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -286,6 +292,10 @@ CREATE TABLE IF NOT EXISTS interviews (
 );
 
 CREATE INDEX IF NOT EXISTS idx_interviews_date_time ON interviews (scheduled_date, start_time);
+-- v2.4: اسم غرفة Jitsi فريد لكل مقابلة حتى لا يتشارك مرشحان غرفة واحدة
+CREATE UNIQUE INDEX IF NOT EXISTS idx_interviews_jitsi_room_name
+    ON interviews (jitsi_room_name)
+    WHERE jitsi_room_name IS NOT NULL;
 CREATE UNIQUE INDEX IF NOT EXISTS idx_interviews_visit_token ON interviews (visit_token);
 
 -- ---------------------------------------------------------------------------------
