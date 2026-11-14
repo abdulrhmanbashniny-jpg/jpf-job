@@ -198,8 +198,64 @@
               </section>
             </div>
 
-            <!-- العمود الأيسر: نموذج تقييم اللجنة بـ 5 معايير موزونة -->
+            <!-- العمود الأيسر: التعريف الصوتي البشري + نموذج تقييم اللجنة بـ 5 معايير موزونة -->
             <div style="display:flex;flex-direction:column;gap:22px;">
+              <section class="card" id="committee-voice-card" style="border-top:5px solid var(--olive);">
+                <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;flex-wrap:wrap;gap:8px;">
+                  <h3 style="font-size:17px;">🎙️ التعريف الصوتي للمرشح (60 ثانية — مراجعة بشرية)</h3>
+                  ${
+                    currentApp.has_voice_pitch
+                      ? `<span class="badge badge-olive">مسجل (${SmartHR.escapeHtml(String(currentApp.voice_duration_sec || 30))} ثانية)</span>`
+                      : currentApp.voice_purged_at
+                        ? `<span class="badge badge-charcoal">تم تطهير المقطع (${SmartHR.escapeHtml(currentApp.voice_purge_reason || 'منتهي الصلاحية')})</span>`
+                        : `<span class="badge badge-charcoal">لم يسجل مقطعاً صوتياً (اختياري)</span>`
+                  }
+                </div>
+
+                ${
+                  currentApp.has_voice_pitch
+                    ? `
+                      <div style="background:var(--bg-subtle);border:1px solid var(--border-color);border-radius:12px;padding:12px 14px;margin-bottom:12px;">
+                        <audio id="committee-voice-player" controls preload="none" src="${SmartHR.escapeHtml(currentApp.voice_stream_url)}" style="width:100%;height:38px;"></audio>
+                        <div style="font-size:11.5px;color:var(--text-muted);margin-top:6px;display:flex;justify-content:space-between;flex-wrap:wrap;gap:6px;">
+                          <span>🔒 يُوثَّق كل استماع في سجل التدقيق (audit_logs)</span>
+                          ${
+                            currentApp.voice_retention_expires_at
+                              ? `<span>حذف تلقائي لغير المختارين: <strong class="mono">${SmartHR.formatDate(currentApp.voice_retention_expires_at)}</strong></span>`
+                              : `<span>معفى من الحذف التلقائي (مرشح مختار)</span>`
+                          }
+                        </div>
+                      </div>
+
+                      <form id="voice-review-form">
+                        <div class="grid-2" style="margin-bottom:10px;">
+                          <div>
+                            <label class="form-label" style="font-size:12px;">درجة التميز الإضافية (0 إلى 5 درجات)</label>
+                            <input type="number" id="vr-bonus-score" class="form-control mono" min="0" max="5" step="0.5" value="${Number(currentApp.voice_bonus_score || 0)}" />
+                          </div>
+                          <div>
+                            <label class="form-label" style="font-size:12px;">آخر مراجع بشري</label>
+                            <input type="text" class="form-control" value="${SmartHR.escapeHtml(currentApp.voice_reviewed_by || 'لم يُراجع بعد')}" disabled />
+                          </div>
+                        </div>
+                        <div class="form-group" style="margin-bottom:10px;">
+                          <label class="form-label" style="font-size:12px;">ملاحظات اللجنة البشرية حول التواصل الصوتي</label>
+                          <textarea id="vr-notes" class="form-textarea" rows="2" placeholder="وضوح الفكرة، الثقة المهنية، إيجاز العرض...">${SmartHR.escapeHtml(currentApp.voice_review_notes || '')}</textarea>
+                        </div>
+                        <div style="display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap;">
+                          <button type="submit" id="save-voice-review-btn" class="btn btn-olive btn-sm">اعتماد التقييم البشري للتعريف الصوتي ✓</button>
+                          ${
+                            window.__CURRENT_USER && ['super_admin', 'hr_coordinator'].includes(window.__CURRENT_USER.role)
+                              ? `<button type="button" id="staff-delete-voice-btn" class="btn btn-outline btn-sm" style="color:var(--terracotta);border-color:var(--terracotta);">حذف المقطع الصوتي</button>`
+                              : ''
+                          }
+                        </div>
+                      </form>
+                    `
+                    : `<p style="font-size:12.5px;color:var(--text-secondary);margin:0;">هذا السؤال اختياري بالكامل ولا يُحتسب أي خصم عند عدم تسجيله.</p>`
+                }
+              </section>
+
               <section class="card" style="border-top:5px solid var(--charcoal);">
                 <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;">
                   <h3 style="font-size:18px;">⚖️ بطاقة تقييم عضو اللجنة (5 معايير)</h3>
@@ -331,6 +387,41 @@
             SmartHR.showToast(err.message, 'error');
           }
         });
+
+        const vrForm = document.getElementById('voice-review-form');
+        if (vrForm) {
+          vrForm.addEventListener('submit', async (ev) => {
+            ev.preventDefault();
+            try {
+              const resVr = await SmartHR.apiFetch(`/api/applications/${currentApp.id}/voice-review`, {
+                method: 'POST',
+                body: JSON.stringify({
+                  voice_bonus_score: Number(document.getElementById('vr-bonus-score').value || 0),
+                  voice_review_notes: document.getElementById('vr-notes').value.trim()
+                })
+              });
+              SmartHR.showToast(resVr.message, 'success');
+              await loadCandidateProfile(currentApp.id);
+            } catch (err) {
+              SmartHR.showToast(err.message, 'error');
+            }
+          });
+        }
+
+        const staffDelVoiceBtn = document.getElementById('staff-delete-voice-btn');
+        if (staffDelVoiceBtn) {
+          staffDelVoiceBtn.addEventListener('click', async () => {
+            try {
+              const delRes = await SmartHR.apiFetch(`/api/applications/${currentApp.id}/voice-pitch`, {
+                method: 'DELETE'
+              });
+              SmartHR.showToast(delRes.message, 'info');
+              await loadCandidateProfile(currentApp.id);
+            } catch (err) {
+              SmartHR.showToast(err.message, 'error');
+            }
+          });
+        }
       } catch (err) {
         root.innerHTML = `<div class="card" style="color:var(--terracotta);">${SmartHR.escapeHtml(err.message)}</div>`;
       }
@@ -377,7 +468,7 @@
       const apps = listRes.applications || [];
 
       switcher.innerHTML = apps.map((a) => `
-        <option value="${a.id}" ${String(a.id) === String(requestedId) ? 'selected' : ''}>
+        <option value="${a.id}" ${String(a.id) === String(requestedId) || String(a.reference_no).toUpperCase() === String(requestedId || '').toUpperCase() ? 'selected' : ''}>
           [${SmartHR.escapeHtml(a.job_code)}] ${SmartHR.escapeHtml(a.full_name)} — الموزونة: ${a.final_weighted_score}%
         </option>
       `).join('');

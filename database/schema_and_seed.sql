@@ -153,6 +153,18 @@ CREATE TABLE IF NOT EXISTS applications (
     ai_report               JSONB NOT NULL DEFAULT '{}'::jsonb,
     ai_analysis_status      VARCHAR(30) NOT NULL DEFAULT 'completed',
     candidate_access_token  VARCHAR(64) NOT NULL DEFAULT (replace(gen_random_uuid()::text, '-', '') || replace(gen_random_uuid()::text, '-', '')),
+    voice_pitch_path        VARCHAR(350),
+    voice_mime_type         VARCHAR(80),
+    voice_duration_sec      INTEGER CHECK (voice_duration_sec IS NULL OR (voice_duration_sec BETWEEN 1 AND 65)),
+    voice_recorded_at       TIMESTAMPTZ,
+    voice_consent_at        TIMESTAMPTZ,
+    voice_retention_expires_at TIMESTAMPTZ,
+    voice_purged_at         TIMESTAMPTZ,
+    voice_purge_reason      VARCHAR(60),
+    voice_bonus_score       NUMERIC(4,2) NOT NULL DEFAULT 0.00 CHECK (voice_bonus_score BETWEEN 0 AND 5),
+    voice_review_notes      TEXT,
+    voice_reviewed_by       VARCHAR(140),
+    voice_reviewed_at       TIMESTAMPTZ,
     privacy_consent         BOOLEAN NOT NULL DEFAULT TRUE CHECK (privacy_consent = TRUE),
     submitted_at            TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     assessed_at             TIMESTAMPTZ,
@@ -163,6 +175,7 @@ CREATE TABLE IF NOT EXISTS applications (
 CREATE INDEX IF NOT EXISTS idx_applications_job_status ON applications (job_id, status);
 CREATE INDEX IF NOT EXISTS idx_applications_weighted_score ON applications (final_weighted_score DESC);
 CREATE INDEX IF NOT EXISTS idx_applications_submitted_at ON applications (submitted_at DESC);
+CREATE INDEX IF NOT EXISTS idx_applications_voice_retention ON applications (voice_retention_expires_at) WHERE voice_pitch_path IS NOT NULL;
 
 -- ---------------------------------------------------------------------------------
 -- 6. جدول تفاصيل إجابات اختبار الجدارة (assessment_answers)

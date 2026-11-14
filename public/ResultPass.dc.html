@@ -134,6 +134,8 @@
             </div>
           </div>
 
+          <div id="result-voice-pitch-mount" style="margin-bottom:20px;"></div>
+
           <div class="grid-2">
             <div class="card-subtle">
               <h3 style="font-size:16px;margin-bottom:10px;color:var(--olive);">✦ أبرز نقاط القوة المرصودة</h3>
@@ -166,6 +168,8 @@
             <button type="button" onclick="window.print()" class="btn btn-primary">طباعة إيصال الترشح والاجتياز 🖨</button>
           </div>
         `;
+
+        SmartHR.renderCandidateVoicePitchWidget(document.getElementById('result-voice-pitch-mount'), app);
 
         requestAnimationFrame(() => {
           setTimeout(() => {
