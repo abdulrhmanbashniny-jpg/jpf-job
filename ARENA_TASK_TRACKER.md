@@ -5,7 +5,8 @@
 - **المستودع الرسمي**: `https://github.com/abdulrhmanbashniny-jpg/jpf-job`
 - **النطاق الحي**: `https://hrjpf.tech`
 - **قناة التنسيق الرسمية بين الوكيلين**: [GitHub Issue #2 (`HERMES-ARENA-SYNC`)](https://github.com/abdulrhmanbashniny-jpg/jpf-job/issues/2)
-- **تاريخ آخر تحديث**: `2026-11-12` (بتوقيت الرياض `Asia/Riyadh`) — بواسطة **Arena**
+- **تاريخ آخر تحديث**: `2026-11-14` (بتوقيت الرياض `Asia/Riyadh`) — بواسطة **Arena**
+- **حالة `v2.3` الآن**: `PR #5` مفتوح (`release/v2.3` → `main`) @ `6ea2da720b706abb1033df172d88449914a4a4c4` · CI أخضر `2/2` · `READY_FOR_REVIEW` منشور على `Issue #2` (`issuecomment-6875650800`) · **بانتظار `HERMES_VERDICT`**
 
 > ### 📌 قاعدة مستدامة إلزامية لأي جلسة أو محادثة جديدة لوكيل `Arena`:
 > 1. اقرأ هذا الملف (`ARENA_TASK_TRACKER.md`) وملف `UNIFIED_EXECUTION_PLAN_V2.2_V2.5.md` وتعليقات `Issue #2` فور استنساخ المستودع لمعرفة آخر نقطة توقف بدقة دون تكرار أي عمل منجز.
@@ -23,7 +24,7 @@
 | **الخطة التنفيذية الموحدة (`v2.2a`–`v2.5`)** | Arena | `UNIFIED_EXECUTION_PLAN_V2.2_V2.5.md` + Issue #2 | ✅ **تم الإنجاز — بواسطة Arena** |
 | **المرحلة 1 (`v2.2a`)**: استقبال المرشحين بالـ QR وتنبيه اللجنة | Arena | `main` @ `4fc4392` (دمج **PR #3**) — HEAD الفرع `4c4912b` | ✅ **تم الإنجاز — بواسطة Arena** (CI أخضر 4/4 + `HERMES_VERDICT: APPROVED sha=4c4912b37091133f6e0ac3d398da2de6a2a09ad3` + مدمج في `main`) |
 | **المرحلة 2 (`v2.2b`)**: السؤال الصوتي الاختياري 60 ثانية وحذف 30 يوماً | Arena | `main` @ `1c9033a` (دمج **PR #4**) — HEAD الفرع `e1b82dd` | ✅ **تم الإنجاز — بواسطة Arena** (CI أخضر 6/6 + `HERMES_VERDICT: APPROVED sha=e1b82dd504bf53a0d046f927a64c634f8a5632b2` + مدمج في `main`) |
-| **المرحلة 3 (`v2.3`)**: رسائل واتساب التشغيلية عبر `WAHA` (`Dry-Run` إلزامي) | Arena | `origin/wip/v2.3-starter` (`bf6f878`) -> `release/v2.3` (PR #5) | ⏳ **قيد التنفيذ (أُنجز 40% منها — نقطة الاستئناف المباشرة)** |
+| **المرحلة 3 (`v2.3`)**: رسائل واتساب التشغيلية عبر `WAHA` (`Dry-Run` إلزامي) | Arena | `release/v2.3` (PR #5) | ✅ **اكتمل الكود والاختبارات — بواسطة Arena** (14 بوابة `verify:v23` خضراء + 3 حزم رجوع خضراء؛ بانتظار مراجعة Hermes — **Dry-Run فقط**) |
 | **المرحلة 4 (`v2.4`)**: قاعات الفيديو `Jitsi` والتقييم المقسّم | Arena | `release/v2.4` (PR #6) | 🔜 **في الانتظار (تبدأ فور انتهاء `v2.3`)** |
 | **المرحلة 5 (`v2.5`)**: المقارنة التنفيذية + العرض الوظيفي PDF + `n8n` | Arena | `release/v2.5` (PR #7) | 🔜 **في الانتظار (تبدأ فور انتهاء `v2.4`)** |
 
@@ -63,9 +64,23 @@
 ### المرحلة 3 (`v2.3`): رسائل واتساب التشغيلية عبر `WAHA` (وضع `WAHA_DRY_RUN=true` الإلزامي)
 - [x] **ترقية جدول `wa_messages` (`delivery_channel`, `idempotency_key` الفريد, `external_message_id`, `attempt_count`, `last_attempt_at`, `last_error`, `dry_run_payload`) وإعداد `waha_config` الافتراضي الآمن** — ✅ **تم الإنجاز — بواسطة Arena** (محفوظ على GitHub في فرع `origin/wip/v2.3-starter` @ `bf6f878c13a0562799d370fccf0ec7883b22b980`)
 - [x] **بناء خدمة `services/wahaClient.js` بقفل `WAHA_DRY_RUN=true` المزدوج وفحص الجاهزية للقراءة فقط (`probeWahaStatus`) ومهلة 5 ثوانٍ والسقوط الآمن إلى `wa.me`** — ✅ **تم الإنجاز — بواسطة Arena** (في `origin/wip/v2.3-starter` @ `bf6f878c13a0562799d370fccf0ec7883b22b980`)
-- [ ] **استكمال القسم 13 في `server.js`: مسارات `GET /api/waha/status`، `PATCH /api/waha/config`، مفتاح الإيقاف الفوري `POST /api/waha/kill-switch`، والإرسال الفردي المحكوم `POST /api/wa-messages/:id/dispatch-waha` (قفل `applications -> interviews -> wa_messages`، منع الرسائل الرجعية قبل `waha_activated_at`، منع `portal_recovery`، وحد المعدل `6/د` و `25/س`)** — ⏳ **المهمة التالية مباشرة لـ Arena**
-- [ ] **تحديث واجهة `public/Interviews.dc.html` بشريط حالة `WAHA Dry-Run`، زر الإيقاف الفوري للطوارئ (`Kill-Switch`)، وزر محاكاة الإرسال الآمن لكل صف بجانب رابط `wa.me` اليدوي** — ⏳ **بانتظار Arena**
-- [ ] **كتابة واجتياز `scripts/verify-v23.js` + ربطه في `.github/workflows/ci.yml` + دفع فرع `release/v2.3` وفتح `PR #5` واخضرار CI وإرسال `READY_FOR_REVIEW` على `Issue #2`** — ⏳ **بانتظار Arena**
+- [x] **ترحيل الأعمدة على `release/v2.3` فوق `main` @ `91e63cb` (وليس الدمج الأعمى لفرع البداية)**: 7 أعمدة حوكمة في `wa_messages` + فهرس `idx_wa_messages_idempotency_key` الفريد الجزئي، و4 أعمدة في `interviews` (`reschedule_requested`, `reschedule_requested_at`, `reminder_24h_sent_at`, `reminder_15m_sent_at`)، وبذرة `waha_config` الآمنة (`dry_run=true`, `enabled=false`, `6/د`, `25/س`, `waha_activated_at=null`) — ✅ **تم الإنجاز — بواسطة Arena** (`database/db.js` + `database/schema_and_seed.sql`)
+- [x] **تقوية `services/wahaClient.js`**: قفل Dry-Run مزدوج (بيئة + قاعدة بيانات)، حارس SSRF يمنع أي عنوان عام/محلي ويقبل اسم حاوية Docker أو IPv4 خاص فقط، تقنيع أرقام المرشحين (`maskPhone`)، منع تسريب `WAHA_API_KEY` من رسائل الأخطاء، ومهل `3s` للفحص و`5s` للإرسال — ✅ **تم الإنجاز — بواسطة Arena**
+- [x] **بناء `services/wahaRoutes.js` وتركيبه في `server.js`**: `GET /api/waha/status` (+`?probe=1`)، `PATCH /api/waha/config`، `POST /api/waha/kill-switch`، `POST /api/wa-messages/:id/dispatch-waha` (قفل `applications -> interviews -> wa_messages`، منع الرسائل الرجعية قبل `waha_activated_at`، منع `portal_recovery`، حدود `6/د` و`25/س`، قاطع دائرة عند 3 أخطاء متتالية)، `GET /api/waha/dry-run-outbox`، و`POST /api/webhooks/waha` الموقّع بـ `X-WAHA-Webhook-Secret` (رد `1` → `confirmed`، رد `2` → `reschedule_requested` دون إلغاء) — ✅ **تم الإنجاز — بواسطة Arena**
+- [x] **تحويل السقوط إلى الوضع اليدوي عند أي حالة غير مطابقة**: `dry_run` أو `kill_switch_tripped` أو `enabled=false` أو `WAHA_DRY_RUN=true` كلها تُرجع `wa.me` فوراً، مع قفل ثانٍ `WAHA_LIVE_APPROVED` يرفض التفعيل الحيّ بـ `403 WAHA_LIVE_NOT_APPROVED` بلا موافقة المالك — ✅ **تم الإنجاز — بواسطة Arena**
+- [x] **تحديث `public/Interviews.dc.html`**: شريط حوكمة WAHA (وضع جاف/حي/إيقاف + عدادات `6/د` و`25/س` + سبب الحجب)، زر إيقاف فوري بنقرة واحدة، زر «🧪 إرسال WAHA» لكل صف بجانب «فتح مسودة wa.me»، وشارة «محاكاة جافة» في عمود الحالة — ✅ **تم الإنجاز — بواسطة Arena**
+- [x] **بناء واجتياز `scripts/verify-v23.js` (14 بوابة)**: صفر بايت في Dry-Run (محاكي WAHA محلي يعدّ `/api/sendText`)، لا PII في المظروف، حظر `portal_recovery`، Kill-Switch، عودة Dry-Run بعد إعادة التشغيل، ويب هوك موقّع، حاجز `waha_activated_at`، بقاء `wa.me`، حارس SSRF، نظافة `audit_logs`، مسار حيّ على المحاكي فقط (إرسال واحد + منع تكرار + `429` + قاطع دائرة)، وChromium E2E للواجهة — ✅ **تم الإنجاز — بواسطة Arena**
+- [x] **ربط `verify:v23` في `.github/workflows/ci.yml`** مع حاجزي رفض (بدون `ALLOW_ISOLATED_DRILL=1` أو داخل `NODE_ENV=production`) + **إصلاح حاجز الإصدار في `verify-v22a.js`** ليقبل المراحل التراكمية (`2.3.0` لم يعد يكسر فحص `v2.2a`) — ✅ **تم الإنجاز — بواسطة Arena**
+- [x] **تحضير البنية للتسليم إلى Hermes بدون أسرار**: شبكة `waha_net` الخارجية (`waha-bbg7_default`) في `docker-compose.yml`، متغيرات WAHA الآمنة في `.env.example`، وملف `V2.3_WAHA_HANDOFF.md` (Reachability + خطوات التحقق، بدون أي مفتاح) — ✅ **تم الإنجاز — بواسطة Arena**
+- [x] **دفع `release/v2.3` وفتح `PR #5` واخضرار CI `2/2` ونشر `READY_FOR_REVIEW 6ea2da720b706abb1033df172d88449914a4a4c4` على `Issue #2` (`issuecomment-6875650800`)** — ✅ **تم الإنجاز — بواسطة Arena**
+- [x] **إصلاح فشلي CI الأول (بيئة الحاويات + سباق الواجهة)**: إنشاء شبكة WAHA الخارجية المعزولة في `ci-container-rollback-drill.sh` مع تثبيت `WAHA_DRY_RUN=true`، وإزالة السباق في فحص الواجهة (التحقق من صف قاعدة البيانات قبل شارة DOM) — ✅ **تم الإنجاز — بواسطة Arena** (الكوميت `6ea2da7`)
+- [ ] **Hermes: إثبات الوصول الداخلي من حاوية التطبيق إلى `http://waha-bbg7-waha-1:3000` ثم ضبط `WAHA_API_KEY` و`WAHA_WEBHOOK_SECRET` على الخادم مباشرة (بدون كشف القيم) مع إبقاء `WAHA_DRY_RUN=true`** — ⏳ **بانتظار Hermes بعد المراجعة**
+- [ ] **تفعيل الإرسال الحيّ لأي مرشح فعلي** — 🚫 **موقوف نهائياً: يحتاج موافقة صريحة منفصلة من المالك (`WAHA_LIVE_APPROVED=true` + `WAHA_DRY_RUN=false` + `WAHA_LIVE_APPROVED` معاً)**
+
+> ### 🔒 حدود النطاق المعلنة في `v2.3` (Dry-Run فقط)
+> - عامل التذكيرات الخلفي `24h`/`15m` **غير مُشغّل**؛ أعمدته وحاجز `waha_activated_at` جاهزة لكن الجدولة تُفعّل مع اعتماد الإرسال الحيّ فقط.
+> - `hr_arrival_alert` يبقى تنبيهاً داخلياً في المنصة، غير مربوط بمسار WAHA.
+> - `wa.me` هو البديل اليدوي الدائم ولا يُحذف أبداً.
 
 ---
 
