@@ -6,6 +6,8 @@ const express = require('express');
 const compression = require('compression');
 const rateLimit = require('express-rate-limit');
 const multer = require('multer');
+const QRCode = require('qrcode');
+const { version: APP_VERSION } = require('./package.json');
 
 const { pool, query, ensureDatabaseInitialized, logAudit } = require('./database/db');
 const {
@@ -27,6 +29,8 @@ const {
   clearSessionCookie,
   createVisitPassToken,
   verifyVisitPassToken,
+  createReceptionQrToken,
+  verifyReceptionQrToken,
   createCandidatePortalToken,
   verifyCandidatePortalToken,
   deriveCandidateAccessKey,
@@ -182,6 +186,7 @@ const PROTECTED_PAGE_ROLES = {
   '/Ranking.dc.html': ['super_admin', 'hr_coordinator', 'committee_member'],
   '/Scheduler.dc.html': ['super_admin', 'hr_coordinator', 'committee_member'],
   '/Interviews.dc.html': ['super_admin', 'hr_coordinator', 'committee_member'],
+  '/Reception.dc.html': ['super_admin', 'hr_coordinator'],
   '/AIEngine.dc.html': ['super_admin', 'hr_coordinator', 'committee_member'],
   '/Settings.dc.html': ['super_admin'],
   '/System.dc.html': ['super_admin', 'hr_coordinator', 'committee_member'],
@@ -575,7 +580,7 @@ app.get('/api/health', async (_req, res) => {
     `);
     res.json({
       status: 'ok',
-      version: '2.1.0',
+      version: APP_VERSION,
       timestamp: new Date().toISOString(),
       latency_ms: Date.now() - start,
       node_version: process.version,
@@ -1590,6 +1595,19 @@ app.get('/api/public/visit/:vt', async (req, res) => {
       return res.status(403).json({ error: 'انتهت صلاحية هذا الرابط أو تم تحديث الموعد.', code: 'REVOKED_VISIT_TOKEN' });
     }
 
+    let checkinQrSvg = null;
+    let checkinQrPayload = null;
+    if (!['cancelled', 'no_show'].includes(interview.booking_status)) {
+      checkinQrPayload = `JPFQR:${createReceptionQrToken(interview.id, interview.visit_token)}`;
+      checkinQrSvg = await QRCode.toString(checkinQrPayload, {
+        type: 'svg',
+        margin: 1,
+        width: 210,
+        errorCorrectionLevel: 'M',
+        color: { dark: '#1F2421', light: '#FFFFFF' }
+      });
+    }
+
     res.json({
       candidate: {
         reference_no: interview.reference_no,
@@ -1605,6 +1623,12 @@ app.get('/api/public/visit/:vt', async (req, res) => {
         end_time: interview.end_time,
         duration_minutes: interview.duration_minutes,
         booking_status: interview.booking_status,
+        lobby_status: interview.lobby_status || 'not_arrived',
+        checked_in_at: interview.checked_in_at || null,
+        punctuality_minutes: interview.punctuality_minutes ?? null,
+        checkin_code_tail: String(interview.reference_no || '').slice(-4),
+        checkin_qr_payload: checkinQrPayload,
+        checkin_qr_svg: checkinQrSvg,
         meeting_platform: interview.meeting_platform,
         meeting_url: interview.interview_mode === 'in_person' ? null : interview.meeting_url,
         interviewer_panel: interview.interviewer_panel,
@@ -1765,7 +1789,13 @@ app.patch('/api/applications/:id/status', requireAuth(['super_admin', 'hr_coordi
         const revokedVt = crypto.randomBytes(32).toString('hex');
         await client.query(
           `UPDATE interviews
-           SET booking_status = 'cancelled', visit_token = $1, updated_at = NOW()
+           SET booking_status = 'cancelled',
+               visit_token = $1,
+               lobby_status = 'not_arrived',
+               checked_in_at = NULL,
+               checked_in_by = NULL,
+               punctuality_minutes = NULL,
+               updated_at = NOW()
            WHERE id = $2`,
           [revokedVt, openIntRes.rows[0].id]
         );
@@ -2609,6 +2639,10 @@ app.post('/api/interviews/schedule-single', requireAuth(['super_admin', 'hr_coor
         location_image_url = EXCLUDED.location_image_url,
         location_notes = EXCLUDED.location_notes,
         booking_status = 'rescheduled',
+        lobby_status = 'not_arrived',
+        checked_in_at = NULL,
+        checked_in_by = NULL,
+        punctuality_minutes = NULL,
         updated_at = NOW()
       RETURNING *`,
       [
@@ -2857,6 +2891,10 @@ app.post('/api/interviews/auto-schedule', requireAuth(['super_admin', 'hr_coordi
             location_image_url = EXCLUDED.location_image_url,
             location_notes = EXCLUDED.location_notes,
             booking_status = 'rescheduled',
+            lobby_status = 'not_arrived',
+            checked_in_at = NULL,
+            checked_in_by = NULL,
+            punctuality_minutes = NULL,
             updated_at = NOW()
           RETURNING *`,
           [
@@ -3114,7 +3152,7 @@ app.patch('/api/interviews/:id', requireAuth(['super_admin', 'hr_coordinator', '
 
     const { rows } = await client.query(
       `UPDATE interviews SET
-        booking_status = $1,
+        booking_status = $1::varchar,
         notes = COALESCE($2, notes),
         scheduled_date = COALESCE($3::date, scheduled_date),
         start_time = COALESCE($4::time, start_time),
@@ -3122,6 +3160,14 @@ app.patch('/api/interviews/:id', requireAuth(['super_admin', 'hr_coordinator', '
         interview_mode = $6,
         visit_token = $7,
         meeting_url = $8,
+        lobby_status = CASE
+          WHEN $1::varchar = 'completed' THEN 'completed'
+          WHEN $1::varchar IN ('cancelled', 'no_show') OR $10::boolean THEN 'not_arrived'
+          ELSE lobby_status
+        END,
+        checked_in_at = CASE WHEN $1::varchar IN ('cancelled', 'no_show') OR $10::boolean THEN NULL ELSE checked_in_at END,
+        checked_in_by = CASE WHEN $1::varchar IN ('cancelled', 'no_show') OR $10::boolean THEN NULL ELSE checked_in_by END,
+        punctuality_minutes = CASE WHEN $1::varchar IN ('cancelled', 'no_show') OR $10::boolean THEN NULL ELSE punctuality_minutes END,
         updated_at = NOW()
       WHERE id = $9
       RETURNING *`,
@@ -3134,7 +3180,8 @@ app.patch('/api/interviews/:id', requireAuth(['super_admin', 'hr_coordinator', '
         nextMode,
         nextVisitToken,
         nextMeetingUrl,
-        id
+        id,
+        Boolean(shouldRevokePriorPass)
       ]
     );
 
@@ -3795,6 +3842,413 @@ app.get('/api/audit-logs', requireAuth(['super_admin']), async (req, res) => {
   }
 });
 
+// ---------------------------------------------------------------------------------
+// 11. استقبال المرشحين الذكي بالـ QR وتنبيه اللجنة اللحظي (v2.2a — Smart Reception)
+// ---------------------------------------------------------------------------------
+
+function parseReceptionQrInput(rawInput) {
+  const s = String(rawInput || '').trim();
+  if (!s) return null;
+  if (s.startsWith('JPFQR:')) {
+    const parsed = verifyReceptionQrToken(s.slice(6).trim());
+    return parsed ? { interviewId: parseInt(parsed.sub, 10), nonce: String(parsed.n), source: 'qr_token' } : null;
+  }
+  const directQr = verifyReceptionQrToken(s);
+  if (directQr) {
+    return { interviewId: parseInt(directQr.sub, 10), nonce: String(directQr.n), source: 'qr_token' };
+  }
+  try {
+    if (s.includes('vt=')) {
+      const vtParam = new URL(s, 'https://hrjpf.tech').searchParams.get('vt');
+      const parsedVt = vtParam ? verifyVisitPassToken(vtParam) : null;
+      if (parsedVt) {
+        return { interviewId: parseInt(parsedVt.sub, 10), nonce: String(parsedVt.n), source: 'visit_url' };
+      }
+    }
+  } catch (_e) {}
+  return null;
+}
+
+function verifyNonceTimingSafe(actualNonce32, dbVisitToken) {
+  const expected = String(dbVisitToken || '').slice(0, 32);
+  if (!expected || !actualNonce32) return false;
+  const a = Buffer.from(String(actualNonce32));
+  const b = Buffer.from(expected);
+  return a.length === b.length && crypto.timingSafeEqual(a, b);
+}
+
+function formatReceptionCard(row, locCfg, riyadhTodayStr) {
+  const dateStr = row.scheduled_date instanceof Date
+    ? row.scheduled_date.toISOString().slice(0, 10)
+    : String(row.scheduled_date || '').slice(0, 10);
+  return {
+    interview_id: row.id,
+    application_id: row.application_id,
+    reference_no: row.reference_no,
+    checkin_code_tail: String(row.reference_no || '').slice(-4),
+    full_name: row.full_name,
+    job_code: row.job_code,
+    job_title: row.job_title,
+    department: row.department,
+    interview_mode: row.interview_mode || 'remote',
+    scheduled_date: dateStr,
+    is_scheduled_today: dateStr === riyadhTodayStr,
+    start_time: String(row.start_time || '').slice(0, 5),
+    end_time: String(row.end_time || '').slice(0, 5),
+    duration_minutes: row.duration_minutes,
+    booking_status: row.booking_status,
+    lobby_status: row.lobby_status || 'not_arrived',
+    checked_in_at: row.checked_in_at || null,
+    checked_in_by: row.checked_in_by || null,
+    punctuality_minutes: row.punctuality_minutes ?? null,
+    interviewer_panel: row.interviewer_panel,
+    building: row.location_building || locCfg.building_name,
+    floor: row.location_floor || locCfg.floor_number,
+    office: row.location_office || locCfg.office_number
+  };
+}
+
+app.post('/api/reception/verify-qr', requireAuth(['super_admin', 'hr_coordinator']), async (req, res) => {
+  try {
+    const { qr_payload, reference_query } = req.body || {};
+    if (!qr_payload && !reference_query) {
+      return res.status(400).json({ error: 'يرجى مسح رمز الـ QR أو إدخال الرقم المرجعي للمرشح.', code: 'MISSING_RECEPTION_QUERY' });
+    }
+
+    const [locCfg, todayRes] = await Promise.all([
+      getCompanyLocationConfig(),
+      query("SELECT (NOW() AT TIME ZONE 'Asia/Riyadh')::date::text AS today_riyadh")
+    ]);
+    const riyadhTodayStr = todayRes.rows[0].today_riyadh;
+
+    if (qr_payload) {
+      const parsed = parseReceptionQrInput(qr_payload);
+      if (!parsed || !Number.isInteger(parsed.interviewId) || parsed.interviewId <= 0) {
+        return res.status(403).json({
+          error: 'رمز الاستقبال غير صالح أو منتهي الصلاحية.',
+          code: 'INVALID_CHECKIN_QR'
+        });
+      }
+
+      const { rows } = await query(
+        `SELECT i.*, a.reference_no, c.full_name, j.code AS job_code, j.title AS job_title, j.department
+         FROM interviews i
+         JOIN applications a ON a.id = i.application_id
+         JOIN candidates c ON c.id = a.candidate_id
+         JOIN jobs j ON j.id = a.job_id
+         WHERE i.id = $1`,
+        [parsed.interviewId]
+      );
+      if (!rows.length) {
+        return res.status(404).json({ error: 'لم يتم العثور على سجل الموعد.', code: 'INTERVIEW_NOT_FOUND' });
+      }
+      const row = rows[0];
+      if (!verifyNonceTimingSafe(parsed.nonce, row.visit_token)) {
+        return res.status(403).json({
+          error: 'تم تحديث هذا الموعد أو إلغاؤه وأصبحت بطاقة الـ QR القديمة ملغاة.',
+          code: 'REVOKED_CHECKIN_QR'
+        });
+      }
+      if (row.booking_status === 'cancelled') {
+        return res.status(400).json({ error: 'هذا الموعد ملغى حالياً.', code: 'INTERVIEW_CANCELLED' });
+      }
+      return res.json({
+        verified: true,
+        source: parsed.source,
+        today_riyadh: riyadhTodayStr,
+        candidate_arrival: formatReceptionCard(row, locCfg, riyadhTodayStr)
+      });
+    }
+
+    const cleanQuery = String(reference_query || '').trim().toUpperCase();
+    if (cleanQuery.length < 3) {
+      return res.status(400).json({ error: 'يرجى إدخال آخر 4 أرقام على الأقل من الرقم المرجعي للطلب.' });
+    }
+
+    const { rows } = await query(
+      `SELECT i.*, a.reference_no, c.full_name, j.code AS job_code, j.title AS job_title, j.department
+       FROM interviews i
+       JOIN applications a ON a.id = i.application_id
+       JOIN candidates c ON c.id = a.candidate_id
+       JOIN jobs j ON j.id = a.job_id
+       WHERE i.booking_status <> 'cancelled'
+         AND (UPPER(a.reference_no) = $1 OR RIGHT(UPPER(a.reference_no), 4) = $1)
+       ORDER BY (i.scheduled_date = (NOW() AT TIME ZONE 'Asia/Riyadh')::date) DESC, i.scheduled_date ASC
+       LIMIT 5`,
+      [cleanQuery]
+    );
+    if (!rows.length) {
+      return res.status(404).json({ error: 'لا يوجد موعد نشط مطابق لهذا الرقم المرجعي.', code: 'INTERVIEW_NOT_FOUND' });
+    }
+    if (rows.length > 1) {
+      return res.status(409).json({
+        error: 'يوجد أكثر من موعد بنفس الأرقام الأخيرة؛ يرجى إدخال الرقم المرجعي الكامل (APP-...) أو مسح رمز الـ QR.',
+        code: 'AMBIGUOUS_REFERENCE_TAIL'
+      });
+    }
+
+    res.json({
+      verified: true,
+      source: 'reference_lookup',
+      today_riyadh: riyadhTodayStr,
+      candidate_arrival: formatReceptionCard(rows[0], locCfg, riyadhTodayStr)
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/reception/check-in', requireAuth(['super_admin', 'hr_coordinator']), async (req, res) => {
+  const { qr_payload, interview_id, force_date_override = false } = req.body || {};
+  let targetInterviewId = interview_id ? parseInt(interview_id, 10) : null;
+  let parsedQr = null;
+
+  if (qr_payload) {
+    parsedQr = parseReceptionQrInput(qr_payload);
+    if (!parsedQr || !Number.isInteger(parsedQr.interviewId) || parsedQr.interviewId <= 0) {
+      return res.status(403).json({ error: 'رمز الـ QR غير صالح أو مزور.', code: 'INVALID_CHECKIN_QR' });
+    }
+    targetInterviewId = parsedQr.interviewId;
+  }
+
+  if (!Number.isInteger(targetInterviewId) || targetInterviewId <= 0) {
+    return res.status(400).json({ error: 'يلزم تحديد الموعد أو مسح رمز الـ QR لتسجيل الوصول.' });
+  }
+
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+
+    const curRes = await client.query(
+      `SELECT i.*, a.reference_no, c.full_name, j.code AS job_code, j.title AS job_title, j.department,
+              (NOW() AT TIME ZONE 'Asia/Riyadh')::date::text AS today_riyadh,
+              ROUND(
+                EXTRACT(EPOCH FROM (
+                  ((i.scheduled_date::text || ' ' || i.start_time::text)::timestamp AT TIME ZONE 'Asia/Riyadh') - NOW()
+                )) / 60.0
+              )::int AS computed_punctuality_min
+       FROM interviews i
+       JOIN applications a ON a.id = i.application_id
+       JOIN candidates c ON c.id = a.candidate_id
+       JOIN jobs j ON j.id = a.job_id
+       WHERE i.id = $1
+       FOR UPDATE OF i`,
+      [targetInterviewId]
+    );
+    if (!curRes.rows.length) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({ error: 'الموعد غير موجود.', code: 'INTERVIEW_NOT_FOUND' });
+    }
+    const cur = curRes.rows[0];
+
+    if (parsedQr && !verifyNonceTimingSafe(parsedQr.nonce, cur.visit_token)) {
+      await client.query('ROLLBACK');
+      return res.status(403).json({
+        error: 'بطاقة الـ QR مبطلة بسبب تعديل أو إلغاء الموعد؛ يرجى التحقق من البطاقة المحدّثة.',
+        code: 'REVOKED_CHECKIN_QR'
+      });
+    }
+
+    if (['cancelled', 'no_show'].includes(cur.booking_status)) {
+      await client.query('ROLLBACK');
+      return res.status(400).json({
+        error: 'هذا الموعد ملغى أو مغلق ولا يمكن تسجيل وصول عليه.',
+        code: 'INTERVIEW_NOT_ACTIVE'
+      });
+    }
+    if (cur.booking_status === 'completed') {
+      await client.query('ROLLBACK');
+      return res.status(400).json({
+        error: 'تمت هذه المقابلة مسبقاً.',
+        code: 'INTERVIEW_ALREADY_COMPLETED'
+      });
+    }
+
+    const riyadhTodayStr = cur.today_riyadh;
+    const schedDateStr = cur.scheduled_date instanceof Date
+      ? cur.scheduled_date.toISOString().slice(0, 10)
+      : String(cur.scheduled_date || '').slice(0, 10);
+
+    // منع تسجيل وصول بالخطأ لموعد في تاريخ آخر إلا بتجاوز صريح من منسق التوظيف
+    if (schedDateStr !== riyadhTodayStr && !force_date_override) {
+      await client.query('ROLLBACK');
+      return res.status(409).json({
+        error: `تاريخ مقابلة المرشح هو (${schedDateStr}) وليس اليوم (${riyadhTodayStr}). لتسجيل وصول استثنائي فعّل خيار التجاوز الصريح.`,
+        code: 'WRONG_INTERVIEW_DATE',
+        scheduled_date: schedDateStr,
+        today_riyadh: riyadhTodayStr
+      });
+    }
+
+    const locCfg = await getCompanyLocationConfig();
+
+    // إدمبوتنسي ذرية: إذا مسح المنسق الرمز مرتين بالتزامن لا يُعاد الكتابة فوق وقت الوصول الأصلي
+    if (cur.lobby_status === 'checked_in' && cur.checked_in_at) {
+      await client.query('ROLLBACK');
+      return res.status(200).json({
+        already_checked_in: true,
+        message: 'تم تسجيل وصول هذا المرشح مسبقاً وهو بانتظار اللجنة.',
+        candidate_arrival: formatReceptionCard(cur, locCfg, riyadhTodayStr)
+      });
+    }
+
+    const updRes = await client.query(
+      `UPDATE interviews
+       SET lobby_status = 'checked_in',
+           checked_in_at = NOW(),
+           checked_in_by = $1,
+           punctuality_minutes = $2,
+           booking_status = CASE
+             WHEN booking_status IN ('scheduled', 'rescheduled', 'invitation_sent') THEN 'confirmed'
+             ELSE booking_status
+           END,
+           updated_at = NOW()
+       WHERE id = $3
+       RETURNING *`,
+      [req.user.full_name, cur.computed_punctuality_min, cur.id]
+    );
+
+    await client.query('COMMIT');
+
+    const mergedRow = { ...cur, ...updRes.rows[0] };
+    await logAudit({
+      actor: req.user.full_name,
+      actorRole: req.user.role,
+      action: 'CANDIDATE_QR_CHECKED_IN',
+      entityType: 'interview',
+      entityId: cur.reference_no,
+      metadata: {
+        interview_id: cur.id,
+        punctuality_minutes: mergedRow.punctuality_minutes,
+        office: mergedRow.location_office || locCfg.office_number,
+        via_qr: Boolean(parsedQr)
+      },
+      ipAddress: req.ip
+    });
+
+    res.json({
+      already_checked_in: false,
+      message: `تم تسجيل وصول ${cur.full_name} وإرسال تنبيه فوري لأعضاء اللجنة 🔔`,
+      candidate_arrival: formatReceptionCard(mergedRow, locCfg, riyadhTodayStr)
+    });
+  } catch (err) {
+    await client.query('ROLLBACK').catch(() => {});
+    res.status(500).json({ error: err.message });
+  } finally {
+    client.release();
+  }
+});
+
+app.post('/api/reception/arrivals/:interviewId/acknowledge', requireAuth(['super_admin', 'hr_coordinator', 'committee_member']), async (req, res) => {
+  const client = await pool.connect();
+  try {
+    const intvId = parseInt(req.params.interviewId, 10);
+    if (!intvId) {
+      return res.status(400).json({ error: 'معرّف المقابلة غير صالح.' });
+    }
+
+    await client.query('BEGIN');
+    const curRes = await client.query(
+      `SELECT i.*, a.reference_no, c.full_name, j.code AS job_code, j.title AS job_title, j.department
+       FROM interviews i
+       JOIN applications a ON a.id = i.application_id
+       JOIN candidates c ON c.id = a.candidate_id
+       JOIN jobs j ON j.id = a.job_id
+       WHERE i.id = $1
+       FOR UPDATE OF i`,
+      [intvId]
+    );
+    if (!curRes.rows.length) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({ error: 'الموعد غير موجود.' });
+    }
+    const cur = curRes.rows[0];
+
+    if (['completed', 'cancelled', 'no_show'].includes(cur.booking_status) || cur.lobby_status !== 'checked_in') {
+      await client.query('ROLLBACK');
+      return res.json({
+        already_acknowledged: true,
+        lobby_status: cur.lobby_status,
+        message: 'تم استلام إشعار وصول المرشح مسبقاً.'
+      });
+    }
+
+    const upd = await client.query(
+      `UPDATE interviews
+       SET lobby_status = 'in_room',
+           updated_at = NOW()
+       WHERE id = $1
+       RETURNING lobby_status`,
+      [intvId]
+    );
+    await client.query('COMMIT');
+
+    await logAudit({
+      actor: req.user.full_name,
+      actorRole: req.user.role,
+      action: 'CANDIDATE_LOBBY_ACKNOWLEDGED',
+      entityType: 'interview',
+      entityId: cur.reference_no,
+      metadata: { interview_id: intvId, new_lobby_status: upd.rows[0].lobby_status },
+      ipAddress: req.ip
+    });
+
+    res.json({
+      already_acknowledged: false,
+      lobby_status: upd.rows[0].lobby_status,
+      message: `تم استلام إشعار وصول ${cur.full_name} وإدخاله إلى القاعة ✓`
+    });
+  } catch (err) {
+    await client.query('ROLLBACK').catch(() => {});
+    res.status(500).json({ error: err.message });
+  } finally {
+    client.release();
+  }
+});
+
+app.get('/api/reception/arrivals', requireAuth(), async (_req, res) => {
+  try {
+    const [locCfg, waitingRes, todayListRes] = await Promise.all([
+      getCompanyLocationConfig(),
+      query(
+        `SELECT i.*, a.reference_no, c.full_name, j.code AS job_code, j.title AS job_title, j.department,
+                (NOW() AT TIME ZONE 'Asia/Riyadh')::date::text AS today_riyadh
+         FROM interviews i
+         JOIN applications a ON a.id = i.application_id
+         JOIN candidates c ON c.id = a.candidate_id
+         JOIN jobs j ON j.id = a.job_id
+         WHERE i.lobby_status = 'checked_in'
+           AND i.booking_status NOT IN ('completed', 'cancelled', 'no_show')
+         ORDER BY i.checked_in_at DESC`
+      ),
+      query(
+        `SELECT i.*, a.reference_no, c.full_name, j.code AS job_code, j.title AS job_title, j.department,
+                (NOW() AT TIME ZONE 'Asia/Riyadh')::date::text AS today_riyadh
+         FROM interviews i
+         JOIN applications a ON a.id = i.application_id
+         JOIN candidates c ON c.id = a.candidate_id
+         JOIN jobs j ON j.id = a.job_id
+         WHERE i.scheduled_date = (NOW() AT TIME ZONE 'Asia/Riyadh')::date
+           AND i.booking_status NOT IN ('cancelled', 'completed', 'no_show')
+         ORDER BY i.start_time ASC`
+      )
+    ]);
+
+    const riyadhTodayStr = waitingRes.rows[0]?.today_riyadh || todayListRes.rows[0]?.today_riyadh || new Date().toISOString().slice(0, 10);
+    const waitingLobby = waitingRes.rows.map((r) => formatReceptionCard(r, locCfg, riyadhTodayStr));
+    const todaySchedule = todayListRes.rows.map((r) => formatReceptionCard(r, locCfg, riyadhTodayStr));
+
+    res.json({
+      today_riyadh: riyadhTodayStr,
+      waiting_count: waitingLobby.length,
+      waiting_candidates: waitingLobby,
+      today_schedule: todaySchedule
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 app.use((err, _req, res, _next) => {
   if (err instanceof multer.MulterError) {
     if (err.code === 'LIMIT_FILE_SIZE') {
@@ -3812,8 +4266,8 @@ ensureDatabaseInitialized()
   .then(() => {
     app.listen(PORT, HOST, () => {
       console.log(`=============================================================`);
-      console.log(`🚀 منصة التوظيف الذكية v2.1 تعمل الآن على http://${HOST}:${PORT}`);
-      console.log(`🔒 نظام الصلاحيات + العداد الذكي 60s + بطاقة الزيارة مفعّلة`);
+      console.log(`🚀 منصة التوظيف الذكية v${APP_VERSION} تعمل الآن على http://${HOST}:${PORT}`);
+      console.log(`🔒 نظام الصلاحيات + استقبال QR الذكي + بطاقة الزيارة مفعّلة`);
       console.log(`=============================================================`);
     });
   })

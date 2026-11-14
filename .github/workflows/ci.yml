@@ -103,6 +103,10 @@ jobs:
           if ALLOW_ISOLATED_DRILL=1 NODE_ENV=production DRILL_PG_ADMIN_URL="postgresql://postgres:postgres_ci_password@127.0.0.1:5432/postgres" node scripts/verify-v21-drills.js 2>/dev/null; then exit 1; fi
           ALLOW_ISOLATED_DRILL=1 DRILL_PG_ADMIN_URL="postgresql://postgres:postgres_ci_password@127.0.0.1:5432/postgres" npm run verify:v21
 
+      - name: Run Isolated v2.2a Smart QR Reception Security, Concurrency & Chromium E2E Suite (verify:v22a)
+        run: |
+          ALLOW_ISOLATED_DRILL=1 DRILL_PG_ADMIN_URL="postgresql://postgres:postgres_ci_password@127.0.0.1:5432/postgres" npm run verify:v22a
+
   container-upgrade-rollback-drill:
     name: Docker Compose Upgrade, Override, Uploads Backup & Rollback Drill
     runs-on: ubuntu-latest

@@ -253,6 +253,15 @@ CREATE TABLE IF NOT EXISTS interviews (
                             'cancelled',
                             'no_show'
                         )),
+    lobby_status        VARCHAR(24) NOT NULL DEFAULT 'not_arrived' CHECK (lobby_status IN (
+                            'not_arrived',
+                            'checked_in',
+                            'in_room',
+                            'completed'
+                        )),
+    checked_in_at       TIMESTAMPTZ,
+    checked_in_by       VARCHAR(120),
+    punctuality_minutes INTEGER,
     notes               TEXT,
     created_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -356,6 +365,27 @@ DROP TRIGGER IF EXISTS trg_committee_eval_sync ON committee_evaluations;
 CREATE TRIGGER trg_committee_eval_sync
 AFTER INSERT OR UPDATE OR DELETE ON committee_evaluations
 FOR EACH ROW EXECUTE FUNCTION trg_fn_after_committee_eval();
+
+-- محفز ضمان الاتساق التام بين حالة المقابلة (booking_status) وحالة الاستقبال (lobby_status)
+CREATE OR REPLACE FUNCTION fn_sync_interview_lobby_status()
+RETURNS TRIGGER AS $$
+BEGIN
+    IF NEW.booking_status = 'completed' THEN
+        NEW.lobby_status := 'completed';
+    ELSIF NEW.booking_status IN ('cancelled', 'no_show') THEN
+        NEW.lobby_status := 'not_arrived';
+        NEW.checked_in_at := NULL;
+        NEW.checked_in_by := NULL;
+        NEW.punctuality_minutes := NULL;
+    END IF;
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS trg_sync_interview_lobby_status ON interviews;
+CREATE TRIGGER trg_sync_interview_lobby_status
+BEFORE INSERT OR UPDATE ON interviews
+FOR EACH ROW EXECUTE FUNCTION fn_sync_interview_lobby_status();
 
 -- =================================================================================
 -- البيانات التأسيسية (Seed Data) — إعدادات النظام + الوظائف + المرشحون + المقابلات
