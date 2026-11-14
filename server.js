@@ -333,7 +333,7 @@ app.use('/uploads', async (req, res, next) => {
     // نطبّع المسار قبل الفحص: req.path لا يفكّ ترميز %6Fffers ⇒ تجاوز الفحص.
     let decodedPath = req.path;
     try { decodedPath = decodeURIComponent(req.path); } catch (_e) { /* مسار غير صالح */ }
-    decodedPath = decodedPath.replace(/\\/g, '/').replace(/\/{2,}/g, '/');
+    decodedPath = path.posix.normalize(decodedPath.replace(/\\/g, '/').replace(/\/{2,}/g, '/'));
     if (/^\/+(?:offers?)(\/|$)/i.test(decodedPath)) {
       return res.status(403).json({
         error: 'يُمنع الوصول المباشر لملفات العروض الوظيفية؛ التنزيل عبر المسارات المصرّح بها فقط.',

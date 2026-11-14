@@ -389,7 +389,8 @@ async function main() {
       `/uploads/offers/../offers/${path.basename(row.rows[0].pdf_stored_path)}`,
       `/uploads//offers/${path.basename(row.rows[0].pdf_stored_path)}`,
       `/uploads/OFFERS/${path.basename(row.rows[0].pdf_stored_path)}`,
-      `/uploads/%6Fffers/${path.basename(row.rows[0].pdf_stored_path)}`
+      `/uploads/%6Fffers/${path.basename(row.rows[0].pdf_stored_path)}`,
+      `/uploads/dummy/..%2foffers/${path.basename(row.rows[0].pdf_stored_path)}`
     ];
     for (const v of variants) {
       const r = await fetch(`${BASE}${v}`, { headers: { Cookie: adminCookie }, redirect: 'manual' });
