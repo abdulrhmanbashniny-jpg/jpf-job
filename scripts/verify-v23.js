@@ -698,13 +698,22 @@ async function createCandidateApplication(email, phone, fullName) {
     const beforeClick = mockSendTextCount();
     await page.waitForSelector(`[data-testid="waha-dispatch-${uiMsg}"]`, { timeout: 8000 });
     await page.click(`[data-testid="waha-dispatch-${uiMsg}"]`);
-    await page.waitForSelector('[data-testid="waha-dry-badge"]', { timeout: 8000 });
-    assert.strictEqual(mockSendTextCount(), beforeClick, 'UI dispatch in dry-run must never hit WAHA');
 
-    const rowAfter = await pool.query('SELECT delivery_channel, queue_status, attempt_count FROM wa_messages WHERE id = $1', [uiMsg]);
-    assert.strictEqual(rowAfter.rows[0].delivery_channel, 'waha_dry_run');
-    assert.strictEqual(rowAfter.rows[0].queue_status, 'queued');
+    // ننتظر الحقيقة في قاعدة البيانات بدلاً من السباق مع إعادة رسم الجدول (مصدر الحقيقة)
+    let rowAfter = null;
+    for (let attempt = 0; attempt < 40; attempt++) {
+      const r = await pool.query('SELECT delivery_channel, queue_status, attempt_count FROM wa_messages WHERE id = $1', [uiMsg]);
+      if (r.rows[0].attempt_count >= 1 && r.rows[0].delivery_channel === 'waha_dry_run') {
+        rowAfter = r;
+        break;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 250));
+    }
+    assert(rowAfter, 'UI dispatch must be persisted as waha_dry_run');
+    assert.strictEqual(rowAfter.rows[0].queue_status, 'queued', 'dry-run must not flip queue_status to sent');
     assert.strictEqual(rowAfter.rows[0].attempt_count, 1);
+    assert.strictEqual(mockSendTextCount(), beforeClick, 'UI dispatch in dry-run must never hit WAHA');
+    await page.waitForSelector('[data-testid="waha-dry-badge"]', { timeout: 10000 });
 
     // زر الإيقاف الفوري: يعمل بنقرة واحدة ويحوّل الشريط إلى الحالة اليدوية
     page.on('dialog', (d) => d.accept());

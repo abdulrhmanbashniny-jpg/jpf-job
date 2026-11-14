@@ -716,8 +716,8 @@
           body: JSON.stringify({})
         });
         SmartHR.showToast(res.notice || 'تم تسجيل الإرسال في وضع الاختبار الجاف.', res.sent_live ? 'success' : 'info');
-        await loadWahaStatus(false);
-        loadAllData();
+        // إعادة تحميل واحدة فقط: loadAllData يجلب شريط الحوكمة والطابور معاً
+        await loadAllData();
       } catch (err) {
         SmartHR.showToast(err.message, 'error');
       }
