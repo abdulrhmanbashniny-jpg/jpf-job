@@ -5,7 +5,7 @@
 - **المستودع الرسمي**: `https://github.com/abdulrhmanbashniny-jpg/jpf-job`
 - **النطاق الحي**: `https://hrjpf.tech`
 - **قناة التنسيق الرسمية بين الوكيلين**: [GitHub Issue #2 (`HERMES-ARENA-SYNC`)](https://github.com/abdulrhmanbashniny-jpg/jpf-job/issues/2)
-- **تاريخ آخر تحديث**: `2026-11-09` (بتوقيت الرياض `Asia/Riyadh`) — بواسطة **Arena**
+- **تاريخ آخر تحديث**: `2026-11-12` (بتوقيت الرياض `Asia/Riyadh`) — بواسطة **Arena**
 
 > ### 📌 قاعدة مستدامة إلزامية لأي جلسة أو محادثة جديدة لوكيل `Arena`:
 > 1. اقرأ هذا الملف (`ARENA_TASK_TRACKER.md`) وملف `UNIFIED_EXECUTION_PLAN_V2.2_V2.5.md` وتعليقات `Issue #2` فور استنساخ المستودع لمعرفة آخر نقطة توقف بدقة دون تكرار أي عمل منجز.
@@ -21,8 +21,8 @@
 |---|---|---|---|
 | **الأساس الإنتاجي (`v2.1`)** | Arena + Hermes | `main` (`d0eb509`) — PR #1 | ✅ **تم الإنجاز والاعتماد والنشر حياً على `hrjpf.tech`** |
 | **الخطة التنفيذية الموحدة (`v2.2a`–`v2.5`)** | Arena | `UNIFIED_EXECUTION_PLAN_V2.2_V2.5.md` + Issue #2 | ✅ **تم الإنجاز — بواسطة Arena** |
-| **المرحلة 1 (`v2.2a`)**: استقبال المرشحين بالـ QR وتنبيه اللجنة | Arena | `origin/release/v2.2a` (`7c35139`) — **PR #3** | ✅ **تم الإنجاز — بواسطة Arena** (CI أخضر 4/4 وبانتظار اعتماد Hermes) |
-| **المرحلة 2 (`v2.2b`)**: السؤال الصوتي الاختياري 60 ثانية وحذف 30 يوماً | Arena | `origin/release/v2.2b` (`5ffa0da`) — **PR #4** | ✅ **تم الإنجاز — بواسطة Arena** (CI أخضر 4/4 وبانتظار اعتماد Hermes) |
+| **المرحلة 1 (`v2.2a`)**: استقبال المرشحين بالـ QR وتنبيه اللجنة | Arena | `main` @ `4fc4392` (دمج **PR #3**) — HEAD الفرع `4c4912b` | ✅ **تم الإنجاز — بواسطة Arena** (CI أخضر 4/4 + `HERMES_VERDICT: APPROVED sha=4c4912b37091133f6e0ac3d398da2de6a2a09ad3` + مدمج في `main`) |
+| **المرحلة 2 (`v2.2b`)**: السؤال الصوتي الاختياري 60 ثانية وحذف 30 يوماً | Arena | `main` @ `1c9033a` (دمج **PR #4**) — HEAD الفرع `e1b82dd` | ✅ **تم الإنجاز — بواسطة Arena** (CI أخضر 6/6 + `HERMES_VERDICT: APPROVED sha=e1b82dd504bf53a0d046f927a64c634f8a5632b2` + مدمج في `main`) |
 | **المرحلة 3 (`v2.3`)**: رسائل واتساب التشغيلية عبر `WAHA` (`Dry-Run` إلزامي) | Arena | `origin/wip/v2.3-starter` (`bf6f878`) -> `release/v2.3` (PR #5) | ⏳ **قيد التنفيذ (أُنجز 40% منها — نقطة الاستئناف المباشرة)** |
 | **المرحلة 4 (`v2.4`)**: قاعات الفيديو `Jitsi` والتقييم المقسّم | Arena | `release/v2.4` (PR #6) | 🔜 **في الانتظار (تبدأ فور انتهاء `v2.3`)** |
 | **المرحلة 5 (`v2.5`)**: المقارنة التنفيذية + العرض الوظيفي PDF + `n8n` | Arena | `release/v2.5` (PR #7) | 🔜 **في الانتظار (تبدأ فور انتهاء `v2.4`)** |
@@ -44,7 +44,7 @@
 - [x] **بناء مسارات `/api/reception/verify-qr` و `/api/reception/check-in` (`FOR UPDATE` ذري) و `/api/reception/arrivals` وشريط التنبيه الحي للجنة في `common.js` و `CandidateProfile.dc.html`** — ✅ **تم الإنجاز — بواسطة Arena**
 - [x] **بناء واجتياز حزمة اختبارات `scripts/verify-v22a.js` (الأمان + التزامن الخماسي + Playwright Chromium E2E) ورفع `origin/release/v2.2a` وفتح `PR #3` واخضرار CI `4/4` وإشعار Hermes في `Issue #2`** — ✅ **تم الإنجاز — بواسطة Arena**
 - [x] **معالجة ملاحظات مراجعة Hermes الثلاث على `PR #3` بالكامل**: (1) منع تكرار تنبيه اللجنة كل 15 ثانية + مسار `POST /api/reception/arrivals/:id/acknowledge`، (2) محفز قاعدة بيانات `trg_sync_interview_lobby_status` + تحديث `server.js` لضمان تحول `lobby_status` إلى `completed` فور اكتمال المقابلة وعدم بقائه `checked_in`، و(3) توسيع CI (`verify:v22a` + `ci-container-rollback-drill.sh`) لاختبار حماية المرفقات/PII والرجوع الفعلي إلى `v2.1` (`d0eb509`) فوق قاعدة بيانات مُرقّاة — ✅ **تم الإنجاز — بواسطة Arena**
-- [ ] **إعادة مراجعة واعتماد `PR #3` (`HERMES_VERDICT: APPROVED`) والدمج في `main` والنشر على `srv1924474`** — ⏸️ **بانتظار Hermes بعد دفع الـ SHA المحدَّث**
+- [x] **إعادة مراجعة واعتماد `PR #3` (`HERMES_VERDICT: APPROVED sha=4c4912b37091133f6e0ac3d398da2de6a2a09ad3` على Issue #2 `issuecomment-6875277992`) والدمج في `main` @ `4fc4392ee4dfb66bc8b8386af01179210337766b`** — ✅ **تم الإنجاز — بواسطة Arena** (النشر على `srv1924474` بيد Hermes بعد `READY_FOR_DEPLOY`)
 
 ---
 
@@ -56,7 +56,7 @@
 - [x] **إضافة أداة التسجيل الاختيارية في `Assessment.dc.html` و `ResultPass.dc.html` وبطاقة المراجعة البشرية في `CandidateProfile.dc.html` وشارة `Ranking.dc.html`** — ✅ **تم الإنجاز — بواسطة Arena**
 - [x] **بناء واجتياز حزمة `scripts/verify-v22b.js` ورفع `origin/release/v2.2b` وفتح `PR #4` واخضرار CI `4/4` وإشعار Hermes في `Issue #2`** — ✅ **تم الإنجاز — بواسطة Arena**
 - [x] **معالجة ملاحظات مراجعة Hermes الأربع على `PR #4` بالكامل**: (1) فحص علم الميزة `requireVoicePitchEnabled` (`503 VOICE_PITCH_DISABLED`) قبل استهلاك الذاكرة أو القرص، (2) حظر الاستماع للتسجيلات منتهية الصلاحية في `/voice-stream` (`410 VOICE_RETENTION_EXPIRED` + تطهير فوري)، (3) حذف الملف من القرص أولاً قبل تفريغ القاعدة (`unlinkVoiceFileStrict`) + كنس الملفات اليتيمة (`VOICE_ORPHAN_FILES_SWEPT`)، و(4) محدد معدل مخصص `voiceUploadLimiter` + سقف رفع لكل طلب (`429`) — ✅ **تم الإنجاز — بواسطة Arena**
-- [ ] **إعادة مراجعة واعتماد `PR #4` (`HERMES_VERDICT: APPROVED`) والدمج والنشر** — ⏸️ **بانتظار Hermes بعد دفع الـ SHA المحدَّث**
+- [x] **إعادة مراجعة واعتماد `PR #4` (`HERMES_VERDICT: APPROVED sha=e1b82dd504bf53a0d046f927a64c634f8a5632b2` على Issue #2 `issuecomment-6875277992`) والدمج في `main` @ `1c9033aa8683df765e7491c4bd7efeb46e70c257`** — ✅ **تم الإنجاز — بواسطة Arena** (النشر على `srv1924474` بيد Hermes بعد `READY_FOR_DEPLOY`)
 
 ---
 
