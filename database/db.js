@@ -103,6 +103,19 @@ async function ensureDatabaseInitialized() {
       -- candidates.specialization: VARCHAR(150) NOT NULL DEFAULT ''
       ALTER TABLE candidates
         ADD COLUMN IF NOT EXISTS specialization VARCHAR(150) NOT NULL DEFAULT '';
+      -- v2.5: رقم الهوية/الإقامة لمطابقة توقيع العرض الوظيفي
+      ALTER TABLE candidates
+        ADD COLUMN IF NOT EXISTS national_id VARCHAR(10);
+      DO $$
+      BEGIN
+        IF NOT EXISTS (
+          SELECT 1 FROM pg_constraint WHERE conname = 'candidates_national_id_shape'
+        ) THEN
+          ALTER TABLE candidates
+            ADD CONSTRAINT candidates_national_id_shape
+            CHECK (national_id IS NULL OR national_id ~ '^[0-9]{10}$');
+        END IF;
+      END $$;
       UPDATE candidates SET specialization = '' WHERE specialization IS NULL;
       ALTER TABLE candidates
         ALTER COLUMN specialization TYPE VARCHAR(150),
@@ -259,6 +272,142 @@ async function ensureDatabaseInitialized() {
       CREATE INDEX IF NOT EXISTS idx_applications_voice_retention
         ON applications (voice_retention_expires_at)
         WHERE voice_pitch_path IS NOT NULL;
+
+      -- v2.5: توسيع حالات الطلب لمسار العرض الوظيفي (hired / offer_declined)
+      -- يُعاد بناء القيد المسمّى بدل الاعتماد على اسم مولّد، مع الحفاظ على كل القيم القديمة.
+      DO $$
+      DECLARE
+        c record;
+      BEGIN
+        FOR c IN
+          SELECT conname FROM pg_constraint
+          WHERE conrelid = 'applications'::regclass
+            AND contype = 'c'
+            AND pg_get_constraintdef(oid) LIKE '%status%'
+            AND pg_get_constraintdef(oid) NOT LIKE '%hired%'
+        LOOP
+          EXECUTE format('ALTER TABLE applications DROP CONSTRAINT %I', c.conname);
+        END LOOP;
+
+        IF NOT EXISTS (
+          SELECT 1 FROM pg_constraint
+          WHERE conrelid = 'applications'::regclass
+            AND contype = 'c'
+            AND pg_get_constraintdef(oid) LIKE '%offer_declined%'
+        ) THEN
+          ALTER TABLE applications ADD CONSTRAINT chk_applications_status_v25 CHECK (status IN (
+            'assessment_pending','passed_assessment','failed_assessment','under_review',
+            'interview_scheduled','interviewed','offered','rejected','hired','offer_declined'
+          ));
+        END IF;
+      END $$;
+
+      -- v2.5: جداول العروض الوظيفية وصندوق أحداث الأتمتة
+      CREATE TABLE IF NOT EXISTS job_offers (
+        id SERIAL PRIMARY KEY,
+        offer_ref VARCHAR(32) NOT NULL UNIQUE,
+        application_id INTEGER NOT NULL UNIQUE REFERENCES applications(id) ON DELETE RESTRICT,
+        job_title_snapshot VARCHAR(180) NOT NULL,
+        department_snapshot VARCHAR(80) NOT NULL,
+        basic_salary NUMERIC(10,2) NOT NULL CHECK (basic_salary >= 0),
+        housing_allowance NUMERIC(10,2) NOT NULL DEFAULT 0 CHECK (housing_allowance >= 0),
+        transport_allowance NUMERIC(10,2) NOT NULL DEFAULT 0 CHECK (transport_allowance >= 0),
+        other_allowances NUMERIC(10,2) NOT NULL DEFAULT 0 CHECK (other_allowances >= 0),
+        total_monthly_salary NUMERIC(12,2) GENERATED ALWAYS AS
+          (basic_salary + housing_allowance + transport_allowance + other_allowances) STORED,
+        probation_days INTEGER NOT NULL DEFAULT 90 CHECK (probation_days BETWEEN 0 AND 365),
+        annual_leave_days INTEGER NOT NULL DEFAULT 21 CHECK (annual_leave_days BETWEEN 0 AND 60),
+        expected_start_date DATE NOT NULL,
+        valid_until DATE NOT NULL,
+        special_terms TEXT,
+        template_version VARCHAR(40) NOT NULL DEFAULT 'default_v1',
+        rendered_html TEXT NOT NULL,
+        pdf_stored_path TEXT,
+        pdf_sha256 VARCHAR(64),
+        offer_token VARCHAR(64) NOT NULL UNIQUE,
+        offer_status VARCHAR(24) NOT NULL DEFAULT 'issued'
+          CHECK (offer_status IN ('draft','issued','accepted','declined','expired','revoked')),
+        candidate_signed_name VARCHAR(180),
+        candidate_national_id VARCHAR(30),
+        candidate_agreed_start_date DATE,
+        signed_at TIMESTAMPTZ,
+        signer_ip VARCHAR(64),
+        decline_reason TEXT,
+        n8n_sync_status VARCHAR(24) NOT NULL DEFAULT 'pending'
+          CHECK (n8n_sync_status IN ('pending','synced','failed','skipped')),
+        n8n_synced_at TIMESTAMPTZ,
+        created_by VARCHAR(120) NOT NULL,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        CONSTRAINT chk_offer_dates CHECK (valid_until >= expected_start_date)
+      );
+      CREATE INDEX IF NOT EXISTS idx_job_offers_status ON job_offers (offer_status);
+      CREATE INDEX IF NOT EXISTS idx_job_offers_app ON job_offers (application_id);
+      CREATE INDEX IF NOT EXISTS idx_job_offers_n8n ON job_offers (n8n_sync_status)
+        WHERE n8n_sync_status IN ('pending','failed');
+
+      CREATE TABLE IF NOT EXISTS automation_outbox (
+        id BIGSERIAL PRIMARY KEY,
+        event_type VARCHAR(60) NOT NULL,
+        aggregate_type VARCHAR(40) NOT NULL,
+        aggregate_id VARCHAR(60) NOT NULL,
+        payload JSONB NOT NULL,
+        payload_sha256 VARCHAR(64) NOT NULL,
+        delivery_status VARCHAR(20) NOT NULL DEFAULT 'pending'
+          CHECK (delivery_status IN ('pending','delivered','failed','abandoned')),
+        attempt_count INTEGER NOT NULL DEFAULT 0,
+        last_attempt_at TIMESTAMPTZ,
+        last_error TEXT,
+        next_attempt_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        idempotency_key VARCHAR(160) NOT NULL UNIQUE,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        delivered_at TIMESTAMPTZ
+      );
+      CREATE INDEX IF NOT EXISTS idx_outbox_pending ON automation_outbox (next_attempt_at)
+        WHERE delivery_status IN ('pending','failed');
+      CREATE INDEX IF NOT EXISTS idx_outbox_aggregate ON automation_outbox (aggregate_type, aggregate_id);
+
+      -- v2.5: السماح بفئة قالب العرض في system_settings (قيد CHECK صارم)
+      DO $$
+      DECLARE c record;
+      BEGIN
+        FOR c IN
+          SELECT conname FROM pg_constraint
+          WHERE conrelid = 'system_settings'::regclass
+            AND contype = 'c'
+            AND pg_get_constraintdef(oid) LIKE '%security_governance%'
+            AND pg_get_constraintdef(oid) NOT LIKE '%offer_template%'
+        LOOP
+          EXECUTE format('ALTER TABLE system_settings DROP CONSTRAINT %I', c.conname);
+        END LOOP;
+        IF NOT EXISTS (
+          SELECT 1 FROM pg_constraint
+          WHERE conrelid = 'system_settings'::regclass AND contype = 'c'
+            AND pg_get_constraintdef(oid) LIKE '%offer_template%'
+        ) THEN
+          ALTER TABLE system_settings ADD CONSTRAINT chk_system_settings_category_v25 CHECK (category IN (
+            'ai_provider','scoring_weights','scheduler','whatsapp_templates','security_governance','offer_template'
+          ));
+        END IF;
+      END $$;
+
+      INSERT INTO system_settings (setting_key, setting_value, category, description)
+      VALUES ('offer_template_config', '{
+        "company_name": "شركة رُواء للموارد البشرية",
+        "company_legal_name": "شركة رُواء للخدمات التوظيفية",
+        "company_address": "جدة — المملكة العربية السعودية",
+        "company_cr": "",
+        "template_version": "default_v1",
+        "intro_text": "يسرنا إبلاغكم بقبولكم للعمل لدينا، ونرفق لكم تفاصيل العرض الوظيفي.",
+        "closing_text": "نتمنى لكم التوفيق، ونؤكد ترحيبنا بانضمامكم إلى فريقنا.",
+        "signature_title": "مدير الموارد البشرية",
+        "default_probation_days": 90,
+        "default_annual_leave_days": 21,
+        "validity_days": 14
+      }'::jsonb,
+      'offer_template',
+      'قالب العرض الوظيفي الرسمي (v2.5)')
+      ON CONFLICT (setting_key) DO NOTHING;
 
       -- v2.4: ملاحظة التقييم الشفهي البشري أثناء الاستماع للتسجيل (تُرصد من قاعة المقابلة)
       ALTER TABLE committee_evaluations

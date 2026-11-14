@@ -21,7 +21,8 @@ CREATE TABLE IF NOT EXISTS system_settings (
                         'scoring_weights',
                         'scheduler',
                         'whatsapp_templates',
-                        'security_governance'
+                        'security_governance',
+                        'offer_template'
                     )),
     description     TEXT,
     updated_by      VARCHAR(120) NOT NULL DEFAULT 'system',
@@ -108,6 +109,8 @@ CREATE TABLE IF NOT EXISTS candidates (
     full_name           VARCHAR(160) NOT NULL,
     email               VARCHAR(180) NOT NULL UNIQUE,
     phone               VARCHAR(30) NOT NULL UNIQUE,
+    -- رقم الهوية/الإقامة: يُستخدم لمطابقة توقيع العرض الوظيفي (v2.5). اختياري للمرشحين القدامى.
+    national_id         VARCHAR(10) CHECK (national_id IS NULL OR national_id ~ '^[0-9]{10}$'),
     city                VARCHAR(100) NOT NULL DEFAULT 'جدة',
     years_experience    NUMERIC(4,1) NOT NULL DEFAULT 0 CHECK (years_experience >= 0 AND years_experience <= 50),
     qualification       VARCHAR(120) NOT NULL DEFAULT 'بكالوريوس',
@@ -139,7 +142,10 @@ CREATE TABLE IF NOT EXISTS applications (
                                 'interview_scheduled',
                                 'interviewed',
                                 'offered',
-                                'rejected'
+                                'rejected',
+                                -- v2.5: مسار العرض الوظيفي
+                                'hired',
+                                'offer_declined'
                             )),
     cv_match_score          NUMERIC(5,2) NOT NULL DEFAULT 0.00 CHECK (cv_match_score BETWEEN 0 AND 100),
     assessment_score        NUMERIC(5,2) NOT NULL DEFAULT 0.00 CHECK (assessment_score BETWEEN 0 AND 100),
@@ -200,6 +206,91 @@ CREATE TABLE IF NOT EXISTS assessment_answers (
 CREATE INDEX IF NOT EXISTS idx_assessment_answers_app ON assessment_answers (application_id, question_index);
 
 -- ---------------------------------------------------------------------------------
+-- ---------------------------------------------------------------------------------
+-- 7ب. جداول v2.5: العروض الوظيفية وصندوق أحداث الأتمتة (n8n)
+-- ---------------------------------------------------------------------------------
+
+-- عرض وظيفي رسمي واحد لكل طلب (UNIQUE على application_id)
+CREATE TABLE IF NOT EXISTS job_offers (
+    id                      SERIAL PRIMARY KEY,
+    offer_ref               VARCHAR(32) NOT NULL UNIQUE,
+    application_id          INTEGER NOT NULL UNIQUE REFERENCES applications(id) ON DELETE RESTRICT,
+
+    job_title_snapshot      VARCHAR(180) NOT NULL,
+    department_snapshot     VARCHAR(80) NOT NULL,
+
+    basic_salary            NUMERIC(10,2) NOT NULL CHECK (basic_salary >= 0),
+    housing_allowance       NUMERIC(10,2) NOT NULL DEFAULT 0 CHECK (housing_allowance >= 0),
+    transport_allowance     NUMERIC(10,2) NOT NULL DEFAULT 0 CHECK (transport_allowance >= 0),
+    other_allowances        NUMERIC(10,2) NOT NULL DEFAULT 0 CHECK (other_allowances >= 0),
+    total_monthly_salary    NUMERIC(12,2) GENERATED ALWAYS AS
+                              (basic_salary + housing_allowance + transport_allowance + other_allowances) STORED,
+
+    probation_days          INTEGER NOT NULL DEFAULT 90 CHECK (probation_days BETWEEN 0 AND 365),
+    annual_leave_days       INTEGER NOT NULL DEFAULT 21 CHECK (annual_leave_days BETWEEN 0 AND 60),
+    expected_start_date     DATE NOT NULL,
+    valid_until             DATE NOT NULL,
+    special_terms           TEXT,
+
+    template_version        VARCHAR(40) NOT NULL DEFAULT 'default_v1',
+    rendered_html           TEXT NOT NULL,
+    pdf_stored_path         TEXT,
+    pdf_sha256              VARCHAR(64),
+
+    offer_token             VARCHAR(64) NOT NULL UNIQUE,
+    offer_status            VARCHAR(24) NOT NULL DEFAULT 'issued'
+                              CHECK (offer_status IN ('draft','issued','accepted','declined','expired','revoked')),
+
+    candidate_signed_name   VARCHAR(180),
+    candidate_national_id   VARCHAR(30),
+    candidate_agreed_start_date DATE,
+    signed_at               TIMESTAMPTZ,
+    signer_ip               VARCHAR(64),
+    decline_reason          TEXT,
+
+    n8n_sync_status         VARCHAR(24) NOT NULL DEFAULT 'pending'
+                              CHECK (n8n_sync_status IN ('pending','synced','failed','skipped')),
+    n8n_synced_at           TIMESTAMPTZ,
+    created_by              VARCHAR(120) NOT NULL,
+    created_at              TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at              TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+
+    CONSTRAINT chk_offer_dates CHECK (valid_until >= expected_start_date)
+);
+
+CREATE INDEX IF NOT EXISTS idx_job_offers_status ON job_offers (offer_status);
+CREATE INDEX IF NOT EXISTS idx_job_offers_app ON job_offers (application_id);
+CREATE INDEX IF NOT EXISTS idx_job_offers_n8n ON job_offers (n8n_sync_status) WHERE n8n_sync_status IN ('pending','failed');
+
+COMMENT ON COLUMN job_offers.rendered_html IS 'قالب العرض بعد استبدال المتغيرات — نسخة ثابتة وقت الإصدار';
+COMMENT ON COLUMN job_offers.pdf_sha256 IS 'بصمة SHA-256 لملف PDF المخزن للتحقق من عدم التلاعب';
+
+-- صندوق صادر لأحداث الأتمتة: لا يُفشل أي عملية توظيف إذا كان n8n غير متاح
+CREATE TABLE IF NOT EXISTS automation_outbox (
+    id                  BIGSERIAL PRIMARY KEY,
+    event_type          VARCHAR(60) NOT NULL,
+    aggregate_type      VARCHAR(40) NOT NULL,
+    aggregate_id        VARCHAR(60) NOT NULL,
+    payload             JSONB NOT NULL,
+    payload_sha256      VARCHAR(64) NOT NULL,
+    delivery_status     VARCHAR(20) NOT NULL DEFAULT 'pending'
+                          CHECK (delivery_status IN ('pending','delivered','failed','abandoned')),
+    attempt_count       INTEGER NOT NULL DEFAULT 0,
+    last_attempt_at     TIMESTAMPTZ,
+    last_error          TEXT,
+    next_attempt_at     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    idempotency_key     VARCHAR(160) NOT NULL UNIQUE,
+    created_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    delivered_at        TIMESTAMPTZ
+);
+
+CREATE INDEX IF NOT EXISTS idx_outbox_pending
+    ON automation_outbox (next_attempt_at)
+    WHERE delivery_status IN ('pending','failed');
+CREATE INDEX IF NOT EXISTS idx_outbox_aggregate ON automation_outbox (aggregate_type, aggregate_id);
+
+COMMENT ON TABLE automation_outbox IS 'Outbox موقّع بـ HMAC — التسليم غير حاجب ولا يُسقط أي طلب وظيفي';
+
 -- 7. جدول تقييمات أعضاء لجنة التوظيف بخمسة معايير موزونة (committee_evaluations)
 -- الأوزان الداخلية للمعايير الخمسة:
 -- 25% الكفاءة التخصصية + 20% التواصل والإقناع + 20% حل المشكلات + 15% الملاءمة المؤسسية + 20% الخبرة العملية/الأعمال
@@ -1395,5 +1486,28 @@ INSERT INTO audit_logs (actor, actor_role, action, entity_type, entity_id, metad
 SELECT 'م. طارق السبيعي', 'committee_member', 'COMMITTEE_EVALUATION_SAVED', 'application', 'APP-2026-1001',
        '{"weighted_criteria": 5, "recommendation": "strong_hire"}'::jsonb, '10.0.1.15'
 WHERE NOT EXISTS (SELECT 1 FROM audit_logs WHERE entity_id = 'APP-2026-1001' AND action = 'COMMITTEE_EVALUATION_SAVED');
+
+-- ---------------------------------------------------------------------------------
+-- قالب العرض الوظيفي القابل للتخصيص (v2.5 — يُدار من OfferLetter.dc.html)
+-- ---------------------------------------------------------------------------------
+-- قالب العرض الوظيفي القابل للتخصيص (يُدار من OfferLetter.dc.html)
+INSERT INTO system_settings (setting_key, setting_value, category, description)
+VALUES ('offer_template_config', '{
+  "company_name": "شركة رُواء للموارد البشرية",
+  "company_legal_name": "شركة رُواء للخدمات التوظيفية",
+  "company_address": "جدة — المملكة العربية السعودية",
+  "company_cr": "",
+  "template_version": "default_v1",
+  "intro_text": "يسرنا إبلاغكم بقبولكم للعمل لدينا، ونرفق لكم تفاصيل العرض الوظيفي.",
+  "closing_text": "نتمنى لكم التوفيق، ونؤكد ترحيبنا بانضمامكم إلى فريقنا.",
+  "signature_title": "مدير الموارد البشرية",
+  "default_probation_days": 90,
+  "default_annual_leave_days": 21,
+  "validity_days": 14
+}'::jsonb,
+'offer_template',
+'قالب العرض الوظيفي الرسمي (v2.5) — المتغيرات والألوان والنصوص القابلة للتخصيص')
+ON CONFLICT (setting_key) DO NOTHING;
+
 
 COMMIT;
