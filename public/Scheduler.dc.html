@@ -188,7 +188,10 @@
               ${
                 i.interview_mode === 'in_person'
                   ? `<a href="${SmartHR.escapeHtml(i.visit_url || '#')}" target="_blank" rel="noopener" class="btn btn-terracotta btn-sm" style="font-size:12px;">🏢 بطاقة الموقع ↗</a>`
-                  : `<a href="${SmartHR.escapeHtml(i.meeting_url)}" target="_blank" rel="noopener" class="btn btn-outline btn-sm mono" style="font-size:12px;">🎥 فتح القاعة ↗</a>`
+                  : `<span style="display:inline-flex;gap:6px;flex-wrap:wrap;">
+                       <a href="${SmartHR.escapeHtml(i.jitsi_room_url || i.meeting_url)}" target="_blank" rel="noopener" class="btn btn-outline btn-sm mono" style="font-size:12px;">🎥 فتح القاعة ↗</a>
+                       <a href="InterviewRoom.dc.html?interview_id=${i.id}" class="btn btn-primary btn-sm" style="font-size:12px;">🎬 قاعة اللجنة والتقييم</a>
+                     </span>`
               }
             </td>
             <td>${SmartHR.bookingBadge(i.booking_status)}</td>
