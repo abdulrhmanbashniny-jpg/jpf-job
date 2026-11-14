@@ -275,6 +275,10 @@ CREATE TABLE IF NOT EXISTS interviews (
     checked_in_at       TIMESTAMPTZ,
     checked_in_by       VARCHAR(120),
     punctuality_minutes INTEGER,
+    reschedule_requested BOOLEAN NOT NULL DEFAULT FALSE,
+    reschedule_requested_at TIMESTAMPTZ,
+    reminder_24h_sent_at TIMESTAMPTZ,
+    reminder_15m_sent_at TIMESTAMPTZ,
     notes               TEXT,
     created_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -304,12 +308,27 @@ CREATE TABLE IF NOT EXISTS wa_messages (
                             'cancelled'
                         )),
     sent_by             VARCHAR(120),
+    delivery_channel    VARCHAR(30) NOT NULL DEFAULT 'wa_me' CHECK (delivery_channel IN (
+                            'wa_me',
+                            'waha_dry_run',
+                            'waha_live',
+                            'wa_me_fallback'
+                        )),
+    idempotency_key     VARCHAR(140),
+    external_message_id VARCHAR(140),
+    attempt_count       INTEGER NOT NULL DEFAULT 0 CHECK (attempt_count >= 0),
+    last_attempt_at     TIMESTAMPTZ,
+    last_error          TEXT,
+    dry_run_payload     JSONB,
     prepared_at         TIMESTAMPTZ,
     sent_at             TIMESTAMPTZ,
     created_at          TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
 CREATE INDEX IF NOT EXISTS idx_wa_messages_status ON wa_messages (queue_status, created_at DESC);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_wa_messages_idempotency_key
+    ON wa_messages (idempotency_key)
+    WHERE idempotency_key IS NOT NULL;
 
 -- =================================================================================
 -- الدوال والمحفزات الذكية (PostgreSQL Functions & Triggers)
@@ -462,6 +481,20 @@ VALUES
     'whatsapp_templates',
     'قوالب رسائل واتساب الهجينة الجاهزة للإرسال عبر wa.me',
     'منسق الاستقطاب'
+),
+(
+    'waha_config',
+    '{
+        "enabled": false,
+        "dry_run": true,
+        "kill_switch_tripped": false,
+        "waha_activated_at": null,
+        "max_per_minute": 6,
+        "max_per_hour": 25
+    }'::jsonb,
+    'security_governance',
+    'حوكمة بوابة WAHA التشغيلية (Dry-Run افتراضي + منع الرسائل الرجعية + مفتاح إيقاف فوري)',
+    'مسؤول أمن المعلومات'
 ),
 (
     'governance_policy',

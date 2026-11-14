@@ -19,6 +19,8 @@ const {
   listOllamaModels,
   testOllamaModel
 } = require('./services/aiEvaluator');
+const wahaClient = require('./services/wahaClient');
+const { createWahaRoutes } = require('./services/wahaRoutes');
 const {
   ROLE_LABELS,
   hashPassword,
@@ -3808,6 +3810,19 @@ app.patch('/api/wa-messages/:id', requireAuth(['super_admin', 'hr_coordinator'])
     client.release();
   }
 });
+
+// ---------------------------------------------------------------------------------
+// 9B. بوابة رسائل واتساب التشغيلية عبر WAHA (v2.3) — Dry-Run إلزامي + مفتاح إيقاف فوري
+//     المسارات: /api/waha/status · /api/waha/config · /api/waha/kill-switch ·
+//               /api/wa-messages/:id/dispatch-waha · /api/waha/dry-run-outbox · /api/webhooks/waha
+// ---------------------------------------------------------------------------------
+app.use('/api', createWahaRoutes({
+  query,
+  pool,
+  logAudit,
+  requireAuth,
+  wahaClient
+}));
 
 // ---------------------------------------------------------------------------------
 // 10. إعدادات المقر وصورة المدخل ومحاكي الفحص الأعمى وسجل التدقيق
