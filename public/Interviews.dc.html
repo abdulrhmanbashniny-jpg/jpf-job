@@ -112,6 +112,20 @@
         </div>
       </div>
 
+      <!-- v2.3: شريط حوكمة WAHA — وضع الاختبار الجاف / Kill-Switch / عدادات الإرسال -->
+      <div id="waha-governance-strip" data-testid="waha-strip" style="background:#FFFFFF;border:1.5px solid var(--border-color);border-radius:18px;padding:14px 18px;display:flex;align-items:center;justify-content:space-between;gap:14px;margin-bottom:20px;flex-wrap:wrap;">
+        <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;">
+          <span id="waha-mode-badge" class="badge badge-charcoal" data-testid="waha-mode-badge" style="font-size:12px;">جاري فحص بوابة WAHA...</span>
+          <span id="waha-session-badge" class="badge" style="font-size:11.5px;background:#F1F2F4;color:#4A4D52;">الجلسة: —</span>
+          <span id="waha-counters" class="mono" style="font-size:11.5px;color:var(--text-muted);">الدقيقة: 0/6 · الساعة: 0/25</span>
+          <span id="waha-blocked-reason" style="font-size:11.5px;color:var(--text-muted);"></span>
+        </div>
+        <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
+          <button type="button" id="waha-refresh-btn" class="btn btn-outline btn-sm">🔄 تحديث حالة WAHA</button>
+          <button type="button" id="waha-kill-switch-btn" data-testid="waha-kill-switch" class="btn btn-sm" style="background:#C8553D;color:#FFF;border:1.5px solid #C8553D;font-weight:700;">🛑 إيقاف الإرسال الآلي فوراً</button>
+        </div>
+      </div>
+
       <!-- شريط التنبيه الحي لأقرب مقابلة قادمة -->
       <div id="next-interview-banner" style="background:#17191C;color:#FFFFFF;border-radius:20px;padding:20px 24px;display:flex;align-items:center;justify-content:space-between;gap:20px;margin-bottom:20px;flex-wrap:wrap;">
         <div style="display:flex;align-items:center;gap:18px;">
@@ -292,6 +306,7 @@
     let queueList = [];
     let activeStageIdx = 0;
     let previewCandidate = null;
+    let wahaState = null;
 
     function applyTemplateClient(tpl, c) {
       const sample = c || {
@@ -528,6 +543,12 @@
           statusHtml = '<span class="badge badge-saffron">فُتح الرابط — بانتظار التأكيد</span>';
         }
 
+        if (q.delivery_channel === 'waha_dry_run') {
+          statusHtml += ' <span class="badge badge-saffron" data-testid="waha-dry-badge" style="font-size:10.5px;">🧪 محاكاة جافة</span>';
+        } else if (q.delivery_channel === 'waha_live') {
+          statusHtml += ' <span class="badge badge-olive" style="font-size:10.5px;">WAHA حيّ</span>';
+        }
+
         const isCancelledMsg = q.queue_status === 'cancelled';
         const isQueuedMsg = q.queue_status === 'queued';
         const canManageQueue = isQueueManagerRole();
@@ -537,10 +558,14 @@
         if (isCancelledMsg) {
           actionCellHtml = '<span style="font-size:12px;color:var(--text-muted);">تم استبدالها بموعد أو رمز محدّث</span>';
         } else if (canManageQueue && isQueuedMsg) {
+          const wahaBtn = q.template_key === 'portal_recovery'
+            ? ''
+            : `<button type="button" class="btn btn-sm" data-waha-dispatch-id="${q.id}" data-testid="waha-dispatch-${q.id}" title="إرسال عبر WAHA (يحاكي فقط في وضع الاختبار الجاف)" onclick="event.stopPropagation();triggerWahaDryRun(${q.id})">🧪 إرسال WAHA</button>`;
           actionCellHtml = `<div style="display:flex;gap:6px;flex-wrap:wrap;">
             <button type="button" class="wa-btn-inline" data-msg-id="${q.id}" data-tpl-key="${SmartHR.escapeHtml(q.template_key || '')}" onclick="triggerRowSend(${q.id}, this)">
               💬 فتح مسودة
             </button>
+            ${wahaBtn}
             <button type="button" class="btn btn-olive btn-sm" data-confirm-id="${q.id}" onclick="confirmRowSent(${q.id})">✓ تأكيد الإرسال</button>
           </div>`;
         } else if (canManageQueue && q.wa_link) {
@@ -613,6 +638,109 @@
       confirmMessageSent(id);
     };
 
+    // ---------------------------------------------------------------------------
+    // v2.3: حوكمة WAHA — شريط الحالة، الاختبار الجاف، مفتاح الإيقاف الفوري
+    // ---------------------------------------------------------------------------
+    function renderWahaStrip(status) {
+      wahaState = status || null;
+      const modeBadge = document.getElementById('waha-mode-badge');
+      const sessionBadge = document.getElementById('waha-session-badge');
+      const countersEl = document.getElementById('waha-counters');
+      const reasonEl = document.getElementById('waha-blocked-reason');
+      const killBtn = document.getElementById('waha-kill-switch-btn');
+      if (!modeBadge) return;
+
+      if (!status) {
+        modeBadge.className = 'badge badge-terracotta';
+        modeBadge.textContent = '⚠️ تعذّر قراءة حالة WAHA';
+        sessionBadge.textContent = 'الجلسة: —';
+        countersEl.textContent = '—';
+        reasonEl.textContent = '';
+        return;
+      }
+
+      const dryRun = Boolean(status.effective_dry_run);
+      const tripped = Boolean(status.config && status.config.kill_switch_tripped);
+      if (tripped) {
+        modeBadge.className = 'badge badge-terracotta';
+        modeBadge.textContent = '🛑 مفتاح الإيقاف مفعّل — يدوي wa.me';
+      } else if (dryRun) {
+        modeBadge.className = 'badge badge-saffron';
+        modeBadge.textContent = '🧪 وضع الاختبار الجاف — لا رسائل حقيقية';
+      } else {
+        modeBadge.className = 'badge badge-olive';
+        modeBadge.textContent = '🟢 WAHA متصل — إرسال حيّ بموافقة';
+      }
+
+      const probe = status.probe;
+      sessionBadge.textContent = probe
+        ? `الجلسة: ${probe.session_name || 'default'} · ${probe.session_status}`
+        : `الجلسة: ${(status.env && status.env.session) || 'default'}`;
+      if (probe && probe.reachable === false) {
+        sessionBadge.textContent += ' · غير متاحة ← wa.me';
+      }
+
+      const c = status.counters || {};
+      countersEl.textContent = `الدقيقة: ${c.sent_last_minute || 0}/${c.max_per_minute || 6} · الساعة: ${c.sent_last_hour || 0}/${c.max_per_hour || 25} · جاف: ${c.dry_run_total || 0} · حيّ: ${c.live_total || 0}`;
+
+      const reasons = {
+        ENV_WAHA_DRY_RUN_TRUE: 'القفل مفروض من متغير البيئة WAHA_DRY_RUN=true',
+        DB_DRY_RUN_TRUE: 'الاختبار الجاف مفعّل من الإعدادات',
+        KILL_SWITCH_TRIPPED: 'مفتاح الإيقاف مرفوع',
+        WAHA_NOT_ENABLED: 'قناة WAHA غير مفعّلة',
+        WAHA_LIVE_NOT_APPROVED: 'موافقة المالك للإرسال الحيّ غير مفعّلة على الخادم'
+      };
+      reasonEl.textContent = status.live_send_blocked_reason ? `(${reasons[status.live_send_blocked_reason] || status.live_send_blocked_reason})` : '';
+      // بوابة الاستقبال (ردود المرشحين) مستقلة عن بوابة الإرسال — نعرضها بوضوح
+      if (status.inbound_blocked_reason) {
+        reasonEl.textContent += ` · الردود الواردة موقوفة (${reasons[status.inbound_blocked_reason] || status.inbound_blocked_reason})`;
+      } else {
+        reasonEl.textContent += ' · الردود الواردة تعمل';
+      }
+
+      if (killBtn) {
+        killBtn.disabled = !isQueueManagerRole() || tripped;
+        killBtn.style.opacity = killBtn.disabled ? '0.55' : '1';
+        killBtn.textContent = tripped ? '🛑 مفتاح الإيقاف مفعّل' : '🛑 إيقاف الإرسال الآلي فوراً';
+      }
+    }
+
+    async function loadWahaStatus(probe = false) {
+      try {
+        const status = await SmartHR.apiFetch(`/api/waha/status${probe ? '?probe=1' : ''}`);
+        renderWahaStrip(status);
+        return status;
+      } catch (err) {
+        renderWahaStrip(null);
+        throw err;
+      }
+    }
+
+    window.triggerWahaDryRun = async function(msgId) {
+      try {
+        const res = await SmartHR.apiFetch(`/api/wa-messages/${msgId}/dispatch-waha`, {
+          method: 'POST',
+          body: JSON.stringify({})
+        });
+        SmartHR.showToast(res.notice || 'تم تسجيل الإرسال في وضع الاختبار الجاف.', res.sent_live ? 'success' : 'info');
+        // إعادة تحميل واحدة فقط: loadAllData يجلب شريط الحوكمة والطابور معاً
+        await loadAllData();
+      } catch (err) {
+        SmartHR.showToast(err.message, 'error');
+      }
+    };
+
+    async function tripKillSwitch() {
+      if (!confirm('سيتم إيقاف الإرسال الآلي فوراً وتحويل كل الرسائل إلى الوضع اليدوي wa.me. هل تريد المتابعة؟')) return;
+      try {
+        const res = await SmartHR.apiFetch('/api/waha/kill-switch', { method: 'POST', body: JSON.stringify({}) });
+        SmartHR.showToast(res.message || 'تم إيقاف الإرسال الآلي.', 'success');
+        await loadWahaStatus(false);
+      } catch (err) {
+        SmartHR.showToast(err.message, 'error');
+      }
+    }
+
     async function loadAllData() {
       await SmartHR.getCurrentUser().catch(() => null);
       const canManageQueue = isQueueManagerRole();
@@ -623,10 +751,13 @@
       if (hqSubmitBtn) hqSubmitBtn.style.display = canManageQueue ? '' : 'none';
 
       const filterVal = document.getElementById('queue-filter').value;
-      const [waData, intData] = await Promise.all([
+      const [waData, intData, wahaStatus] = await Promise.all([
         SmartHR.apiFetch(`/api/wa-messages?status=${encodeURIComponent(filterVal)}`),
-        SmartHR.apiFetch('/api/interviews')
+        SmartHR.apiFetch('/api/interviews'),
+        SmartHR.apiFetch('/api/waha/status').catch(() => null)
       ]);
+
+      renderWahaStrip(wahaStatus);
 
       templatesState = waData.templates || {};
       locationState = waData.company_location || {};
@@ -649,6 +780,10 @@
 
     document.getElementById('tpl-editor').addEventListener('input', updatePhonePreview);
     document.getElementById('queue-filter').addEventListener('change', loadAllData);
+    document.getElementById('waha-kill-switch-btn').addEventListener('click', tripKillSwitch);
+    document.getElementById('waha-refresh-btn').addEventListener('click', () => {
+      loadWahaStatus(true).catch((err) => SmartHR.showToast(err.message, 'error'));
+    });
 
     document.getElementById('save-tpl-btn').addEventListener('click', async () => {
       try {

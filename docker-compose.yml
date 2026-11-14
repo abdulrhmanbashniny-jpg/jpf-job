@@ -44,8 +44,26 @@ services:
       MAX_UPLOAD_MB: ${MAX_UPLOAD_MB:-10}
       ADMIN_ACCESS_CODE: ${ADMIN_ACCESS_CODE:-RUWAA-HR-2026}
       SESSION_SECRET: ${SESSION_SECRET:-}
+      # v2.3 — WAHA: الشبكة الداخلية المشتركة + قفل Dry-Run الإلزامي (القيم هنا افتراضية آمنة فقط،
+      # ولا تُوضع أي أسرار في هذا الملف: WAHA_API_KEY و WAHA_WEBHOOK_SECRET يضبطهما Hermes على الخادم في .env)
+      WAHA_BASE_URL: ${WAHA_BASE_URL:-http://waha-bbg7-waha-1:3000}
+      WAHA_SESSION: ${WAHA_SESSION:-default}
+      WAHA_DRY_RUN: ${WAHA_DRY_RUN:-true}
+      WAHA_LIVE_APPROVED: ${WAHA_LIVE_APPROVED:-false}
+      WAHA_API_KEY: ${WAHA_API_KEY:-}
+      WAHA_WEBHOOK_SECRET: ${WAHA_WEBHOOK_SECRET:-}
+    networks:
+      - default
+      # شبكة WAHA القائمة على الخادم: يجب أن تُثبت Reachability من حاوية التطبيق قبل صحة هذا الربط
+      - waha_net
     volumes:
       - uploads_data:/app/uploads
+
+networks:
+  # شبكة خارجية موجودة مسبقاً باسم waha-bbg7_default (حاوية waha-bbg7-waha-1)
+  waha_net:
+    external: true
+    name: ${WAHA_DOCKER_NETWORK:-waha-bbg7_default}
 
 volumes:
   pgdata:

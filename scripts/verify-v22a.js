@@ -141,7 +141,9 @@ function getRiyadhTodayStr() {
 
     const health = await (await fetch(`${BASE}/api/health`)).json();
     assert.strictEqual(health.status, 'ok');
-    assert(health.version.startsWith('2.2'), `Expected version 2.2.x, got ${health.version}`);
+    // الإصدار التراكمي: يجب ألا يقل عن 2.2.0 (يقبل 2.2a/2.2b وأي مرحلة لاحقة مثل 2.3.0 دون كسر الاختبار)
+    const [maj, min] = String(health.version).split('.').map((n) => parseInt(n, 10));
+    assert(maj === 2 && Number.isFinite(min) && min >= 2, `Expected version >= 2.2.0, got ${health.version}`);
 
     pool = new Pool({ connectionString: `${dbBaseOrigin}/${dbName}` });
     pool.on('error', () => {});

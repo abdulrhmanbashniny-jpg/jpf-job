@@ -42,6 +42,7 @@ cleanup() {
     docker compose -p "${SIM_ID}" --env-file "${SIM_APP}/.env" -f "${SIM_APP}/docker-compose.yml" -f "${SIM_APP}/docker-compose.override.yml" down -v --remove-orphans >/dev/null 2>&1 || true
   fi
   docker network rm "${SIM_ID}_ext_ai_net" >/dev/null 2>&1 || true
+  docker network rm "${SIM_ID}_ext_waha_net" >/dev/null 2>&1 || true
   rm -rf "${SIM_ROOT}"
 }
 trap 'echo "[DRILL_ERROR] Failed at line $LINENO" >&2' ERR
@@ -49,6 +50,8 @@ trap cleanup EXIT
 
 mkdir -p "${SIM_APP}" "${SIM_BAK}"
 docker network create "${SIM_ID}_ext_ai_net" >/dev/null
+# v2.3: محاكاة شبكة WAHA الخارجية الموجودة على الخادم (waha-bbg7_default) حتى لا يفشل ربط الخدمة
+docker network create "${SIM_ID}_ext_waha_net" >/dev/null
 
 echo "=== [CONTAINER DRILL 1] BOOTING SIMULATED PRODUCTION v2.0 (git clone 70be659 + override + hotfix + volumes) ==="
 git clone --quiet "${REPO_ROOT}" "${SIM_APP}"
@@ -84,6 +87,20 @@ networks:
   ext_ai:
     external: true
     name: ${SIM_ID}_ext_ai_net
+EOF
+
+# v2.3: البيئة المعزولة تحتاج شبكة WAHA الخارجية + إبقاء Dry-Run ملزماً خلال كل تدريبات الحاويات
+cat >> "${SIM_APP}/docker-compose.override.yml" <<EOF
+  waha_net:
+    external: true
+    name: ${SIM_ID}_ext_waha_net
+EOF
+cat >> "${SIM_APP}/.env" <<EOF
+WAHA_BASE_URL=http://waha-bbg7-waha-1:3000
+WAHA_SESSION=default
+WAHA_DRY_RUN=true
+WAHA_LIVE_APPROVED=false
+WAHA_DOCKER_NETWORK=${SIM_ID}_ext_waha_net
 EOF
 
 DC=(docker compose -p "${SIM_ID}" --env-file "${SIM_APP}/.env" -f "${SIM_APP}/docker-compose.yml" -f "${SIM_APP}/docker-compose.override.yml")
