@@ -260,6 +260,35 @@ async function ensureDatabaseInitialized() {
         ON applications (voice_retention_expires_at)
         WHERE voice_pitch_path IS NOT NULL;
 
+      -- v2.4: ملاحظة التقييم الشفهي البشري أثناء الاستماع للتسجيل (تُرصد من قاعة المقابلة)
+      ALTER TABLE committee_evaluations
+        ADD COLUMN IF NOT EXISTS voice_human_note TEXT;
+
+      -- v2.4: قاعات فيديو Jitsi الخاصة + قياس جلسة المقابلة الفعلية
+      ALTER TABLE interviews
+        ADD COLUMN IF NOT EXISTS jitsi_room_name VARCHAR(120),
+        ADD COLUMN IF NOT EXISTS room_opened_by_staff_at TIMESTAMPTZ,
+        ADD COLUMN IF NOT EXISTS candidate_joined_room_at TIMESTAMPTZ,
+        ADD COLUMN IF NOT EXISTS actual_call_minutes INTEGER,
+        ADD COLUMN IF NOT EXISTS room_telemetry JSONB NOT NULL DEFAULT '{}'::jsonb;
+      DO $$
+      BEGIN
+        IF NOT EXISTS (
+          SELECT 1 FROM pg_constraint WHERE conname = 'chk_interviews_actual_call_minutes'
+        ) AND NOT EXISTS (
+          SELECT 1 FROM pg_constraint
+          WHERE conrelid = 'interviews'::regclass
+            AND pg_get_constraintdef(oid) LIKE '%actual_call_minutes%'
+        ) THEN
+          ALTER TABLE interviews
+            ADD CONSTRAINT chk_interviews_actual_call_minutes
+            CHECK (actual_call_minutes IS NULL OR actual_call_minutes BETWEEN 0 AND 600);
+        END IF;
+      END $$;
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_interviews_jitsi_room_name
+        ON interviews (jitsi_room_name)
+        WHERE jitsi_room_name IS NOT NULL;
+
       -- v2.3: بوابة رسائل واتساب التشغيلية عبر WAHA مع قفل Dry-Run الإلزامي ومفتاح الإيقاف الفوري ومنع الرسائل الرجعية
       ALTER TABLE interviews
         ADD COLUMN IF NOT EXISTS reschedule_requested BOOLEAN NOT NULL DEFAULT FALSE,

@@ -21,6 +21,8 @@ const {
 } = require('./services/aiEvaluator');
 const wahaClient = require('./services/wahaClient');
 const { createWahaRoutes } = require('./services/wahaRoutes');
+const jitsiClient = require('./services/jitsiClient');
+const { createJitsiRoutes } = require('./services/jitsiRoutes');
 const {
   ROLE_LABELS,
   hashPassword,
@@ -1751,6 +1753,14 @@ app.get('/api/public/visit/:vt', async (req, res) => {
         checkin_qr_svg: checkinQrSvg,
         meeting_platform: interview.meeting_platform,
         meeting_url: interview.interview_mode === 'in_person' ? null : interview.meeting_url,
+        // v2.4: رابط القاعة الخاصة (إن كانت الغرفة مثبتة) — يُمنح للمرشح كـ participant بلا توكن إدارة
+        jitsi_room_url: interview.interview_mode === 'in_person' || !interview.jitsi_room_name
+          ? null
+          : jitsiClient.buildRoomSession({
+              roomName: interview.jitsi_room_name,
+              role: 'participant',
+              displayName: interview.full_name
+            }).join_url,
         interviewer_panel: interview.interviewer_panel,
         building: interview.location_building || locCfg.building_name,
         address_line: locCfg.address_line || '',
@@ -2369,7 +2379,8 @@ app.post('/api/evaluations', requireAuth(['super_admin', 'committee_member']), a
       cultural_fit,
       portfolio_practical,
       recommendation,
-      notes
+      notes,
+      voice_human_note
     } = req.body;
 
     if (!application_id) {
@@ -2402,12 +2413,24 @@ app.post('/api/evaluations', requireAuth(['super_admin', 'committee_member']), a
       return res.status(400).json({ error: 'جميع المعايير الخمسة يجب أن تكون بين 1.0 و 5.0.' });
     }
 
+    // قائمة التوصيات المسموحة مطابقة لقيد القاعدة chk المتاح في committee_evaluations.
+    // أي قيمة خارجة عنها كانت تُسقط الطلب بـ 500 وتُهدر التقييم كاملاً.
+    const ALLOWED_RECOMMENDATIONS = ['strong_hire', 'hire', 'hold', 'no_hire'];
+    if (recommendation !== undefined && recommendation !== null && recommendation !== ''
+        && !ALLOWED_RECOMMENDATIONS.includes(recommendation)) {
+      return res.status(400).json({
+        error: `قيمة توصية غير معروفة؛ المسموح: ${ALLOWED_RECOMMENDATIONS.join(', ')}`,
+        code: 'INVALID_RECOMMENDATION',
+        allowed: ALLOWED_RECOMMENDATIONS
+      });
+    }
+
     const { rows } = await query(
       `INSERT INTO committee_evaluations (
         application_id, evaluator_name, evaluator_role,
         technical_competence, communication_persuasion, problem_solving, cultural_fit, portfolio_practical,
-        recommendation, notes
-      ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
+        recommendation, notes, voice_human_note
+      ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
       ON CONFLICT (application_id, evaluator_name) DO UPDATE SET
         evaluator_role = EXCLUDED.evaluator_role,
         technical_competence = EXCLUDED.technical_competence,
@@ -2417,6 +2440,7 @@ app.post('/api/evaluations', requireAuth(['super_admin', 'committee_member']), a
         portfolio_practical = EXCLUDED.portfolio_practical,
         recommendation = EXCLUDED.recommendation,
         notes = EXCLUDED.notes,
+        voice_human_note = COALESCE(NULLIF(EXCLUDED.voice_human_note, ''), committee_evaluations.voice_human_note),
         evaluated_at = NOW()
       RETURNING *`,
       [
@@ -2429,7 +2453,8 @@ app.post('/api/evaluations', requireAuth(['super_admin', 'committee_member']), a
         scores[3],
         scores[4],
         recommendation || 'hire',
-        notes || ''
+        notes || '',
+        String(voice_human_note || '').slice(0, 1000)
       ]
     );
 
@@ -2624,7 +2649,17 @@ app.get('/api/interviews', requireAuth(), async (req, res) => {
     const origin = getBaseOrigin(req);
     const interviewsWithVisitUrl = intRes.rows.map(({ visit_token, ...row }) => ({
       ...row,
-      visit_url: buildVisitPassUrl(origin, row.id, visit_token)
+      visit_url: buildVisitPassUrl(origin, row.id, visit_token),
+      // v2.4: رابط غرفة Jitsi للجنة (بلا كشف أي سر) — يبقى meeting_url كبديل احتياطي
+      jitsi_room_url: row.interview_mode === 'in_person' || !row.jitsi_room_name
+        ? null
+        : jitsiClient.buildRoomSession({
+            roomName: row.jitsi_room_name,
+            // صلاحية الغرفة تتبع دور الطالب لا الصفحة: المنسق participant فقط،
+            // واللجنة/الإدارة moderator. لا يجوز منح توكن إدارة من مسار قائمة عام.
+            role: ['super_admin', 'committee_member'].includes(req.user.role) ? 'moderator' : 'participant',
+            displayName: req.user.full_name || 'لجنة التوظيف'
+          }).join_url
     }));
 
     res.json({
@@ -2723,7 +2758,12 @@ app.post('/api/interviews/schedule-single', requireAuth(['super_admin', 'hr_coor
 
     const origin = getBaseOrigin(req);
     const isRemote = interview_mode !== 'in_person';
-    const defaultRoom = `https://meet.jit.si/JPF-${cand.job_code.replace(/[^a-zA-Z0-9]/g, '')}-${cand.reference_no.slice(-4)}`;
+    // v2.4: غرفة Jitsi خاصة عشوائية غير قابلة للتخمين لكل مقابلة عن بُعد (تُثبَّت مرة واحدة لكل موعد)
+    const jitsiEnv = jitsiClient.getJitsiEnvConfig();
+    const scheduledRoomName = isRemote && jitsiEnv.enabled ? jitsiClient.generateRoomName() : null;
+    const defaultRoom = scheduledRoomName
+      ? jitsiClient.buildRoomUrl(jitsiEnv.domain, scheduledRoomName)
+      : `https://meet.jit.si/JPF-${cand.job_code.replace(/[^a-zA-Z0-9]/g, '')}-${cand.reference_no.slice(-4)}`;
     const provisionalMeetUrl = isRemote ? (meeting_url && String(meeting_url).trim() ? String(meeting_url).trim() : defaultRoom) : origin;
 
     const finalBuilding = location_building || locCfg.building_name;
@@ -2752,8 +2792,8 @@ app.post('/api/interviews/schedule-single', requireAuth(['super_admin', 'hr_coor
         application_id, scheduled_date, start_time, end_time, duration_minutes,
         meeting_platform, meeting_url, interviewer_panel, booking_status,
         interview_mode, visit_token, location_building, location_floor, location_office,
-        location_maps_url, location_image_url, location_notes, notes
-      ) VALUES ($1,$2::date,$3::time,$4::time,$5,$6,$7,$8,'scheduled',$9,$10,$11,$12,$13,$14,$15,$16,$17)
+        location_maps_url, location_image_url, location_notes, notes, jitsi_room_name
+      ) VALUES ($1,$2::date,$3::time,$4::time,$5,$6,$7,$8,'scheduled',$9,$10,$11,$12,$13,$14,$15,$16,$17,$18)
       ON CONFLICT (application_id) DO UPDATE SET
         scheduled_date = EXCLUDED.scheduled_date,
         start_time = EXCLUDED.start_time,
@@ -2775,6 +2815,7 @@ app.post('/api/interviews/schedule-single', requireAuth(['super_admin', 'hr_coor
         checked_in_at = NULL,
         checked_in_by = NULL,
         punctuality_minutes = NULL,
+        jitsi_room_name = COALESCE(interviews.jitsi_room_name, EXCLUDED.jitsi_room_name),
         updated_at = NOW()
       RETURNING *`,
       [
@@ -2794,7 +2835,8 @@ app.post('/api/interviews/schedule-single', requireAuth(['super_admin', 'hr_coor
         finalMaps,
         finalImg,
         finalNotes,
-        isRemote ? 'مقابلة عن بُعد' : `حضوري: ${finalFloor} - ${finalOffice}`
+        isRemote ? 'مقابلة عن بُعد' : `حضوري: ${finalFloor} - ${finalOffice}`,
+        scheduledRoomName
       ]
     );
 
@@ -3822,6 +3864,18 @@ app.use('/api', createWahaRoutes({
   logAudit,
   requireAuth,
   wahaClient
+}));
+
+// ---------------------------------------------------------------------------------
+// 9C. قاعات الفيديو الخاصة عبر Jitsi (v2.4) — جلسة القاعة + قياس الجلسة + بطاقة المرشح
+//     المسارات: /api/jitsi/status · /api/interviews/:id/room-session ·
+//               /api/interviews/:id/room-telemetry · /api/public/interviews/room-pass
+// ---------------------------------------------------------------------------------
+app.use('/api', createJitsiRoutes({
+  query,
+  logAudit,
+  requireAuth,
+  jitsiClient
 }));
 
 // ---------------------------------------------------------------------------------

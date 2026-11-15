@@ -1,0 +1,478 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>قاعة المقابلة والتقييم المقسّم | رُواء للتوظيف الذكي</title>
+  <link rel="stylesheet" href="css/design-system.css" />
+  <style>
+    .room-grid {
+      display: grid;
+      grid-template-columns: 1.55fr 1fr;
+      gap: 18px;
+      align-items: start;
+    }
+    .room-stage {
+      background: #101214;
+      border-radius: 20px;
+      overflow: hidden;
+      border: 1.5px solid #23262B;
+      min-height: 560px;
+      display: flex;
+      flex-direction: column;
+    }
+    .room-stage iframe { width: 100%; height: 100%; border: 0; flex: 1; min-height: 500px; background: #0B0C0E; }
+    .room-fallback {
+      padding: 26px;
+      color: #E7E9EC;
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+      align-items: center;
+      justify-content: center;
+      text-align: center;
+      min-height: 500px;
+    }
+    .room-side { display: flex; flex-direction: column; gap: 14px; }
+    .score-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 7px 0; }
+    .score-row input[type="range"] { flex: 1; accent-color: #1F6B55; }
+    .score-val { font-family: var(--font-mono); font-size: 13px; min-width: 34px; text-align: left; }
+    .pill-note { font-size: 11.5px; color: var(--text-muted); }
+    @media (max-width: 980px) { .room-grid { grid-template-columns: 1fr; } }
+  </style>
+</head>
+<body>
+  <div class="admin-shell">
+    <div id="admin-sidebar-mount"></div>
+
+    <main class="admin-main">
+      <div class="admin-topbar">
+        <div>
+          <h1 class="page-title">قاعة المقابلة والتقييم المقسّم</h1>
+          <p class="page-subtitle">بث قاعة Jitsi على اليمين، وملف المرشح والتسجيل الصوتي ومنزلقات التقييم الخمسة على اليسار — احفظ التقييم أثناء المقابلة.</p>
+        </div>
+        <div style="display:flex;gap:10px;flex-wrap:wrap;">
+          <a href="Interviews.dc.html" class="btn btn-outline">↩︎ رجوع للرسائل والمواعيد</a>
+          <span id="room-status-badge" data-testid="room-status" class="badge badge-charcoal" style="align-self:center;">جاري التحميل...</span>
+        </div>
+      </div>
+
+      <div id="room-meta-strip" style="background:#FFFFFF;border:1.5px solid var(--border-color);border-radius:16px;padding:12px 16px;margin-bottom:16px;display:flex;gap:16px;flex-wrap:wrap;align-items:center;font-size:12.5px;">
+        <strong id="meta-candidate">—</strong>
+        <span id="meta-job" style="color:var(--text-muted);">—</span>
+        <span id="meta-when" class="mono">—</span>
+        <span id="meta-ref" class="mono" style="color:var(--text-muted);">—</span>
+        <span id="meta-session" class="pill-note">مدة المكالمة الموثقة: —</span>
+      </div>
+
+      <div id="jitsi-degraded-banner" style="display:none;background:#FBF3DE;border:1.5px solid rgba(224,162,27,0.45);color:#5A4410;border-radius:16px;padding:12px 16px;margin-bottom:16px;font-size:12.5px;">
+        <strong>⚠️ نطاق القاعة غير جاهز بعد.</strong>
+        <span id="jitsi-degraded-text">تبقى المنصة تعمل ويُستخدم الرابط البديل أدناه حتى يُضاف سجل DNS للقاعة.</span>
+      </div>
+
+      <div class="room-grid">
+        <!-- يمين: بث Jitsi -->
+        <section class="room-stage" data-testid="room-stage">
+          <div style="padding:10px 14px;background:#17191C;color:#E7E9EC;display:flex;justify-content:space-between;align-items:center;font-size:12.5px;">
+            <span>🎥 قاعة <span class="mono" id="room-domain">meet.hrjpf.tech</span></span>
+            <span style="display:flex;gap:8px;">
+              <button type="button" id="btn-open-external" class="btn btn-outline btn-sm" style="color:#FFF;border-color:rgba(255,255,255,0.25);">فتح في نافذة خارجية ↗</button>
+              <button type="button" id="btn-end-call" class="btn btn-sm" style="background:#C8553D;color:#FFF;border:1.5px solid #C8553D;">⏹ إنهاء وتوثيق المدة</button>
+            </span>
+          </div>
+          <div id="room-frame-mount" style="flex:1;display:flex;">
+            <div class="room-fallback" id="room-fallback">
+              <div style="font-size:30px;">🎥</div>
+              <div style="font-weight:700;">جاري تجهيز القاعة...</div>
+              <div class="pill-note" id="fallback-note">يتحقق النظام من جاهزية نطاق القاعة.</div>
+            </div>
+          </div>
+        </section>
+
+        <!-- يسار: ملف المرشح + التسجيل الصوتي + التقييم -->
+        <aside class="room-side">
+          <section class="card" style="padding:16px;">
+            <strong style="font-size:15px;">👤 ملف المرشح</strong>
+            <div id="candidate-summary" style="margin-top:10px;font-size:13px;line-height:1.9;"></div>
+            <a id="cv-link" href="#" target="_blank" rel="noopener" class="btn btn-outline btn-sm" style="margin-top:10px;width:100%;display:none;">📄 فتح السيرة الذاتية</a>
+          </section>
+
+          <section class="card" id="ai-questions-card" style="padding:16px;display:none;">
+            <strong style="font-size:15px;">🧠 أسئلة المقابلة المقترحة (مولّدة آلياً)</strong>
+            <ol id="ai-questions-list" style="margin:10px 0 0;padding-inline-start:18px;font-size:12.5px;line-height:1.9;"></ol>
+          </section>
+
+          <section class="card" id="voice-review-card" style="padding:16px;display:none;">
+            <strong style="font-size:15px;">🎙️ التسجيل الصوتي الاختياري (60 ثانية)</strong>
+            <audio id="voice-player" controls style="width:100%;margin-top:10px;"></audio>
+            <p class="pill-note" style="margin-top:6px;">الاستماع موثّق في سجل التدقيق وفق حوكمة v2.2b.</p>
+          </section>
+
+          <section class="card" style="padding:16px;">
+            <strong style="font-size:15px;">📊 التقييم الفوري (خمسة معايير 1–5)</strong>
+            <div id="score-rows" style="margin-top:8px;"></div>
+            <div class="form-group" style="margin-top:10px;">
+              <label class="form-label" style="font-size:12px;">الملاحظات</label>
+              <textarea id="eval-notes" class="form-textarea" style="min-height:64px;font-size:12.5px;" placeholder="ملاحظات اللجنة عن المقابلة..."></textarea>
+            </div>
+            <div class="form-group" style="margin-top:8px;">
+              <label class="form-label" style="font-size:12px;">التوصية</label>
+              <select id="eval-recommendation" class="form-select" style="font-size:12.5px;">
+                <option value="">— لم تُحدَّد بعد —</option>
+                <option value="strong_hire">توظيف قوي ⭐</option>
+                <option value="hire">توظيف ✓</option>
+                <option value="hold">قيد الانتظار</option>
+                <option value="no_hire">رفض</option>
+              </select>
+            </div>
+            <div class="form-group" style="margin-top:8px;" id="voice-note-group">
+              <label class="form-label" style="font-size:12px;">ملاحظة التواصل الشفهي البشري (بعد الاستماع للتسجيل)</label>
+              <input type="text" id="voice-human-note" class="form-input" style="font-size:12.5px;" placeholder="مثال: نبرة واثقة، إجابة منظمة..." />
+            </div>
+            <button type="button" id="btn-save-eval" data-testid="save-eval" class="btn btn-olive" style="width:100%;margin-top:10px;">💾 حفظ التقييم أثناء المقابلة</button>
+            <p class="pill-note" style="margin-top:8px;" id="eval-hint"></p>
+          </section>
+        </aside>
+      </div>
+    </main>
+  </div>
+
+  <script src="js/common.js"></script>
+  <script>
+    SmartHR.renderAdminSidebar('interviews');
+
+    const CRITERIA = [
+      { key: 'technical_competence', label: 'الكفاءة الفنية' },
+      { key: 'communication_persuasion', label: 'التواصل والإقناع' },
+      { key: 'problem_solving', label: 'حل المشكلات' },
+      { key: 'cultural_fit', label: 'التوافق الثقافي' },
+      { key: 'portfolio_practical', label: 'الأعمال والتطبيق العملي' }
+    ];
+
+    const params = new URLSearchParams(window.location.search);
+    const interviewId = parseInt(params.get('interview_id') || params.get('id') || '', 10);
+    let roomState = null;
+    let canEvaluate = false;
+    let staffOpenedSent = false;
+    let currentUserFullName = null;
+
+    function setStatus(text, cls) {
+      const el = document.getElementById('room-status-badge');
+      el.textContent = text;
+      el.className = `badge ${cls || 'badge-charcoal'}`;
+    }
+
+    // آخر تقييم محفوظ لهذا العضو (إن وُجد) — يُستخدم لتحميل القيم بدل فرض افتراضيات
+    let savedEvaluation = null;
+    // هل طُبِّق التقييم المحفوظ فعلياً على النموذج؟ إن فشل التحميل نمنع الحفظ
+    // كي لا نكتب قيماً افتراضية فوق تقييم حقيقي موجود على الخادم.
+    let hydratedFromSaved = false;
+
+    const SCORE_KEYS = ['technical_competence', 'communication_persuasion', 'problem_solving', 'cultural_fit', 'portfolio_practical'];
+
+    /**
+     * يقرر مصير الحفظ بمقارنة الحقول الفعلية (لا حركة المنزلقات):
+     *   - block-hydration : يوجد تقييم محفوظ لم يُطبَّق على النموذج ⇒ لا حفظ إطلاقاً
+     *   - noop            : لا فرق في أي حقل ⇒ لا طلب شبكي
+     *   - save            : يوجد فرق في أي حقل (درجة/توصية/ملاحظة/ملاحظة صوتية) ⇒ حفظ
+     * الحقول غير المتغيّرة تُرسل بقيمها المحفوظة نفسها، فلا تتغيّر في القاعدة.
+     */
+    function decideEvaluationSave(saved, hydrated, current) {
+      const norm = (v) => (v === undefined || v === null ? '' : String(v).trim());
+      const num = (v) => (v === undefined || v === null || v === '' ? null : Number(v));
+
+      if (saved && !hydrated) {
+        return { action: 'block-hydration', changed: [] };
+      }
+      if (!saved) {
+        return { action: 'save', changed: ['new'] };
+      }
+
+      const changed = [];
+      for (const k of SCORE_KEYS) {
+        if (num(current[k]) !== num(saved[k])) changed.push(k);
+      }
+      if (norm(current.recommendation) !== norm(saved.recommendation)) changed.push('recommendation');
+      if (norm(current.notes) !== norm(saved.notes)) changed.push('notes');
+      if (norm(current.voice_human_note) !== norm(saved.voice_human_note)) changed.push('voice_human_note');
+
+      return { action: changed.length ? 'save' : 'noop', changed };
+    }
+
+    function renderScoreRows() {
+      const mount = document.getElementById('score-rows');
+      // لا قيمة افتراضية مسبقة: قيمة محايدة تقف في المنتصف، ولا تُحفظ إلا بعد لمس صريح.
+      // هذا يمنع استبدال تقييم محفوظ بقيم لم يُدخلها العضو.
+      const DEFAULT_VALUE = 3;
+      mount.innerHTML = CRITERIA.map((c) => {
+        const existing = savedEvaluation && savedEvaluation[c.key] != null ? Number(savedEvaluation[c.key]) : DEFAULT_VALUE;
+        return `
+        <div class="score-row">
+          <span style="font-size:12.5px;min-width:120px;">${SmartHR.escapeHtml(c.label)}</span>
+          <input type="range" min="1" max="5" step="0.5" value="${existing}" data-score-key="${c.key}" />
+          <span class="score-val" data-score-out="${c.key}">${existing.toFixed(1)}</span>
+        </div>`;
+      }).join('');
+      mount.querySelectorAll('input[type="range"]').forEach((input) => {
+        // نعلّم الحقل بأن العضو لمسه فعلاً — لا تُحفظ القيم غير الملموسة
+        input.addEventListener('input', () => {
+          input.dataset.touched = '1';
+          const out = mount.querySelector(`[data-score-out="${input.dataset.scoreKey}"]`);
+          if (out) out.textContent = Number(input.value).toFixed(1);
+        });
+      });
+    }
+
+    /** يحمّل تقييم هذا العضو لهذا الطلب إن كان محفوظاً سابقاً */
+    function hydrateExistingEvaluation(evaluations) {
+      if (!Array.isArray(evaluations) || !evaluations.length) return;
+      const mine = evaluations.find((e) => e.evaluator_name === currentUserFullName) || evaluations[0];
+      if (!mine) return;
+      savedEvaluation = mine;
+      CRITERIA.forEach((c) => {
+        const input = document.querySelector(`input[data-score-key="${c.key}"]`);
+        const out = document.querySelector(`[data-score-out="${c.key}"]`);
+        if (input && mine[c.key] != null) {
+          input.value = Number(mine[c.key]);
+          if (out) out.textContent = Number(mine[c.key]).toFixed(1);
+        }
+      });
+      if (mine.recommendation) {
+        const sel = document.getElementById('eval-recommendation');
+        if (sel) sel.value = mine.recommendation;
+      }
+      if (mine.notes) document.getElementById('eval-notes').value = mine.notes;
+      if (mine.voice_human_note) {
+        const vn = document.getElementById('voice-human-note');
+        if (vn) vn.value = mine.voice_human_note;
+      }
+      // نُعلّم أن التحميل تمّ بنجاح — أساس السماح بالحفظ فوق تقييم قائم
+      hydratedFromSaved = true;
+      const hint = document.getElementById('eval-hint');
+      if (hint) hint.textContent = 'عُرض تقييمك المحفوظ سابقاً — يمكنك حفظ الملاحظة أو التوصية وحدها دون تحريك الدرجات.';
+    }
+
+    async function sendTelemetry(event, extra) {
+      try {
+        const res = await SmartHR.apiFetch(`/api/interviews/${interviewId}/room-telemetry`, {
+          method: 'POST',
+          body: JSON.stringify({ event, ...(extra || {}) })
+        });
+        if (res && res.session) {
+          document.getElementById('meta-session').textContent =
+            `مدة المكالمة الموثقة: ${res.session.actual_call_minutes == null ? '—' : res.session.actual_call_minutes + ' دقيقة'}`;
+        }
+        return res;
+      } catch (err) {
+        SmartHR.showToast(err.message, 'error');
+        return null;
+      }
+    }
+
+    async function endCall() {
+      const res = await sendTelemetry('call_ended', {});
+      if (res) SmartHR.showToast('تم توثيق نهاية الجلسة ومدة المكالمة.', 'success');
+    }
+
+    async function saveEvaluation() {
+      if (!canEvaluate) {
+        SmartHR.showToast('هذا الحساب لا يملك صلاحية رصد درجات اللجنة.', 'error');
+        return;
+      }
+      const scores = {};
+      document.querySelectorAll('input[data-score-key]').forEach((input) => {
+        scores[input.dataset.scoreKey] = Number(input.value);
+      });
+
+      const recommendation = document.getElementById('eval-recommendation').value;
+      const notes = document.getElementById('eval-notes').value;
+      const voiceNote = (document.getElementById('voice-human-note') || {}).value || '';
+
+      // حماية من فشل التحميل: إن لم يكن لدينا تقييم محفوظ، نتحقق من الخادم قبل الكتابة.
+      // إن وُجد تقييم لم يُطبَّق على النموذج ⇒ نُطبّقه (فلا تُستبدل الدرجات بقيم افتراضية).
+      // وإن تعذّر التحقق ⇒ نمنع الحفظ بدل الكتابة العمياء.
+      if (!savedEvaluation) {
+        let fresh = null;
+        try {
+          fresh = await SmartHR.apiFetch(`/api/interviews/${interviewId}/room-session`);
+        } catch (_e) {
+          SmartHR.showToast('تعذّر التحقق من تقييمك المحفوظ — لم يُحفظ شيء. أعد المحاولة.', 'error');
+          return;
+        }
+        if (fresh && fresh.my_evaluation) {
+          hydrateExistingEvaluation([fresh.my_evaluation]);
+          SmartHR.showToast('وُجد تقييم محفوظ سابقاً — تم تحميله. راجع القيم ثم احفظ التغيير المطلوب فقط.', 'info');
+          return;
+        }
+      }
+
+      // قرار الحفظ عبر مقارنة الحقول الفعلية — يسمح بحفظ الملاحظة/التوصية وحدها
+      const decision = decideEvaluationSave(savedEvaluation, hydratedFromSaved, {
+        ...scores, recommendation, notes, voice_human_note: voiceNote
+      });
+
+      if (decision.action === 'block-hydration') {
+        SmartHR.showToast('تعذّر تحميل تقييمك المحفوظ — أعد تحميل الصفحة قبل الحفظ حتى لا تُستبدل درجاتك.', 'error');
+        return;
+      }
+      if (decision.action === 'noop') {
+        SmartHR.showToast('لا تغيير في أي حقل — لم يُرسل شيء.', 'info');
+        return;
+      }
+      if (!recommendation) {
+        SmartHR.showToast('اختر التوصية قبل الحفظ.', 'error');
+        return;
+      }
+
+      try {
+        await SmartHR.apiFetch('/api/evaluations', {
+          method: 'POST',
+          body: JSON.stringify({
+            application_id: roomState.interview ? roomState.interview.application_id : undefined,
+            ...scores,
+            recommendation,
+            notes,
+            voice_human_note: voiceNote
+          })
+        });
+        // نُحدّث مرجع المقارنة كي لا يُعاد إرسال ما حُفظ للتو
+        savedEvaluation = {
+          ...scores, recommendation, notes, voice_human_note: voiceNote
+        };
+        hydratedFromSaved = true;
+        SmartHR.showToast('✓ تم حفظ التقييم وتحديث درجة اللجنة.', 'success');
+      } catch (err) {
+        SmartHR.showToast(err.message, 'error');
+      }
+    }
+
+    function mountFallback(note) {
+      const mount = document.getElementById('room-frame-mount');
+      mount.innerHTML = `
+        <div class="room-fallback">
+          <div style="font-size:30px;">🛠️</div>
+          <div style="font-weight:700;">قاعة الفيديو غير متاحة الآن</div>
+          <div class="pill-note">${SmartHR.escapeHtml(note || 'يمكنك متابعة المقابلة بالرابط البديل ثم تسجيل التقييم هنا.')}</div>
+          <a id="fallback-link" class="btn btn-saffron" href="#" target="_blank" rel="noopener">فتح الرابط البديل ↗</a>
+        </div>`;
+      const alt = (roomState && roomState.fallback_if_unreachable) || null;
+      const link = document.getElementById('fallback-link');
+      if (alt) link.href = alt;
+      else link.style.display = 'none';
+    }
+
+    async function mountRoom(room) {
+      const mount = document.getElementById('room-frame-mount');
+      mount.innerHTML = '';
+      const iframe = document.createElement('iframe');
+      iframe.src = room.join_url;
+      iframe.allow = 'camera; microphone; fullscreen; display-capture; autoplay';
+      iframe.setAttribute('data-testid', 'jitsi-frame');
+      mount.appendChild(iframe);
+    }
+
+    async function boot() {
+      renderScoreRows();
+      if (!Number.isInteger(interviewId) || interviewId <= 0) {
+        setStatus('معرّف مقابلة مفقود', 'badge-terracotta');
+        mountFallback('افتح هذه الصفحة من موعد مقابلة عبر رابط ?interview_id=<id>.');
+        return;
+      }
+
+      try {
+        const [session, jitsiStatus] = await Promise.all([
+          SmartHR.apiFetch(`/api/interviews/${interviewId}/room-session`),
+          SmartHR.apiFetch('/api/jitsi/status').catch(() => null)
+        ]);
+        roomState = session;
+        canEvaluate = Boolean(session.can_evaluate);
+
+        // يُقرأ اسم المستخدم الحالي من الجلسة ثم يُحمَّل تقييمه المحفوظ (إن وُجد)
+        const me = await SmartHR.apiFetch('/api/auth/me').catch(() => null);
+        currentUserFullName = me && (me.full_name || (me.user && me.user.full_name)) || null;
+        if (session.my_evaluation) hydrateExistingEvaluation([session.my_evaluation]);
+
+        document.getElementById('meta-candidate').textContent = session.candidate.full_name || '—';
+        document.getElementById('meta-job').textContent = `${session.candidate.job_title || ''} ${session.candidate.job_code ? '(' + session.candidate.job_code + ')' : ''}`;
+        document.getElementById('meta-when').textContent = `${session.interview.scheduled_date} · ${String(session.interview.start_time).slice(0, 5)}`;
+        document.getElementById('meta-ref').textContent = session.candidate.reference_no || '';
+        document.getElementById('meta-session').textContent = `مدة المكالمة الموثقة: ${session.interview.actual_call_minutes == null ? '—' : session.interview.actual_call_minutes + ' دقيقة'}`;
+
+        document.getElementById('candidate-summary').innerHTML = `
+          <div><strong>${SmartHR.escapeHtml(session.candidate.full_name || '')}</strong></div>
+          <div style="color:var(--text-muted);">${SmartHR.escapeHtml(session.candidate.department || '')}</div>
+          <div class="mono" style="font-size:12px;">${SmartHR.escapeHtml(session.candidate.reference_no || '')}</div>`;
+        if (session.candidate.cv_filename) {
+          const link = document.getElementById('cv-link');
+          link.style.display = '';
+          link.href = `CandidateProfile.dc.html?ref=${encodeURIComponent(session.candidate.reference_no)}`;
+        }
+
+        // أسئلة الـ AI المقترحة إن وُجدت
+        const questions = Array.isArray(session.ai_questions) ? session.ai_questions : [];
+        if (questions.length) {
+          const card = document.getElementById('ai-questions-card');
+          card.style.display = '';
+          document.getElementById('ai-questions-list').innerHTML = questions
+            .map((q) => `<li>${SmartHR.escapeHtml(typeof q === 'string' ? q : (q.question || q.text || ''))}</li>`)
+            .join('');
+        }
+
+        // مشغل التسجيل الصوتي الاختياري (إن كان متاحاً ولم تنتهِ مدة استبقائه)
+        if (session.voice_pitch && session.voice_pitch.available && session.voice_pitch.stream_url) {
+          const card = document.getElementById('voice-review-card');
+          card.style.display = '';
+          document.getElementById('voice-player').src = session.voice_pitch.stream_url;
+        } else {
+          document.getElementById('voice-note-group').style.display = 'none';
+        }
+
+        document.getElementById('eval-hint').textContent = canEvaluate
+          ? 'الحفظ يحدّث متوسط درجة اللجنة والحالة تلقائياً.'
+          : 'دخول تنسيقي: لا يُسمح برصد درجات اللجنة من هذا الحساب.';
+        document.getElementById('btn-save-eval').disabled = !canEvaluate;
+        document.getElementById('btn-save-eval').style.opacity = canEvaluate ? '1' : '0.55';
+
+        document.getElementById('room-domain').textContent = session.room.domain;
+
+        if (jitsiStatus && jitsiStatus.degraded) {
+          const banner = document.getElementById('jitsi-degraded-banner');
+          banner.style.display = '';
+          document.getElementById('jitsi-degraded-text').textContent =
+            `حالة النطاق: ${jitsiStatus.probe.status} — ${jitsiStatus.fallback_note || ''}`;
+          setStatus('القاعة غير جاهزة — وضع بديل', 'badge-saffron');
+          mountFallback('نطاق القاعة غير جاهز على الخادم بعد؛ استخدم الرابط البديل ثم سجّل التقييم هنا.');
+          return;
+        }
+
+        await mountRoom(session.room);
+        setStatus('🟢 القاعة جاهزة', 'badge-olive');
+        if (!staffOpenedSent) {
+          staffOpenedSent = true;
+          sendTelemetry('staff_opened', {});
+        }
+      } catch (err) {
+        setStatus('تعذّر تجهيز القاعة', 'badge-terracotta');
+        mountFallback(err.message);
+      }
+    }
+
+    // واجهة قراءة فقط لاختبارات المتصفح (لا تُغيّر سلوكاً ولا تكشف بيانات)
+    window.__roomState = () => ({
+      hasSavedEvaluation: Boolean(savedEvaluation),
+      hydratedFromSaved,
+      recommendation: document.getElementById('eval-recommendation').value
+    });
+
+    document.getElementById('btn-save-eval').addEventListener('click', saveEvaluation);
+    document.getElementById('btn-end-call').addEventListener('click', endCall);
+    document.getElementById('btn-open-external').addEventListener('click', () => {
+      const target = roomState && roomState.room ? roomState.room.join_url : null;
+      if (target) window.open(target, '_blank', 'noopener');
+      else SmartHR.showToast('لا يوجد رابط قاعة جاهز بعد.', 'error');
+    });
+
+    boot().catch((err) => SmartHR.showToast(err.message, 'error'));
+  </script>
+</body>
+</html>

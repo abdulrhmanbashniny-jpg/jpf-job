@@ -189,9 +189,13 @@
                     <p style="font-size:13.5px;color:var(--text-secondary);margin-bottom:14px;line-height:1.8;">
                       تُعقد المقابلة أونلاين مع <strong>${SmartHR.escapeHtml(intv.interviewer_panel)}</strong>. يرجى التأكد من استقرار اتصال الإنترنت وعمل الكاميرا والميكروفون قبل الموعد بـ 5 دقائق.
                     </p>
-                    <a href="${SmartHR.escapeHtml(intv.meeting_url)}" target="_blank" rel="noopener" class="btn btn-olive btn-lg" style="width:100%;">
+                    <a href="${SmartHR.escapeHtml(intv.jitsi_room_url || intv.meeting_url)}" target="_blank" rel="noopener" class="btn btn-olive btn-lg" style="width:100%;margin-bottom:10px;">
                       🎥 الدخول إلى القاعة الافتراضية للمقابلة الآن ↗
                     </a>
+                    <p style="font-size:12px;color:var(--text-muted);line-height:1.7;">
+                      قاعة خاصة بهذه المقابلة فقط. يُفضَّل استخدام Chrome أو Safari، والسماح بالكاميرا والميكروفون عند الطلب.
+                      الدخول يُثبَّت لدينا لأغراض توثيق مدة المقابلة الفعلية.
+                    </p>
                   </div>
                 `
             }
