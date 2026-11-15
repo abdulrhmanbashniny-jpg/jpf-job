@@ -245,7 +245,7 @@ const SmartHR = (() => {
       <footer class="portal-footer">
         <div class="container-1440" style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:18px;">
           <div>
-            <strong style="color:#FFF;font-family:var(--font-heading);">منصة رُواء للتوظيف الذكي (Smart HR Platform v2.0)</strong>
+            <strong style="color:#FFF;font-family:var(--font-heading);">منصة رُواء للتوظيف الذكي (Smart HR Platform)</strong>
             <p style="font-size:13px;margin-top:4px;">فرز عادل بتقنية الفحص الأعمى (Blind AI Screening + Ollama) + تقييم لجنة التوظيف الموزون</p>
           </div>
           <div style="display:flex;gap:18px;font-size:13px;align-items:center;">
@@ -267,6 +267,7 @@ const SmartHR = (() => {
       { key: 'jobbuilder', href: 'JobBuilder.dc.html', icon: '🎨', label: 'إعداد الوظائف وبرومنت AI', roles: ['super_admin', 'hr_coordinator'] },
       { key: 'profile', href: 'CandidateProfile.dc.html', icon: '👤', label: 'ملف المرشح وتقييم اللجنة', roles: ['super_admin', 'committee_member', 'hr_coordinator'] },
       { key: 'ranking', href: 'Ranking.dc.html', icon: '🏆', label: 'الترتيب الموزون (40/60)', roles: ['super_admin', 'committee_member', 'hr_coordinator'] },
+      { key: 'comparison', href: 'Compare.dc.html', icon: '⚖️', label: 'مقارنة المرشحين', roles: ['super_admin', 'committee_member', 'hr_coordinator'] },
       { key: 'scheduler', href: 'Scheduler.dc.html', icon: '📅', label: 'جدولة المقابلات الذكية', section: 'المقابلات والتواصل', roles: ['super_admin', 'hr_coordinator', 'committee_member'] },
       { key: 'reception', href: 'Reception.dc.html', icon: '🚪', label: 'استقبال المرشحين (QR)', roles: ['super_admin', 'hr_coordinator'] },
       { key: 'interviews', href: 'Interviews.dc.html', icon: '💬', label: 'طابور رسائل واتساب الهجين', roles: ['super_admin', 'hr_coordinator', 'committee_member'] },
@@ -303,7 +304,7 @@ const SmartHR = (() => {
           <div class="brand-swatch">ر</div>
           <div>
             <div style="font-family:var(--font-heading);font-weight:700;font-size:15px;color:#FFF;">لجنة التوظيف المركزية</div>
-            <div class="mono" style="font-size:11px;color:#E0A21B;">RBAC + Ollama v2.1</div>
+            <div class="mono" style="font-size:11px;color:#E0A21B;">RBAC + Ollama</div>
           </div>
         </a>
 

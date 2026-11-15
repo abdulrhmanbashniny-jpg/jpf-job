@@ -1,0 +1,233 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>عرضك الوظيفي الرسمي | رُواء</title>
+  <link rel="stylesheet" href="css/design-system.css" />
+  <style>
+    body { background: #F4F6F5; }
+    .offer-wrap { max-width: 860px; margin: 0 auto; padding: 28px 18px 60px; }
+    .offer-card { background: #fff; border-radius: 22px; border: 1.5px solid #E3E6E5; padding: 28px; box-shadow: 0 6px 24px rgba(16,24,20,0.05); }
+    .brand { font-size: 13px; color: #6B7173; }
+    .doc-title { font-size: 26px; font-weight: 900; margin: 10px 0 4px; text-align: center; }
+    .doc-ref { text-align: center; color: #6B7173; font-size: 12.5px; margin-bottom: 22px; }
+    .kv { display: flex; justify-content: space-between; padding: 9px 0; border-bottom: 1px dashed #E7EAEA; font-size: 13.5px; }
+    .kv b { font-family: var(--font-mono); }
+    .total-row { background: #EAF3EF; border-radius: 12px; padding: 12px 14px; display: flex; justify-content: space-between; font-weight: 800; color: #1F6B55; margin-top: 8px; }
+    .sign-box { margin-top: 26px; border-top: 2px solid #E3E6E5; padding-top: 20px; }
+    .danger-note { background: #FBEFEC; border: 1.5px solid rgba(200,85,61,0.3); color: #8A3A27; border-radius: 12px; padding: 12px 14px; font-size: 12.5px; }
+    .ok-panel { background: #EAF3EF; border: 1.5px solid rgba(31,107,85,0.35); border-radius: 16px; padding: 22px; text-align: center; }
+  </style>
+</head>
+<body>
+  <div class="offer-wrap">
+    <div id="loading" style="text-align:center;padding:60px;color:#6B7173;">جارٍ تحميل عرضك الوظيفي...</div>
+
+    <div id="invalid" style="display:none;">
+      <div class="offer-card" style="text-align:center;">
+        <div style="font-size:34px;">🔒</div>
+        <h1 class="doc-title" style="font-size:20px;">رابط العرض غير صالح</h1>
+        <p style="color:#6B7173;font-size:13.5px;line-height:1.9;">
+          قد يكون الرابط قديماً أو منتهي الصلاحية. يرجى مراجعة منسق التوظيف للحصول على رابط رسمي جديد.
+        </p>
+      </div>
+    </div>
+
+    <div id="content" style="display:none;">
+      <div class="offer-card">
+        <div class="brand" id="company-name"></div>
+        <div class="doc-title">عرض وظيفي</div>
+        <div class="doc-ref">رقم العرض: <span class="mono" id="offer-ref"></span></div>
+
+        <div class="kv"><span>الاسم</span><b id="cand-name"></b></div>
+        <div class="kv"><span>المسمى الوظيفي</span><b id="job-title"></b></div>
+        <div class="kv"><span>القسم</span><b id="dept"></b></div>
+        <div class="kv"><span>تاريخ المباشرة المتوقعة</span><b id="start-date"></b></div>
+        <div class="kv"><span>صلاحية العرض حتى</span><b id="valid-until"></b></div>
+        <div class="kv"><span>الراتب الأساسي</span><b id="basic"></b></div>
+        <div class="kv"><span>بدل السكن</span><b id="housing"></b></div>
+        <div class="kv"><span>بدل النقل</span><b id="transport"></b></div>
+        <div class="kv"><span>بدلات أخرى</span><b id="other"></b></div>
+        <div class="total-row"><span>الإجمالي الشهري (ريال)</span><b id="total"></b></div>
+        <div class="kv" style="margin-top:10px;"><span>مدة التجربة</span><b id="probation"></b></div>
+        <div class="kv"><span>الإجازة السنوية</span><b id="leave"></b></div>
+        <div id="special-terms" style="margin-top:14px;font-size:13px;line-height:1.9;display:none;"></div>
+
+        <!-- التوقيع -->
+        <div class="sign-box" id="sign-box">
+          <h2 style="font-size:17px;margin-bottom:6px;">الرد على العرض</h2>
+          <p class="pill-note" style="margin-bottom:14px;">اختر القبول لإدخال بيانات التوقيع، أو الاعتذار مع ذكر السبب (اختياري).</p>
+
+          <div style="display:flex;gap:10px;margin-bottom:16px;">
+            <button type="button" id="tab-accept" class="btn btn-olive" style="flex:1;">✓ أقبل العرض</button>
+            <button type="button" id="tab-decline" class="btn btn-outline" style="flex:1;">✕ أعتذر</button>
+          </div>
+
+          <div id="accept-form">
+            <div class="form-group">
+              <label class="form-label">الاسم الرباعي كما هو مسجل *</label>
+              <input type="text" id="signed_name" class="form-input" placeholder="اكتب اسمك الرباعي مطابقاً للسجل" />
+            </div>
+            <div class="form-group">
+              <label class="form-label">رقم الهوية / الإقامة *</label>
+              <input type="text" id="national_id" class="form-input mono" inputmode="numeric" maxlength="10" placeholder="10 أرقام" />
+            </div>
+            <div class="form-group">
+              <label class="form-label">تاريخ المباشرة المتفق عليه</label>
+              <input type="date" id="agreed_start_date" class="form-input" />
+            </div>
+            <div class="danger-note" style="margin-bottom:12px;">
+              بالتوقيع تقرّ بصحة بياناتك وموافقتك على شروط العرض. يُسجَّل وقت التوقيع وعنوان الشبكة لأغراض التوثيق.
+            </div>
+            <button type="button" id="btn-accept" class="btn btn-olive" style="width:100%;">✍️ توقيع وقبول العرض</button>
+          </div>
+
+          <div id="decline-form" style="display:none;">
+            <div class="form-group">
+              <label class="form-label">سبب الاعتذار (اختياري)</label>
+              <textarea id="decline_reason" class="form-textarea" style="min-height:80px;" placeholder="مثال: قبلت عرضاً آخر."></textarea>
+            </div>
+            <button type="button" id="btn-decline" class="btn btn-outline" style="width:100%;">تأكيد الاعتذار</button>
+          </div>
+        </div>
+
+        <!-- الحالة النهائية -->
+        <div id="final-state" style="display:none;margin-top:22px;"></div>
+      </div>
+    </div>
+  </div>
+
+  <script src="js/common.js"></script>
+  <script>
+    const token = new URLSearchParams(window.location.search).get('ot');
+    const money = (v) => (Number(v) || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    let offerData = null;
+    let lastFullName = '';
+
+    function showFinalState(status) {
+      const map = {
+        accepted: ['🎉', 'تم قبول العرض وتوقيعه', 'مرحباً بك في الفريق. سيتواصل معك فريق الموارد البشرية لاستكمال إجراءات المباشرة.', '#1F6B55'],
+        declined: ['📩', 'تم تسجيل اعتذارك', 'شكراً لتواصلك، وسنحفظ لك بياناتك للفرص القادمة.', '#6B7173'],
+        expired: ['⏳', 'انتهت صلاحية العرض', 'انتهت مدة هذا العرض. يرجى التواصل مع منسق التوظيف لمعرفة الخيارات المتاحة.', '#C8553D'],
+        revoked: ['⛔', 'تم سحب العرض', 'لم يعد هذا العرض سارياً. يرجى التواصل مع منسق التوظيف.', '#C8553D']
+      };
+      const [icon, title, body, color] = map[status] || map.declined;
+      document.getElementById('sign-box').style.display = 'none';
+      const el = document.getElementById('final-state');
+      el.style.display = '';
+      el.innerHTML = `<div class="ok-panel" style="background:#fff;">
+        <div style="font-size:34px;">${icon}</div>
+        <h2 style="font-size:19px;margin:8px 0;color:${color};">${title}</h2>
+        <p style="color:#6B7173;font-size:13px;line-height:1.9;">${body}</p>
+      </div>`;
+    }
+
+    async function load() {
+      if (!token) {
+        document.getElementById('loading').style.display = 'none';
+        document.getElementById('invalid').style.display = '';
+        return;
+      }
+      try {
+        const res = await fetch(`/api/public/offers/${encodeURIComponent(token)}`);
+        if (!res.ok) {
+          document.getElementById('loading').style.display = 'none';
+          document.getElementById('invalid').style.display = '';
+          return;
+        }
+        const data = await res.json();
+        offerData = data.offer;
+        lastFullName = data.offer.candidate_name;
+
+        document.getElementById('loading').style.display = 'none';
+        document.getElementById('content').style.display = '';
+        document.getElementById('company-name').textContent = data.company.name || '';
+        document.getElementById('offer-ref').textContent = offerData.offer_ref;
+        document.getElementById('cand-name').textContent = offerData.candidate_name;
+        document.getElementById('job-title').textContent = offerData.job_title;
+        document.getElementById('dept').textContent = offerData.department;
+        document.getElementById('start-date').textContent = String(offerData.expected_start_date).slice(0, 10);
+        document.getElementById('valid-until').textContent = String(offerData.valid_until).slice(0, 10);
+        document.getElementById('basic').textContent = money(offerData.basic_salary);
+        document.getElementById('housing').textContent = money(offerData.housing_allowance);
+        document.getElementById('transport').textContent = money(offerData.transport_allowance);
+        document.getElementById('other').textContent = money(offerData.other_allowances);
+        document.getElementById('total').textContent = money(offerData.total_monthly_salary);
+        document.getElementById('probation').textContent = `${offerData.probation_days} يوماً`;
+        document.getElementById('leave').textContent = `${offerData.annual_leave_days} يوماً`;
+        if (offerData.special_terms) {
+          const st = document.getElementById('special-terms');
+          st.style.display = '';
+          st.innerHTML = `<strong>شروط خاصة:</strong> ${SmartHR.escapeHtml(offerData.special_terms)}`;
+        }
+        document.getElementById('agreed_start_date').value = String(offerData.expected_start_date).slice(0, 10);
+
+        if (offerData.can_respond) {
+          document.getElementById('sign-box').style.display = '';
+        } else {
+          showFinalState(offerData.offer_status);
+        }
+      } catch (_err) {
+        document.getElementById('loading').style.display = 'none';
+        document.getElementById('invalid').style.display = '';
+      }
+    }
+
+    async function respond(body) {
+      try {
+        const res = await fetch(`/api/public/offers/${encodeURIComponent(token)}/respond`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body)
+        });
+        const data = await res.json();
+        if (!res.ok) {
+          SmartHR.showToast(data.error || 'تعذّر تنفيذ الطلب.', 'error');
+          return;
+        }
+        SmartHR.showToast(data.message || 'تم.', 'success');
+        showFinalState(data.offer_status);
+      } catch (err) {
+        SmartHR.showToast(err.message, 'error');
+      }
+    }
+
+    document.getElementById('tab-accept').addEventListener('click', () => {
+      document.getElementById('accept-form').style.display = '';
+      document.getElementById('decline-form').style.display = 'none';
+    });
+    document.getElementById('tab-decline').addEventListener('click', () => {
+      document.getElementById('accept-form').style.display = 'none';
+      document.getElementById('decline-form').style.display = '';
+    });
+    document.getElementById('btn-accept').addEventListener('click', () => {
+      const name = document.getElementById('signed_name').value.trim();
+      const nid = document.getElementById('national_id').value.trim();
+      if (!name || !nid) {
+        SmartHR.showToast('أدخل الاسم الرباعي ورقم الهوية.', 'error');
+        return;
+      }
+      if (name.replace(/\s+/g, ' ') !== String(lastFullName).replace(/\s+/g, ' ').trim()) {
+        SmartHR.showToast('الاسم يجب أن يطابق الاسم المسجل في العرض حرفياً.', 'error');
+        return;
+      }
+      if (!/^[0-9]{10}$/.test(nid)) {
+        SmartHR.showToast('رقم الهوية/الإقامة يجب أن يكون 10 أرقام.', 'error');
+        return;
+      }
+      respond({
+        decision: 'accept',
+        signed_name: name,
+        national_id: nid,
+        agreed_start_date: document.getElementById('agreed_start_date').value
+      });
+    });
+    document.getElementById('btn-decline').addEventListener('click', () => {
+      respond({ decision: 'decline', decline_reason: document.getElementById('decline_reason').value });
+    });
+
+    load();
+  </script>
+</body>
+</html>

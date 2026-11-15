@@ -1,0 +1,274 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>مصفوفة المقارنة التنفيذية | رُواء للتوظيف الذكي</title>
+  <link rel="stylesheet" href="css/design-system.css" />
+  <style>
+    .compare-grid { display: grid; gap: 14px; align-items: stretch; }
+    .compare-grid[data-count="2"] { grid-template-columns: repeat(2, 1fr); }
+    .compare-grid[data-count="3"] { grid-template-columns: repeat(3, 1fr); }
+    .compare-grid[data-count="4"] { grid-template-columns: repeat(4, 1fr); }
+    .cand-col { background: #fff; border: 1.5px solid var(--border-color); border-radius: 18px; padding: 16px; display: flex; flex-direction: column; gap: 12px; }
+    .cand-col.top { border-color: #1F6B55; box-shadow: 0 0 0 3px rgba(31,107,85,0.10); }
+    .cand-name { font-size: 15px; font-weight: 800; }
+    .metric { display: flex; justify-content: space-between; font-size: 12.5px; padding: 5px 0; border-bottom: 1px dashed #EDEFEF; }
+    .metric b { font-family: var(--font-mono); }
+    .bar { height: 7px; background: #EDEFEF; border-radius: 4px; overflow: hidden; margin-top: 3px; }
+    .bar > i { display: block; height: 100%; background: #1F6B55; }
+    .crit { font-size: 11.5px; color: var(--text-muted); }
+    .rank-badge { display: inline-block; font-size: 11px; padding: 2px 9px; border-radius: 999px; background: #1F6B55; color: #fff; }
+    .crit-table { width: 100%; font-size: 12px; border-collapse: collapse; }
+    .crit-table th, .crit-table td { padding: 7px 6px; border-bottom: 1px solid #EDEFEF; text-align: center; }
+    .crit-table th:first-child, .crit-table td:first-child { text-align: right; color: var(--text-muted); }
+    .crit-table td.win { background: rgba(31,107,85,0.08); font-weight: 800; color: #1F6B55; }
+    @media (max-width: 1100px) { .compare-grid { grid-template-columns: repeat(2, 1fr) !important; } }
+    @media (max-width: 700px) { .compare-grid { grid-template-columns: 1fr !important; } }
+  </style>
+</head>
+<body>
+  <div class="admin-shell">
+    <div id="admin-sidebar-mount"></div>
+
+    <main class="admin-main">
+      <div class="admin-topbar">
+        <div>
+          <h1 class="page-title">مصفوفة المقارنة التنفيذية</h1>
+          <p class="page-subtitle">مقارنة من 2 إلى 4 مرشحين على نفس الوظيفة: الدرجات، معايير اللجنة الخمسة، دقة الحضور، والتعريف الصوتي.</p>
+        </div>
+        <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center;">
+          <button type="button" id="btn-pick" class="btn btn-outline">✏️ اختيار المرشحين</button>
+          <a href="Offers.dc.html" class="btn btn-outline">📄 العروض الصادرة</a>
+        </div>
+      </div>
+
+      <!-- اختيار المرشحين -->
+      <section id="picker-panel" style="display:none;" class="card">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;flex-wrap:wrap;gap:10px;">
+          <strong style="font-size:15px;">اختر 2–4 مرشحين من وظيفة واحدة</strong>
+          <span class="pill-note" id="pick-counter">0 / 4</span>
+        </div>
+        <div class="form-group" style="max-width:420px;">
+          <label class="form-label">الوظيفة</label>
+          <select id="job-select" class="form-select"><option value="">— اختر الوظيفة —</option></select>
+        </div>
+        <div id="candidate-options" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(230px,1fr));gap:8px;margin-top:10px;"></div>
+        <div style="display:flex;gap:10px;margin-top:14px;">
+          <button type="button" id="btn-run-compare" class="btn btn-olive" disabled>🔍 عرض المقارنة</button>
+          <button type="button" id="btn-cancel-pick" class="btn btn-outline">إلغاء</button>
+        </div>
+      </section>
+
+      <div id="compare-root"></div>
+    </main>
+  </div>
+
+  <script src="js/common.js"></script>
+  <script>
+    SmartHR.renderAdminSidebar('ranking');
+
+    const MAX = 4, MIN = 2;
+    let selected = new Set();
+    let allCandidates = [];
+
+    function setCounter() {
+      document.getElementById('pick-counter').textContent = `${selected.size} / ${MAX}`;
+      document.getElementById('btn-run-compare').disabled = selected.size < MIN;
+      document.querySelectorAll('input[data-pick]').forEach((cb) => {
+        cb.disabled = !cb.checked && selected.size >= MAX;
+      });
+    }
+
+    async function loadJobs() {
+      try {
+        const data = await SmartHR.apiFetch('/api/ranking');
+        allCandidates = (data.ranked_candidates || []).filter((r) => r.job_id);
+        const jobs = new Map();
+        allCandidates.forEach((r) => {
+          if (r.job_id && !jobs.has(r.job_id)) jobs.set(r.job_id, `${r.job_title || ''} (${r.job_code || ''})`);
+        });
+        const sel = document.getElementById('job-select');
+        jobs.forEach((label, id) => {
+          const o = document.createElement('option');
+          o.value = id; o.textContent = label;
+          sel.appendChild(o);
+        });
+        sel.addEventListener('change', renderOptions);
+      } catch (err) {
+        SmartHR.showToast(`تعذّر تحميل المرشحين: ${err.message}`, 'error');
+      }
+    }
+
+    function renderOptions() {
+      const jobId = document.getElementById('job-select').value;
+      const mount = document.getElementById('candidate-options');
+      selected = new Set();
+      if (!jobId) { mount.innerHTML = ''; setCounter(); return; }
+      const list = allCandidates.filter((r) => String(r.job_id) === String(jobId));
+      mount.innerHTML = list.map((r) => `
+        <label style="display:flex;gap:8px;align-items:center;border:1.5px solid var(--border-color);border-radius:12px;padding:9px 11px;cursor:pointer;font-size:12.5px;">
+          <input type="checkbox" data-pick="${r.id ?? r.application_id}" />
+          <span>
+            <strong>${SmartHR.escapeHtml(r.full_name || '')}</strong>
+            <span class="pill-note" style="display:block;">${SmartHR.escapeHtml(r.reference_no || '')} · ${Number(r.final_weighted_score || 0).toFixed(1)}</span>
+          </span>
+        </label>`).join('');
+      mount.querySelectorAll('input[data-pick]').forEach((cb) => {
+        cb.addEventListener('change', () => {
+          if (cb.checked) selected.add(cb.dataset.pick); else selected.delete(cb.dataset.pick);
+          setCounter();
+        });
+      });
+      setCounter();
+    }
+
+    const fmt = (v) => (v === null || v === undefined ? '—' : Number(v).toFixed(1));
+
+    function renderCompare(data) {
+      const root = document.getElementById('compare-root');
+      const n = data.candidates.length;
+      const criteria = [
+        ['technical_competence', 'الكفاءة الفنية'],
+        ['communication_persuasion', 'التواصل والإقناع'],
+        ['problem_solving', 'حل المشكلات'],
+        ['cultural_fit', 'التوافق الثقافي'],
+        ['portfolio_practical', 'الأعمال والعملي']
+      ];
+
+      const cols = data.candidates.map((c, idx) => `
+        <div class="cand-col ${idx === 0 ? 'top' : ''}" data-testid="compare-col">
+          <div>
+            ${idx === 0 ? '<span class="rank-badge">الأعلى تقييماً</span>' : ''}
+            <div class="cand-name" style="margin-top:6px;">${SmartHR.escapeHtml(c.full_name)}</div>
+            <div class="pill-note mono">${SmartHR.escapeHtml(c.reference_no)}</div>
+          </div>
+          <div>
+            <div class="metric"><span>السيرة</span><b>${fmt(c.scores.cv_match)}</b></div>
+            <div class="bar"><i style="width:${Math.min(100, c.scores.cv_match)}%"></i></div>
+            <div class="metric"><span>اختبار الجدارة</span><b>${fmt(c.scores.assessment)}</b></div>
+            <div class="bar"><i style="width:${Math.min(100, c.scores.assessment)}%"></i></div>
+            <div class="metric"><span>تحليل الذكاء</span><b>${fmt(c.scores.ai_overall)}</b></div>
+            <div class="bar"><i style="width:${Math.min(100, c.scores.ai_overall)}%"></i></div>
+            <div class="metric"><span>متوسط اللجنة</span><b>${fmt(c.scores.committee_avg)}</b></div>
+            <div class="bar"><i style="width:${Math.min(100, c.scores.committee_avg)}%"></i></div>
+            <div class="metric" style="border-bottom:none;"><span><strong>الدرجة النهائية</strong></span><b style="color:#1F6B55;font-size:14px;">${fmt(c.scores.final_weighted)}</b></div>
+          </div>
+          <div style="font-size:12px;line-height:1.9;">
+            <div class="crit">المدينة: ${SmartHR.escapeHtml(c.city || '—')}</div>
+            <div class="crit">الخبرة: ${SmartHR.escapeHtml(String(c.years_experience ?? '—'))} سنة</div>
+            <div class="crit">المؤهل: ${SmartHR.escapeHtml(c.qualification || '—')}</div>
+          </div>
+          <div style="font-size:12px;line-height:1.9;">
+            <div class="crit">
+              الحضور: ${
+                c.attendance.punctuality_minutes === null
+                  ? (c.attendance.checked_in ? 'حضر ✓' : 'لم يُسجَّل')
+                  : (c.attendance.punctuality_minutes >= 0
+                      ? `حضر قبل الموعد بـ ${c.attendance.punctuality_minutes} دقيقة`
+                      : `تأخّر ${Math.abs(c.attendance.punctuality_minutes)} دقيقة`)
+              }
+            </div>
+            <div class="crit">المقابلة: ${SmartHR.escapeHtml(c.attendance.booking_status || '—')}${
+              c.attendance.actual_call_minutes != null ? ` · ${c.attendance.actual_call_minutes} دقيقة` : ''}</div>
+          </div>
+          <div>
+            ${c.voice_pitch.available
+              ? `<audio controls preload="none" src="${SmartHR.escapeHtml(c.voice_pitch.stream_url)}" style="width:100%;height:34px;"></audio>
+                 <div class="crit" style="margin-top:4px;">التعريف الصوتي (مسجَّل)</div>`
+              : `<div class="crit">لا يوجد تعريف صوتي متاح</div>`}
+          </div>
+          <div>
+            <div class="crit" style="margin-bottom:5px;"><strong style="font-size:12px;">📄 ملخص السيرة</strong></div>
+            <div class="pill-note" style="line-height:1.7;max-height:112px;overflow:auto;">
+              ${c.cv_summary ? SmartHR.escapeHtml(c.cv_summary) : 'لا يوجد نص مستخرج من السيرة'}
+            </div>
+          </div>
+          <div style="margin-top:auto;">
+            <div class="crit" style="margin-bottom:5px;">توصيات اللجنة (${c.committee.evaluators.length})</div>
+            ${c.committee.evaluators.length
+              ? c.committee.evaluators.map((e) => `
+                  <div style="font-size:11.5px;border-top:1px dashed #EDEFEF;padding:5px 0;">
+                    <strong>${SmartHR.escapeHtml(e.evaluator_name)}</strong>
+                    <span class="pill-note"> · ${SmartHR.escapeHtml(e.recommendation || '')}</span>
+                    ${e.notes ? `<div class="pill-note">${SmartHR.escapeHtml(e.notes)}</div>` : ''}
+                  </div>`).join('')
+              : '<div class="crit">لم تُرصد تقييمات بعد</div>'}
+          </div>
+          ${data.can_issue_offers
+            ? `<a class="btn btn-olive btn-sm" data-testid="issue-offer" href="OfferLetter.dc.html?application_id=${c.application_id}">📄 إصدار عرض وظيفي</a>`
+            : `<div class="pill-note" style="text-align:center;">إصدار العروض للإدارة والمنسق فقط</div>`}
+        </div>`).join('');
+
+      // جدول معايير اللجنة مع تمييز الأعلى في كل معيار
+      const rows = criteria.map(([key, label]) => {
+        const vals = data.candidates.map((c) => c.committee.criteria_averages[key]);
+        const maxVal = Math.max(...vals.filter((v) => v !== null && v !== undefined), -Infinity);
+        return `<tr>
+          <td>${label}</td>
+          ${vals.map((v) => `<td class="${v !== null && v === maxVal ? 'win' : ''}">${fmt(v)}</td>`).join('')}
+        </tr>`;
+      }).join('');
+
+      root.innerHTML = `
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;flex-wrap:wrap;gap:8px;">
+          <div>
+            <strong style="font-size:16px;">${SmartHR.escapeHtml(data.job.title || '')}</strong>
+            <span class="pill-note mono"> ${SmartHR.escapeHtml(data.job.code || '')}</span>
+          </div>
+          <span class="pill-note">${n} مرشحين · مرتّبون بالدرجة النهائية</span>
+        </div>
+        <div class="compare-grid" data-count="${n}" data-testid="compare-grid">${cols}</div>
+        <section class="card" style="margin-top:18px;">
+          <strong style="font-size:15px;">📊 معايير اللجنة الخمسة — متوسطات (الأعلى مميَّز)</strong>
+          <table class="crit-table" style="margin-top:10px;" data-testid="criteria-table">
+            <thead><tr><th>المعيار</th>${data.candidates.map((c) => `<th>${SmartHR.escapeHtml(c.full_name.split(' ')[0])}</th>`).join('')}</tr></thead>
+            <tbody>${rows}</tbody>
+          </table>
+        </section>`;
+    }
+
+    async function runCompare() {
+      const ids = [...selected];
+      if (ids.length < MIN || ids.length > MAX) {
+        SmartHR.showToast(`اختر من ${MIN} إلى ${MAX} مرشحين.`, 'error');
+        return;
+      }
+      try {
+        const data = await SmartHR.apiFetch(`/api/compare?ids=${ids.join(',')}`);
+        renderCompare(data);
+        document.getElementById('picker-panel').style.display = 'none';
+        window.history.replaceState({}, '', `Compare.dc.html?ids=${ids.join(',')}`);
+      } catch (err) {
+        SmartHR.showToast(err.message, 'error');
+      }
+    }
+
+    document.getElementById('btn-pick').addEventListener('click', () => {
+      const p = document.getElementById('picker-panel');
+      p.style.display = p.style.display === 'none' ? '' : 'none';
+    });
+    document.getElementById('btn-cancel-pick').addEventListener('click', () => {
+      document.getElementById('picker-panel').style.display = 'none';
+    });
+    document.getElementById('btn-run-compare').addEventListener('click', runCompare);
+
+    (async function boot() {
+      await loadJobs();
+      // دعم الرابط المباشر ?ids=1,2,3
+      const params = new URLSearchParams(window.location.search);
+      const ids = params.get('ids');
+      if (ids) {
+        try {
+          const data = await SmartHR.apiFetch(`/api/compare?ids=${encodeURIComponent(ids)}`);
+          renderCompare(data);
+        } catch (err) {
+          SmartHR.showToast(err.message, 'error');
+        }
+      } else {
+        document.getElementById('picker-panel').style.display = '';
+      }
+    })();
+  </script>
+</body>
+</html>

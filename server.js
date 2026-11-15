@@ -23,6 +23,9 @@ const wahaClient = require('./services/wahaClient');
 const { createWahaRoutes } = require('./services/wahaRoutes');
 const jitsiClient = require('./services/jitsiClient');
 const { createJitsiRoutes } = require('./services/jitsiRoutes');
+const offerPdf = require('./services/offerPdf');
+const outbox = require('./services/automationOutbox');
+const { createOfferRoutes } = require('./services/offerRoutes');
 const {
   ROLE_LABELS,
   hashPassword,
@@ -322,6 +325,19 @@ app.use('/uploads', async (req, res, next) => {
       return res.status(403).json({
         error: 'يُمنع الوصول المباشر للمقاطع الصوتية؛ يتم الاستماع حصراً عبر واجهة البث المسجّلة في سجل التدقيق.',
         code: 'DIRECT_VOICE_ACCESS_FORBIDDEN'
+      });
+    }
+    // v2.5-R1: ملفات العروض الوظيفية تُسلَّم حصراً عبر /api/offers/:id/pdf
+    // (مصادقة + سجل تدقيق) أو عبر توكن العرض للمرشح — لا عبر مسار ثابت.
+    // هذا الحجب قبل التحقق من الجلسة عمداً: حتى المدير لا يصل مباشرة.
+    // نطبّع المسار قبل الفحص: req.path لا يفكّ ترميز %6Fffers ⇒ تجاوز الفحص.
+    let decodedPath = req.path;
+    try { decodedPath = decodeURIComponent(req.path); } catch (_e) { /* مسار غير صالح */ }
+    decodedPath = path.posix.normalize(decodedPath.replace(/\\/g, '/').replace(/\/{2,}/g, '/'));
+    if (/^\/+(?:offers?)(\/|$)/i.test(decodedPath)) {
+      return res.status(403).json({
+        error: 'يُمنع الوصول المباشر لملفات العروض الوظيفية؛ التنزيل عبر المسارات المصرّح بها فقط.',
+        code: 'DIRECT_OFFER_ACCESS_FORBIDDEN'
       });
     }
     const session = await resolveActiveStaffSession(req, query);
@@ -3877,6 +3893,73 @@ app.use('/api', createJitsiRoutes({
   requireAuth,
   jitsiClient
 }));
+
+// ---------------------------------------------------------------------------------
+// 9D. مصفوفة المقارنة والعروض الوظيفية وأتمتة n8n (v2.5)
+//     المسارات: /api/compare · /api/offers* · /api/public/offers/:ot
+// ---------------------------------------------------------------------------------
+app.use('/api', createOfferRoutes({
+  query,
+  pool,
+  logAudit,
+  requireAuth,
+  offerPdf,
+  outbox,
+  uploadsDir
+}));
+
+// ---------------------------------------------------------------------------------
+// 9E. حالة صندوق الأتمتة (n8n) — قراءة فقط للمشرف، ولا تكشف أي سر
+// ---------------------------------------------------------------------------------
+app.get('/api/automation/outbox-status', requireAuth(['super_admin', 'hr_coordinator']), async (_req, res) => {
+  try {
+    const stats = await outbox.outboxStats(query);
+    res.json({
+      delivery_enabled: outbox.isDeliveryEnabled(),
+      // لا يُعاد العنوان ولا السر — فقط حالة التحقق منه
+      webhook_configured: outbox.validateWebhookUrl(process.env.N8N_OFFER_WEBHOOK_URL).ok,
+      secret_configured: Boolean(process.env.N8N_WEBHOOK_SECRET),
+      non_blocking: true,
+      stats
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message, code: 'OUTBOX_STATUS_FAILED' });
+  }
+});
+
+// ---------------------------------------------------------------------------------
+// 9F. عامل صندوق الأتمتة — يعمل في الخلفية ولا يعطّل أي طلب توظيف إطلاقاً
+//     • لا ينفّذ شيئاً إن كانت الأتمتة معطّلة (الافتراضي)
+//     • كل الأخطاء تُلتقط داخلياً: لا unhandled rejection، لا تأخير على مسار الطلب
+//     • يُنفَّذ التسليم بعد استجابة الطلب (setImmediate) لا قبله
+// ---------------------------------------------------------------------------------
+const OUTBOX_WORKER_INTERVAL_MS = Number(process.env.OUTBOX_WORKER_INTERVAL_MS || 5000);
+let outboxWorkerTimer = null;
+let outboxWorkerBusy = false;
+
+async function runOutboxWorkerTick() {
+  if (outboxWorkerBusy) return;
+  outboxWorkerBusy = true;
+  try {
+    const stats = await outbox.deliverBatch(query, { limit: 10 });
+    if (stats.delivered || stats.failed) {
+      console.log(`[outbox] attempted=${stats.attempted} delivered=${stats.delivered} failed=${stats.failed} abandoned=${stats.abandoned}`);
+    }
+  } catch (err) {
+    // لا شيء يفشل هنا: الصندوق ملحق عرضي لجودة التشغيل
+    console.error('[outbox] worker tick failed (non-fatal):', err && err.message);
+  } finally {
+    outboxWorkerBusy = false;
+  }
+}
+
+if (OUTBOX_WORKER_INTERVAL_MS > 0) {
+  outboxWorkerTimer = setInterval(() => { setImmediate(runOutboxWorkerTick); }, OUTBOX_WORKER_INTERVAL_MS);
+  if (typeof outboxWorkerTimer.unref === 'function') outboxWorkerTimer.unref();
+  // دورة أولى بعد 1.5 ثانية من الإقلاع (لا تُبقي العملية حيّة)
+  const firstTick = setTimeout(() => { setImmediate(runOutboxWorkerTick); }, 1500);
+  if (typeof firstTick.unref === 'function') firstTick.unref();
+}
 
 // ---------------------------------------------------------------------------------
 // 10. إعدادات المقر وصورة المدخل ومحاكي الفحص الأعمى وسجل التدقيق
