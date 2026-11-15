@@ -708,3 +708,46 @@ const SmartHR = (() => {
     renderAdminSidebar
   };
 })();
+
+/* Live backend version badge */
+(() => {
+  async function mountLiveVersionBadge() {
+    if (!document.body || document.getElementById('app-version-badge')) return;
+    const badge = document.createElement('div');
+    badge.id = 'app-version-badge';
+    badge.setAttribute('data-testid', 'app-version-badge');
+    badge.setAttribute('aria-live', 'polite');
+    badge.title = 'الإصدار الفعلي لخادم الموقع';
+    badge.textContent = 'جارٍ التحقق من الإصدار…';
+    Object.assign(badge.style, {
+      position: 'fixed', left: '12px', bottom: '12px', zIndex: '9999',
+      background: '#243238', color: '#fff', border: '1px solid #64747a',
+      borderRadius: '8px', padding: '5px 9px', fontSize: '12px',
+      fontFamily: 'system-ui, sans-serif', direction: 'rtl',
+      boxShadow: '0 2px 8px rgba(0,0,0,.12)'
+    });
+    document.body.appendChild(badge);
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 5000);
+    try {
+      const response = await fetch('/api/health', {
+        cache: 'no-store', credentials: 'same-origin', signal: controller.signal
+      });
+      if (!response.ok) throw new Error('health unavailable');
+      const data = await response.json();
+      if (!/^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$/.test(String(data.version || ''))) {
+        throw new Error('version unavailable');
+      }
+      badge.textContent = `الإصدار v${data.version}`;
+    } catch (_error) {
+      badge.textContent = 'الإصدار غير متاح';
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', mountLiveVersionBadge, { once: true });
+  } else {
+    mountLiveVersionBadge();
+  }
+})();
